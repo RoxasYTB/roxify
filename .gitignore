@@ -1,0 +1,16 @@
+node_modules/
+dist/
+target/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+test-native.cjs
+
+test/

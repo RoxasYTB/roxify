@@ -1,0 +1,12 @@
+src/
+test/
+native/
+target/
+Cargo.toml
+Cargo.lock
+tsconfig.json
+test-native.cjs
+.gitignore
+.git
+node_modules/
+*.log

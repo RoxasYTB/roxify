@@ -4,6 +4,20 @@ import {
 } from '@mongodb-js/zstd';
 import { cpus } from 'os';
 
+let nativeZstdCompress: ((data: Buffer, level: number) => Uint8Array) | null =
+  null;
+let nativeZstdDecompress: ((data: Buffer) => Uint8Array) | null = null;
+
+try {
+  const native = require('../../libroxify_native.node');
+  if (native?.nativeZstdCompress) {
+    nativeZstdCompress = native.nativeZstdCompress;
+  }
+  if (native?.nativeZstdDecompress) {
+    nativeZstdDecompress = native.nativeZstdDecompress;
+  }
+} catch (e) {}
+
 export async function compressStream(
   stream: AsyncGenerator<Buffer>,
   level: number = 19,
@@ -57,9 +71,11 @@ export async function parallelZstdCompress(
   } else {
     if (payload.length <= chunkSize) {
       if (onProgress) onProgress(0, 1);
-      const result = await zstdCompress(payload, level);
+      const result = nativeZstdCompress
+        ? Buffer.from(nativeZstdCompress(payload, level))
+        : Buffer.from(await zstdCompress(payload, level));
       if (onProgress) onProgress(1, 1);
-      return [Buffer.from(result)];
+      return [result];
     }
     for (let i = 0; i < payload.length; i += chunkSize) {
       chunks.push(payload.subarray(i, Math.min(i + chunkSize, payload.length)));
@@ -79,8 +95,10 @@ export async function parallelZstdCompress(
       const cur = idx++;
       if (cur >= totalChunks) return;
       const chunk = chunks[cur];
-      const compressed = await zstdCompress(chunk, level);
-      compressedChunks[cur] = Buffer.from(compressed);
+      const compressed = nativeZstdCompress
+        ? Buffer.from(nativeZstdCompress(chunk, level))
+        : Buffer.from(await zstdCompress(chunk, level));
+      compressedChunks[cur] = compressed;
       completedChunks++;
       if (onProgress) onProgress(completedChunks, totalChunks);
     }
@@ -109,7 +127,9 @@ export async function parallelZstdDecompress(
 ): Promise<Buffer> {
   if (payload.length < 8) {
     onProgress?.({ phase: 'decompress_start', total: 1 });
-    const d = Buffer.from(await zstdDecompress(payload));
+    const d = nativeZstdDecompress
+      ? Buffer.from(nativeZstdDecompress(payload))
+      : Buffer.from(await zstdDecompress(payload));
     onProgress?.({ phase: 'decompress_progress', loaded: 1, total: 1 });
     onProgress?.({ phase: 'decompress_done', loaded: 1, total: 1 });
     return d;
@@ -119,7 +139,9 @@ export async function parallelZstdDecompress(
   if (magic !== 0x5a535444) {
     if (process.env.ROX_DEBUG) console.log('tryZstdDecompress: invalid magic');
     onProgress?.({ phase: 'decompress_start', total: 1 });
-    const d = Buffer.from(await zstdDecompress(payload));
+    const d = nativeZstdDecompress
+      ? Buffer.from(nativeZstdDecompress(payload))
+      : Buffer.from(await zstdDecompress(payload));
     onProgress?.({ phase: 'decompress_progress', loaded: 1, total: 1 });
     onProgress?.({ phase: 'decompress_done', loaded: 1, total: 1 });
     return d;
@@ -142,7 +164,9 @@ export async function parallelZstdDecompress(
     const chunk = payload.slice(offset, offset + size);
     offset += size;
 
-    const dec = Buffer.from(await zstdDecompress(chunk));
+    const dec = nativeZstdDecompress
+      ? Buffer.from(nativeZstdDecompress(chunk))
+      : Buffer.from(await zstdDecompress(chunk));
     decompressedChunks.push(dec);
 
     onProgress?.({

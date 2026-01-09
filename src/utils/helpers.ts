@@ -2,6 +2,21 @@ import { createDecipheriv, pbkdf2Sync } from 'crypto';
 import { ENC_AES, ENC_NONE, ENC_XOR } from './constants.js';
 import { IncorrectPassphraseError, PassphraseRequiredError } from './errors.js';
 
+let nativeDeltaEncode: ((data: Buffer) => Uint8Array) | null = null;
+let nativeDeltaDecode: ((data: Buffer) => Uint8Array) | null = null;
+let hasNative = false;
+
+try {
+  const native = require('../../libroxify_native.node');
+  if (native?.nativeDeltaEncode && native?.nativeDeltaDecode) {
+    nativeDeltaEncode = native.nativeDeltaEncode;
+    nativeDeltaDecode = native.nativeDeltaDecode;
+    hasNative = true;
+  }
+} catch (e) {
+  // Native module not available, will use TS fallback
+}
+
 export function colorsToBytes(
   colors: Array<{ r: number; g: number; b: number }>,
 ): Buffer {
@@ -14,7 +29,7 @@ export function colorsToBytes(
   return buf;
 }
 
-export function deltaEncode(data: Buffer): Buffer {
+function deltaEncodeTS(data: Buffer): Buffer {
   if (data.length === 0) return data;
   const out = Buffer.alloc(data.length);
   out[0] = data[0];
@@ -24,7 +39,7 @@ export function deltaEncode(data: Buffer): Buffer {
   return out;
 }
 
-export function deltaDecode(data: Buffer): Buffer {
+function deltaDecodeTS(data: Buffer): Buffer {
   if (data.length === 0) return data;
   const out = Buffer.alloc(data.length);
   out[0] = data[0];
@@ -32,6 +47,28 @@ export function deltaDecode(data: Buffer): Buffer {
     out[i] = (out[i - 1] + data[i]) & 0xff;
   }
   return out;
+}
+
+export function deltaEncode(data: Buffer): Buffer {
+  if (hasNative && nativeDeltaEncode) {
+    try {
+      return Buffer.from(nativeDeltaEncode(data));
+    } catch (e) {
+      console.warn('Native deltaEncode failed, falling back to TS:', e);
+    }
+  }
+  return deltaEncodeTS(data);
+}
+
+export function deltaDecode(data: Buffer): Buffer {
+  if (hasNative && nativeDeltaDecode) {
+    try {
+      return Buffer.from(nativeDeltaDecode(data));
+    } catch (e) {
+      console.warn('Native deltaDecode failed, falling back to TS:', e);
+    }
+  }
+  return deltaDecodeTS(data);
 }
 
 export function applyXor(buf: Buffer, passphrase: string): Buffer {
@@ -78,4 +115,3 @@ export function tryDecryptIfNeeded(buf: Buffer, passphrase?: string): Buffer {
 
   return buf;
 }
-
