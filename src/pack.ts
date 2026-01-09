@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { extname, join, relative, resolve, sep } from 'path';
 
 export interface PackedFile {
@@ -215,40 +216,59 @@ export async function packPathsGenerator(
     indexHeader.writeUInt32BE(indexBuf.length, 4);
     yield Buffer.concat([indexHeader, indexBuf]);
 
-    let currentBuffer = Buffer.alloc(0);
     let readSoFar = 0;
+    const BATCH_SIZE = 1000;
+    const chunks: Buffer[] = [];
+    let chunkSize = 0;
 
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      const rel = relative(base, f).split(sep).join('/');
-      const content = readFileSync(f);
+    for (
+      let batchStart = 0;
+      batchStart < files.length;
+      batchStart += BATCH_SIZE
+    ) {
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, files.length);
+      const batchFiles = files.slice(batchStart, batchEnd);
 
-      const nameBuf = Buffer.from(rel, 'utf8');
-      const nameLen = Buffer.alloc(2);
-      nameLen.writeUInt16BE(nameBuf.length, 0);
-      const sizeBuf = Buffer.alloc(8);
-      sizeBuf.writeBigUInt64BE(BigInt(content.length), 0);
+      const contentPromises = batchFiles.map(async (f) => {
+        try {
+          return await readFile(f);
+        } catch (e) {
+          return Buffer.alloc(0);
+        }
+      });
+      const contents = await Promise.all(contentPromises);
 
-      const entry = Buffer.concat([nameLen, nameBuf, sizeBuf, content]);
+      for (let i = 0; i < batchFiles.length; i++) {
+        const f = batchFiles[i];
+        const rel = relative(base, f).split(sep).join('/');
+        const content = contents[i];
 
-      if (
-        currentBuffer.length + entry.length > BLOCK_SIZE &&
-        currentBuffer.length > 0
-      ) {
-        yield currentBuffer;
-        currentBuffer = Buffer.alloc(0);
+        const nameBuf = Buffer.from(rel, 'utf8');
+        const nameLen = Buffer.alloc(2);
+        nameLen.writeUInt16BE(nameBuf.length, 0);
+        const sizeBuf = Buffer.alloc(8);
+        sizeBuf.writeBigUInt64BE(BigInt(content.length), 0);
+
+        const entry = Buffer.concat([nameLen, nameBuf, sizeBuf, content]);
+
+        chunks.push(entry);
+        chunkSize += entry.length;
+
+        if (chunkSize >= BLOCK_SIZE) {
+          yield Buffer.concat(chunks);
+          chunks.length = 0;
+          chunkSize = 0;
+        }
+
+        readSoFar += content.length;
+        if (onProgress) onProgress(readSoFar, totalSize, rel);
       }
-
-      currentBuffer = Buffer.concat([currentBuffer, entry]);
-      readSoFar += content.length;
-      if (onProgress) onProgress(readSoFar, totalSize, rel);
     }
 
-    if (currentBuffer.length > 0) {
-      yield currentBuffer;
+    if (chunks.length > 0) {
+      yield Buffer.concat(chunks);
     }
   }
 
   return { index, stream: streamGenerator(), totalSize };
 }
-

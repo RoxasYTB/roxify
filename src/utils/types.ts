@@ -2,6 +2,7 @@ import { PackedFile } from '../pack.js';
 
 export interface EncodeOptions {
   compression?: 'zstd';
+  compressionLevel?: number;
   passphrase?: string;
   name?: string;
   mode?: 'screenshot';
@@ -11,6 +12,7 @@ export interface EncodeOptions {
   includeName?: boolean;
   includeFileList?: boolean;
   fileList?: Array<string | { name: string; size: number }>;
+  skipOptimization?: boolean;
   onProgress?: (info: {
     phase: string;
     loaded?: number;
@@ -38,4 +40,3 @@ export interface DecodeOptions {
   }) => void;
   showProgress?: boolean;
 }
-

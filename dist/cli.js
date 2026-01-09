@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInPng, IncorrectPassphraseError, listFilesInPng, PassphraseRequiredError, } from './index.js';
 import { packPathsGenerator, unpackBuffer } from './pack.js';
-const VERSION = '1.2.6';
+const VERSION = '1.2.9';
 function showHelp() {
     console.log(`
 ROX CLI — Encode/decode binary in PNG
@@ -187,6 +187,7 @@ async function encodeCommand(args) {
         Object.assign(options, {
             mode,
             name: parsed.outputName || 'archive',
+            skipOptimization: true,
         });
         if (parsed.verbose)
             options.verbose = true;

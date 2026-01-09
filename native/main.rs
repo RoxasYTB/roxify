@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{Read, Write};
 
 mod core;
+mod encoder;
+mod packer;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -14,6 +16,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    Encode {
+        input: PathBuf,
+        output: PathBuf,
+        #[arg(short, long, default_value_t = 3)]
+        level: i32,
+    },
     Scan {
         input: PathBuf,
         #[arg(short, long, value_name = "FILE")]
@@ -80,6 +88,11 @@ fn parse_markers(v: &[String]) -> Option<Vec<u8>> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Encode { input, output, level } => {
+            let data = packer::pack_path(&input)?;
+            let png = encoder::encode_to_png(&data, level)?;
+            write_all(&output, &png)?;
+        }
         Commands::Scan { input, channels, markers } => {
             let buf = read_all(&input)?;
             let marker_bytes = parse_markers(&markers);

@@ -14,3 +14,5 @@ yarn-error.log*
 test-native.cjs
 
 test/
+*.png
+*.tgz

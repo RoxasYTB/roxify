@@ -69,9 +69,10 @@ export async function encodeBinaryToPng(
   if (opts.onProgress)
     opts.onProgress({ phase: 'compress_start', total: totalLen });
 
+  const compressionLevel = opts.compressionLevel ?? 3;
   let payload = await parallelZstdCompress(
     payloadInput,
-    15,
+    compressionLevel,
     (loaded, total) => {
       if (opts.onProgress) {
         opts.onProgress({
@@ -287,7 +288,7 @@ export async function encodeBinaryToPng(
     const width = logicalWidth * scale;
     const height = logicalHeight * scale;
 
-    const LARGE_IMAGE_PIXELS = 50_000_000;
+    const LARGE_IMAGE_PIXELS = 10_000_000;
     const useManualPng =
       width * height > LARGE_IMAGE_PIXELS || !!process.env.ROX_FAST_PNG;
 
@@ -297,72 +298,37 @@ export async function encodeBinaryToPng(
     if (useManualPng) {
       stride = width * 3 + 1;
       raw = Buffer.alloc(height * stride);
+
+      const flatData = Buffer.concat(dataWithMarkers);
+      const markerEndBytes = Buffer.alloc(MARKER_END.length * 3);
+      for (let i = 0; i < MARKER_END.length; i++) {
+        markerEndBytes[i * 3] = MARKER_END[i].r;
+        markerEndBytes[i * 3 + 1] = MARKER_END[i].g;
+        markerEndBytes[i * 3 + 2] = MARKER_END[i].b;
+      }
+
+      const totalDataBytes = logicalWidth * logicalHeight * 3;
+      const fullData = Buffer.alloc(totalDataBytes);
+
+      const markerStartPos =
+        (logicalHeight - 1) * logicalWidth * 3 +
+        (logicalWidth - MARKER_END.length) * 3;
+      flatData.copy(fullData, 0, 0, Math.min(flatData.length, markerStartPos));
+      markerEndBytes.copy(fullData, markerStartPos);
+
+      for (let row = 0; row < height; row++) {
+        raw[row * stride] = 0;
+        fullData.copy(
+          raw,
+          row * stride + 1,
+          row * width * 3,
+          (row + 1) * width * 3,
+        );
+      }
     } else {
       raw = Buffer.alloc(width * height * bytesPerPixel);
-    }
-
-    let currentBufIdx = 0;
-    let currentBufOffset = 0;
-
-    const getNextByte = (): number => {
-      while (currentBufIdx < dataWithMarkers.length) {
-        const buf = dataWithMarkers[currentBufIdx];
-        if (currentBufOffset < buf.length) {
-          return buf[currentBufOffset++];
-        }
-        currentBufIdx++;
-        currentBufOffset = 0;
-      }
-      return 0;
-    };
-
-    for (let ly = 0; ly < logicalHeight; ly++) {
-      if (useManualPng) {
-        for (let sy = 0; sy < scale; sy++) {
-          const py = ly * scale + sy;
-          raw[py * stride] = 0;
-        }
-      }
-
-      for (let lx = 0; lx < logicalWidth; lx++) {
-        const linearIdx = ly * logicalWidth + lx;
-        let r = 0,
-          g = 0,
-          b = 0;
-
-        if (
-          ly === logicalHeight - 1 &&
-          lx >= logicalWidth - MARKER_END.length
-        ) {
-          const markerIdx = lx - (logicalWidth - MARKER_END.length);
-          r = MARKER_END[markerIdx].r;
-          g = MARKER_END[markerIdx].g;
-          b = MARKER_END[markerIdx].b;
-        } else if (linearIdx < dataPixels) {
-          r = getNextByte();
-          g = getNextByte();
-          b = getNextByte();
-        }
-
-        for (let sy = 0; sy < scale; sy++) {
-          for (let sx = 0; sx < scale; sx++) {
-            const px = lx * scale + sx;
-            const py = ly * scale + sy;
-
-            if (useManualPng) {
-              const dstIdx = py * stride + 1 + px * 3;
-              raw[dstIdx] = r;
-              raw[dstIdx + 1] = g;
-              raw[dstIdx + 2] = b;
-            } else {
-              const dstIdx = (py * width + px) * 3;
-              raw[dstIdx] = r;
-              raw[dstIdx + 1] = g;
-              raw[dstIdx + 2] = b;
-            }
-          }
-        }
-      }
+      const flatData = Buffer.concat(dataWithMarkers);
+      flatData.copy(raw, 0, 0, Math.min(flatData.length, raw.length));
     }
 
     payload.length = 0;
@@ -397,9 +363,9 @@ export async function encodeBinaryToPng(
         opts.onProgress({ phase: 'png_compress', loaded: 0, total: 100 });
 
       const idatData = zlib.deflateSync(scanlinesData, {
-        level: 3,
+        level: 0,
         memLevel: 8,
-        strategy: zlib.constants.Z_DEFAULT_STRATEGY,
+        strategy: zlib.constants.Z_FILTERED,
       });
 
       raw = Buffer.alloc(0);
@@ -466,6 +432,11 @@ export async function encodeBinaryToPng(
     if (opts.onProgress)
       opts.onProgress({ phase: 'png_compress', loaded: 100, total: 100 });
 
+    if (opts.skipOptimization) {
+      progressBar?.stop();
+      return bufScr;
+    }
+
     if (opts.onProgress)
       opts.onProgress({ phase: 'optimizing', loaded: 0, total: 100 });
 
@@ -483,4 +454,3 @@ export async function encodeBinaryToPng(
     }
   }
 }
-

@@ -14,7 +14,7 @@ import {
 } from './index.js';
 import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
 
-const VERSION = '1.2.6';
+const VERSION = '1.2.9';
 
 function showHelp() {
   console.log(`
@@ -205,6 +205,7 @@ async function encodeCommand(args: string[]) {
     Object.assign(options, {
       mode,
       name: parsed.outputName || 'archive',
+      skipOptimization: true,
     });
 
     if (parsed.verbose) options.verbose = true;
@@ -676,4 +677,3 @@ main().catch((err) => {
   console.error('Fatal error:', err);
   process.exit(1);
 });
-
