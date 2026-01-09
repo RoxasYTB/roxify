@@ -1,0 +1,832 @@
+import cliProgress from 'cli-progress';
+import { readFileSync } from 'fs';
+import extract from 'png-chunks-extract';
+import sharp from 'sharp';
+
+import { unpackBuffer } from '../pack.js';
+import {
+  CHUNK_TYPE,
+  MAGIC,
+  MARKER_END,
+  MARKER_START,
+  PIXEL_MAGIC,
+  PNG_HEADER,
+} from './constants.js';
+import {
+  DataFormatError,
+  IncorrectPassphraseError,
+  PassphraseRequiredError,
+} from './errors.js';
+import { colorsToBytes, deltaDecode, tryDecryptIfNeeded } from './helpers.js';
+import { cropAndReconstitute } from './reconstitution.js';
+import { DecodeOptions, DecodeResult } from './types.js';
+import { parallelZstdDecompress, tryZstdDecompress } from './zstd.js';
+
+async function tryDecompress(
+  payload: Buffer,
+  onProgress?: (info: {
+    phase: string;
+    loaded?: number;
+    total?: number;
+  }) => void,
+): Promise<Buffer> {
+  try {
+    return await parallelZstdDecompress(payload, onProgress);
+  } catch (e) {
+    try {
+      const mod = await import('lzma-purejs');
+      const decompressFn =
+        mod && (mod.decompress || (mod.LZMA && mod.LZMA.decompress));
+      if (!decompressFn) throw new Error('No lzma decompress');
+      const dec = await new Promise<Uint8Array>((resolve, reject) => {
+        try {
+          decompressFn(Buffer.from(payload), (out: any) => resolve(out));
+        } catch (err) {
+          reject(err);
+        }
+      });
+      const dBuf = Buffer.isBuffer(dec) ? dec : Buffer.from(dec);
+      return dBuf;
+    } catch (e3) {
+      throw e;
+    }
+  }
+}
+
+export async function decodePngToBinary(
+  input: Buffer | string,
+  opts: DecodeOptions = {},
+): Promise<DecodeResult> {
+  let pngBuf: Buffer;
+  if (Buffer.isBuffer(input)) {
+    pngBuf = input;
+  } else {
+    try {
+      const metadata = await sharp(input).metadata();
+      const rawBytesEstimate =
+        (metadata.width || 0) * (metadata.height || 0) * 4;
+      const MAX_RAW_BYTES = 200 * 1024 * 1024;
+
+      if (rawBytesEstimate > MAX_RAW_BYTES) {
+        pngBuf = readFileSync(input);
+      } else {
+        pngBuf = readFileSync(input);
+      }
+    } catch (e) {
+      try {
+        pngBuf = readFileSync(input);
+      } catch (e2) {
+        throw e;
+      }
+    }
+  }
+
+  let progressBar: cliProgress.SingleBar | null = null;
+  if (opts.showProgress) {
+    progressBar = new cliProgress.SingleBar(
+      {
+        format: ' {bar} {percentage}% | {step} | {elapsed}s',
+      },
+      cliProgress.Presets.shades_classic,
+    );
+    progressBar.start(100, 0, { step: 'Starting', elapsed: '0' });
+    const startTime = Date.now();
+    if (!opts.onProgress) {
+      opts.onProgress = (info) => {
+        let pct = 0;
+        if (info.phase === 'start') {
+          pct = 10;
+        } else if (info.phase === 'decompress') {
+          pct = 50;
+        } else if (info.phase === 'done') {
+          pct = 100;
+        }
+        progressBar!.update(Math.floor(pct), {
+          step: info.phase.replace('_', ' '),
+          elapsed: String(Math.floor((Date.now() - startTime) / 1000)),
+        });
+      };
+    }
+  }
+
+  if (opts.onProgress) opts.onProgress({ phase: 'start' });
+
+  let processedBuf = pngBuf;
+
+  try {
+    const info = await sharp(pngBuf).metadata();
+    if (info.width && info.height) {
+      const MAX_RAW_BYTES = 1200 * 1024 * 1024;
+      const rawBytesEstimate = info.width * info.height * 4;
+      if (rawBytesEstimate > MAX_RAW_BYTES) {
+        throw new DataFormatError(
+          `Image too large to decode in-process (${Math.round(
+            rawBytesEstimate / 1024 / 1024,
+          )} MB). Increase Node heap or use a smaller image/compact mode.`,
+        );
+      }
+
+      if (false) {
+        const doubledBuffer = await sharp(pngBuf)
+          .resize({
+            width: info.width * 2,
+            height: info.height * 2,
+            kernel: 'nearest',
+          })
+          .png()
+          .toBuffer();
+
+        processedBuf = await cropAndReconstitute(doubledBuffer, opts.debugDir);
+      } else {
+        processedBuf = pngBuf;
+      }
+    }
+  } catch (e) {
+    if (e instanceof DataFormatError) throw e;
+  }
+
+  if (opts.onProgress) opts.onProgress({ phase: 'processed' });
+
+  if (processedBuf.subarray(0, MAGIC.length).equals(MAGIC)) {
+    const d = processedBuf.subarray(MAGIC.length);
+    const nameLen = d[0];
+    let idx = 1;
+    let name: string | undefined;
+    if (nameLen > 0) {
+      name = d.subarray(idx, idx + nameLen).toString('utf8');
+      idx += nameLen;
+    }
+    const rawPayload = d.subarray(idx);
+    let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
+
+    if (opts.onProgress) opts.onProgress({ phase: 'decompress_start' });
+    try {
+      payload = await tryDecompress(payload, (info) => {
+        if (opts.onProgress) opts.onProgress(info);
+      });
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (opts.passphrase)
+        throw new IncorrectPassphraseError(
+          'Incorrect passphrase (compact mode, zstd failed: ' + errMsg + ')',
+        );
+      throw new DataFormatError(
+        'Compact mode zstd decompression failed: ' + errMsg,
+      );
+    }
+
+    if (!payload.subarray(0, MAGIC.length).equals(MAGIC)) {
+      throw new Error(
+        'Invalid ROX format (ROX direct: missing ROX1 magic after decompression)',
+      );
+    }
+
+    payload = payload.subarray(MAGIC.length);
+    if (opts.onProgress) opts.onProgress({ phase: 'done' });
+    progressBar?.stop();
+    return { buf: payload, meta: { name } };
+  }
+
+  let chunks: Array<{ name: string; data: Buffer }> = [];
+  try {
+    const chunksRaw = extract(processedBuf) as Array<{
+      name: string;
+      data: Buffer | Uint8Array;
+    }>;
+    chunks = chunksRaw.map((c) => ({
+      name: c.name,
+      data: Buffer.isBuffer(c.data)
+        ? (c.data as Buffer)
+        : Buffer.from(c.data as Uint8Array),
+    }));
+  } catch (e) {
+    try {
+      const withHeader = Buffer.concat([PNG_HEADER, pngBuf]);
+      const chunksRaw = extract(withHeader) as Array<{
+        name: string;
+        data: Buffer | Uint8Array;
+      }>;
+      chunks = chunksRaw.map((c) => ({
+        name: c.name,
+        data: Buffer.isBuffer(c.data)
+          ? (c.data as Buffer)
+          : Buffer.from(c.data as Uint8Array),
+      }));
+    } catch (e2) {
+      chunks = [];
+    }
+  }
+
+  const target = chunks.find((c) => c.name === CHUNK_TYPE);
+  if (target) {
+    const d = target.data;
+    const nameLen = d[0];
+    let idx = 1;
+    let name: string | undefined;
+    if (nameLen > 0) {
+      name = d.slice(idx, idx + nameLen).toString('utf8');
+      idx += nameLen;
+    }
+    const rawPayload = d.slice(idx);
+    if (rawPayload.length === 0)
+      throw new DataFormatError('Compact mode payload empty');
+    let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
+
+    if (opts.onProgress) opts.onProgress({ phase: 'decompress_start' });
+    try {
+      payload = await tryZstdDecompress(payload, (info) => {
+        if (opts.onProgress) opts.onProgress(info);
+      });
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (opts.passphrase)
+        throw new IncorrectPassphraseError(
+          'Incorrect passphrase (compact mode, zstd failed: ' + errMsg + ')',
+        );
+      throw new DataFormatError(
+        'Compact mode zstd decompression failed: ' + errMsg,
+      );
+    }
+    if (!payload.slice(0, MAGIC.length).equals(MAGIC)) {
+      throw new DataFormatError(
+        'Invalid ROX format (compact mode: missing ROX1 magic after decompression)',
+      );
+    }
+
+    payload = payload.slice(MAGIC.length);
+    if (opts.files) {
+      const unpacked = unpackBuffer(payload, opts.files);
+      if (unpacked) {
+        if (opts.onProgress) opts.onProgress({ phase: 'done' });
+        progressBar?.stop();
+        return { files: unpacked.files, meta: { name } };
+      }
+    }
+    if (opts.onProgress) opts.onProgress({ phase: 'done' });
+    progressBar?.stop();
+    return { buf: payload, meta: { name } };
+  }
+
+  try {
+    const metadata = await sharp(processedBuf).metadata();
+    const currentWidth = metadata.width!;
+    const currentHeight = metadata.height!;
+
+    const rawRGB = Buffer.allocUnsafe(currentWidth * currentHeight * 3);
+    let writeOffset = 0;
+
+    const rowsPerChunk = 2000;
+
+    for (let startRow = 0; startRow < currentHeight; startRow += rowsPerChunk) {
+      const endRow = Math.min(startRow + rowsPerChunk, currentHeight);
+      const chunkHeight = endRow - startRow;
+
+      const { data: chunkData, info: chunkInfo } = await sharp(processedBuf)
+        .extract({
+          left: 0,
+          top: startRow,
+          width: currentWidth,
+          height: chunkHeight,
+        })
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      const channels = chunkInfo.channels;
+      const pixelsInChunk = currentWidth * chunkHeight;
+
+      if (channels === 3) {
+        chunkData.copy(rawRGB, writeOffset);
+        writeOffset += pixelsInChunk * 3;
+      } else if (channels === 4) {
+        for (let i = 0; i < pixelsInChunk; i++) {
+          rawRGB[writeOffset++] = chunkData[i * 4];
+          rawRGB[writeOffset++] = chunkData[i * 4 + 1];
+          rawRGB[writeOffset++] = chunkData[i * 4 + 2];
+        }
+      }
+
+      if (opts.onProgress) {
+        opts.onProgress({
+          phase: 'extract_pixels',
+          loaded: endRow,
+          total: currentHeight,
+        });
+      }
+    }
+
+    const firstPixels: Array<{ r: number; g: number; b: number }> = [];
+    for (let i = 0; i < Math.min(MARKER_START.length, rawRGB.length / 3); i++) {
+      firstPixels.push({
+        r: rawRGB[i * 3],
+        g: rawRGB[i * 3 + 1],
+        b: rawRGB[i * 3 + 2],
+      });
+    }
+
+    let hasMarkerStart = false;
+    if (firstPixels.length === MARKER_START.length) {
+      hasMarkerStart = true;
+      for (let i = 0; i < MARKER_START.length; i++) {
+        if (
+          firstPixels[i].r !== MARKER_START[i].r ||
+          firstPixels[i].g !== MARKER_START[i].g ||
+          firstPixels[i].b !== MARKER_START[i].b
+        ) {
+          hasMarkerStart = false;
+          break;
+        }
+      }
+    }
+
+    let hasPixelMagic = false;
+    if (rawRGB.length >= 8 + PIXEL_MAGIC.length) {
+      const widthFromDim = rawRGB.readUInt32BE(0);
+      const heightFromDim = rawRGB.readUInt32BE(4);
+      if (
+        widthFromDim === currentWidth &&
+        heightFromDim === currentHeight &&
+        rawRGB.slice(8, 8 + PIXEL_MAGIC.length).equals(PIXEL_MAGIC)
+      ) {
+        hasPixelMagic = true;
+      }
+    }
+
+    let logicalWidth: number;
+    let logicalHeight: number;
+    let logicalData: Buffer;
+
+    if (hasMarkerStart || hasPixelMagic) {
+      logicalWidth = currentWidth;
+      logicalHeight = currentHeight;
+      logicalData = rawRGB;
+    } else {
+      const reconstructed = await cropAndReconstitute(
+        processedBuf,
+        opts.debugDir,
+      );
+
+      const { data: rdata, info: rinfo } = await sharp(reconstructed)
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      logicalWidth = rinfo.width;
+      logicalHeight = rinfo.height;
+      logicalData = Buffer.alloc(rinfo.width * rinfo.height * 3);
+      if (rinfo.channels === 3) {
+        rdata.copy(logicalData);
+      } else if (rinfo.channels === 4) {
+        for (let i = 0; i < logicalWidth * logicalHeight; i++) {
+          logicalData[i * 3] = rdata[i * 4];
+          logicalData[i * 3 + 1] = rdata[i * 4 + 1];
+          logicalData[i * 3 + 2] = rdata[i * 4 + 2];
+        }
+      }
+    }
+    if (process.env.ROX_DEBUG) {
+      console.log(
+        'DEBUG: Logical grid reconstructed:',
+        logicalWidth,
+        'x',
+        logicalHeight,
+        '=',
+        logicalWidth * logicalHeight,
+        'pixels',
+      );
+    }
+
+    if (hasPixelMagic) {
+      if (logicalData.length < 8 + PIXEL_MAGIC.length) {
+        throw new DataFormatError('Pixel mode data too short');
+      }
+
+      let idx = 8 + PIXEL_MAGIC.length;
+      const version = logicalData[idx++];
+      const nameLen = logicalData[idx++];
+      let name: string | undefined;
+      if (nameLen > 0 && nameLen < 256) {
+        name = logicalData.slice(idx, idx + nameLen).toString('utf8');
+        idx += nameLen;
+      }
+
+      const payloadLen = logicalData.readUInt32BE(idx);
+      idx += 4;
+
+      const available = logicalData.length - idx;
+      if (available < payloadLen) {
+        throw new DataFormatError(
+          `Pixel payload truncated: expected ${payloadLen} bytes but only ${available} available`,
+        );
+      }
+
+      const rawPayload = logicalData.slice(idx, idx + payloadLen);
+      let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
+
+      try {
+        payload = await tryZstdDecompress(payload, (info) => {
+          if (opts.onProgress) opts.onProgress(info);
+        });
+        if (version === 3) {
+          payload = deltaDecode(payload);
+        }
+      } catch (e) {}
+
+      if (!payload.slice(0, MAGIC.length).equals(MAGIC)) {
+        throw new DataFormatError(
+          'Invalid ROX format (pixel mode: missing ROX1 magic after decompression)',
+        );
+      }
+
+      payload = payload.slice(MAGIC.length);
+      return { buf: payload, meta: { name } };
+    }
+
+    const totalPixels = (logicalData.length / 3) | 0;
+
+    let startIdx = -1;
+    for (let i = 0; i <= totalPixels - MARKER_START.length; i++) {
+      let match = true;
+      for (let mi = 0; mi < MARKER_START.length && match; mi++) {
+        const offset = (i + mi) * 3;
+        if (
+          logicalData[offset] !== MARKER_START[mi].r ||
+          logicalData[offset + 1] !== MARKER_START[mi].g ||
+          logicalData[offset + 2] !== MARKER_START[mi].b
+        ) {
+          match = false;
+        }
+      }
+      if (match) {
+        startIdx = i;
+        break;
+      }
+    }
+
+    if (startIdx === -1) {
+      if (process.env.ROX_DEBUG) {
+        console.log(
+          'DEBUG: MARKER_START not found in grid of',
+          totalPixels,
+          'pixels',
+        );
+        console.log('DEBUG: Trying 2D scan for START marker...');
+      }
+
+      let found2D = false;
+      for (let y = 0; y < logicalHeight && !found2D; y++) {
+        for (
+          let x = 0;
+          x <= logicalWidth - MARKER_START.length && !found2D;
+          x++
+        ) {
+          let match = true;
+          for (let mi = 0; mi < MARKER_START.length && match; mi++) {
+            const idx = (y * logicalWidth + (x + mi)) * 3;
+            if (
+              idx + 2 >= logicalData.length ||
+              logicalData[idx] !== MARKER_START[mi].r ||
+              logicalData[idx + 1] !== MARKER_START[mi].g ||
+              logicalData[idx + 2] !== MARKER_START[mi].b
+            ) {
+              match = false;
+            }
+          }
+          if (match) {
+            if (process.env.ROX_DEBUG) {
+              console.log(`DEBUG: Found START marker in 2D at (${x}, ${y})`);
+            }
+
+            let endX = x + MARKER_START.length - 1;
+            let endY = y;
+            for (let scanY = y; scanY < logicalHeight; scanY++) {
+              let rowHasData = false;
+              for (let scanX = x; scanX < logicalWidth; scanX++) {
+                const scanIdx = (scanY * logicalWidth + scanX) * 3;
+                if (scanIdx + 2 < logicalData.length) {
+                  const r = logicalData[scanIdx];
+                  const g = logicalData[scanIdx + 1];
+                  const b = logicalData[scanIdx + 2];
+
+                  const isBackground =
+                    (r === 100 && g === 120 && b === 110) ||
+                    (r === 0 && g === 0 && b === 0) ||
+                    (r >= 50 &&
+                      r <= 220 &&
+                      g >= 50 &&
+                      g <= 220 &&
+                      b >= 50 &&
+                      b <= 220 &&
+                      Math.abs(r - g) < 70 &&
+                      Math.abs(r - b) < 70 &&
+                      Math.abs(g - b) < 70);
+
+                  if (!isBackground) {
+                    rowHasData = true;
+                    if (scanX > endX) {
+                      endX = scanX;
+                    }
+                  }
+                }
+              }
+
+              if (rowHasData) {
+                endY = scanY;
+              } else if (scanY > y) {
+                break;
+              }
+            }
+            const rectWidth = endX - x + 1;
+            const rectHeight = endY - y + 1;
+
+            if (process.env.ROX_DEBUG) {
+              console.log(
+                `DEBUG: Extracted rectangle: ${rectWidth}x${rectHeight} from (${x},${y})`,
+              );
+            }
+
+            const newDataLen = rectWidth * rectHeight * 3;
+            const newData = Buffer.allocUnsafe(newDataLen);
+            let writeIdx = 0;
+            for (let ry = y; ry <= endY; ry++) {
+              for (let rx = x; rx <= endX; rx++) {
+                const idx = (ry * logicalWidth + rx) * 3;
+                newData[writeIdx++] = logicalData[idx];
+                newData[writeIdx++] = logicalData[idx + 1];
+                newData[writeIdx++] = logicalData[idx + 2];
+              }
+            }
+
+            logicalData = newData;
+            logicalWidth = rectWidth;
+            logicalHeight = rectHeight;
+
+            startIdx = 0;
+            found2D = true;
+          }
+        }
+      }
+
+      if (!found2D) {
+        if (process.env.ROX_DEBUG) {
+          const first20 = [];
+          for (let i = 0; i < Math.min(20, totalPixels); i++) {
+            const offset = i * 3;
+            first20.push(
+              `(${logicalData[offset]},${logicalData[offset + 1]},${
+                logicalData[offset + 2]
+              })`,
+            );
+          }
+          console.log('DEBUG: First 20 pixels:', first20.join(' '));
+        }
+        throw new Error('Marker START not found - image format not supported');
+      }
+    }
+
+    if (process.env.ROX_DEBUG && startIdx === 0) {
+      console.log(
+        `DEBUG: MARKER_START at index ${startIdx}, grid size: ${totalPixels}`,
+      );
+    }
+
+    const dataStartPixel = startIdx + MARKER_START.length + 1;
+
+    const curTotalPixels = (logicalData.length / 3) | 0;
+
+    if (curTotalPixels < dataStartPixel + MARKER_END.length) {
+      if (process.env.ROX_DEBUG) {
+        console.log('DEBUG: grid too small:', curTotalPixels, 'pixels');
+      }
+      throw new Error(
+        'Marker START or END not found - image format not supported',
+      );
+    }
+
+    for (let i = 0; i < MARKER_START.length; i++) {
+      const offset = (startIdx + i) * 3;
+      if (
+        logicalData[offset] !== MARKER_START[i].r ||
+        logicalData[offset + 1] !== MARKER_START[i].g ||
+        logicalData[offset + 2] !== MARKER_START[i].b
+      ) {
+        throw new Error('Marker START not found - image format not supported');
+      }
+    }
+
+    let compression: 'zstd' = 'zstd';
+    if (curTotalPixels > startIdx + MARKER_START.length) {
+      const compOffset = (startIdx + MARKER_START.length) * 3;
+      const compPixel = {
+        r: logicalData[compOffset],
+        g: logicalData[compOffset + 1],
+        b: logicalData[compOffset + 2],
+      };
+      if (compPixel.r === 0 && compPixel.g === 255 && compPixel.b === 0) {
+        compression = 'zstd';
+      } else {
+        compression = 'zstd';
+      }
+    }
+
+    if (process.env.ROX_DEBUG) {
+      console.log(`DEBUG: Detected compression: ${compression}`);
+    }
+
+    let endStartPixel = -1;
+
+    const lastLineStart = (logicalHeight - 1) * logicalWidth;
+    const endMarkerStartCol = logicalWidth - MARKER_END.length;
+
+    if (lastLineStart + endMarkerStartCol < curTotalPixels) {
+      let matchEnd = true;
+      for (let mi = 0; mi < MARKER_END.length && matchEnd; mi++) {
+        const pixelIdx = lastLineStart + endMarkerStartCol + mi;
+        if (pixelIdx >= curTotalPixels) {
+          matchEnd = false;
+          break;
+        }
+        const offset = pixelIdx * 3;
+        if (
+          logicalData[offset] !== MARKER_END[mi].r ||
+          logicalData[offset + 1] !== MARKER_END[mi].g ||
+          logicalData[offset + 2] !== MARKER_END[mi].b
+        ) {
+          matchEnd = false;
+        }
+      }
+
+      if (matchEnd) {
+        endStartPixel = lastLineStart + endMarkerStartCol - startIdx;
+        if (process.env.ROX_DEBUG) {
+          console.log(
+            `DEBUG: Found END marker at last line, col ${endMarkerStartCol}`,
+          );
+        }
+      }
+    }
+
+    if (endStartPixel === -1) {
+      if (process.env.ROX_DEBUG) {
+        console.log('DEBUG: END marker not found at expected position');
+        const lastLinePixels = [];
+        for (
+          let i = Math.max(0, lastLineStart);
+          i < curTotalPixels && i < lastLineStart + 20;
+          i++
+        ) {
+          const offset = i * 3;
+          lastLinePixels.push(
+            `(${logicalData[offset]},${logicalData[offset + 1]},${
+              logicalData[offset + 2]
+            })`,
+          );
+        }
+        console.log('DEBUG: Last line pixels:', lastLinePixels.join(' '));
+      }
+      endStartPixel = curTotalPixels - startIdx;
+    }
+
+    const dataPixelCount = endStartPixel - (MARKER_START.length + 1);
+    const pixelBytes = Buffer.allocUnsafe(dataPixelCount * 3);
+
+    for (let i = 0; i < dataPixelCount; i++) {
+      const srcOffset = (dataStartPixel + i) * 3;
+      const dstOffset = i * 3;
+      pixelBytes[dstOffset] = logicalData[srcOffset];
+      pixelBytes[dstOffset + 1] = logicalData[srcOffset + 1];
+      pixelBytes[dstOffset + 2] = logicalData[srcOffset + 2];
+    }
+
+    if (process.env.ROX_DEBUG) {
+      console.log('DEBUG: extracted len', pixelBytes.length);
+      console.log(
+        'DEBUG: extracted head',
+        pixelBytes.slice(0, 32).toString('hex'),
+      );
+      const found = pixelBytes.indexOf(PIXEL_MAGIC);
+      console.log('DEBUG: PIXEL_MAGIC index:', found);
+      if (found !== -1) {
+        console.log(
+          'DEBUG: PIXEL_MAGIC head:',
+          pixelBytes.slice(found, found + 64).toString('hex'),
+        );
+        const markerEndBytes = colorsToBytes(MARKER_END);
+        console.log(
+          'DEBUG: MARKER_END index:',
+          pixelBytes.indexOf(markerEndBytes),
+        );
+      }
+    }
+
+    try {
+      let idx = 0;
+
+      if (pixelBytes.length >= PIXEL_MAGIC.length) {
+        const at0 = pixelBytes.slice(0, PIXEL_MAGIC.length).equals(PIXEL_MAGIC);
+        if (at0) {
+          idx = PIXEL_MAGIC.length;
+        } else {
+          const found = pixelBytes.indexOf(PIXEL_MAGIC);
+          if (found !== -1) {
+            idx = found + PIXEL_MAGIC.length;
+          }
+        }
+      }
+
+      if (idx > 0) {
+        const version = pixelBytes[idx++];
+        const nameLen = pixelBytes[idx++];
+        let name: string | undefined;
+        if (nameLen > 0 && nameLen < 256) {
+          name = pixelBytes.slice(idx, idx + nameLen).toString('utf8');
+          idx += nameLen;
+        }
+
+        const payloadLen = pixelBytes.readUInt32BE(idx);
+        idx += 4;
+
+        if (idx + 4 <= pixelBytes.length) {
+          const marker = pixelBytes.slice(idx, idx + 4).toString('utf8');
+          if (marker === 'rXFL') {
+            idx += 4;
+            if (idx + 4 <= pixelBytes.length) {
+              const jsonLen = pixelBytes.readUInt32BE(idx);
+              idx += 4;
+              idx += jsonLen;
+            }
+          }
+        }
+
+        const available = pixelBytes.length - idx;
+        if (available < payloadLen) {
+          throw new DataFormatError(
+            `Pixel payload truncated: expected ${payloadLen} bytes but only ${available} available`,
+          );
+        }
+
+        const rawPayload = pixelBytes.slice(idx, idx + payloadLen);
+        let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
+
+        try {
+          payload = await tryDecompress(payload, (info) => {
+            if (opts.onProgress) opts.onProgress(info);
+          });
+          if (version === 3) {
+            payload = deltaDecode(payload);
+          }
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          if (opts.passphrase)
+            throw new IncorrectPassphraseError(
+              `Incorrect passphrase (screenshot mode, zstd failed: ` +
+                errMsg +
+                ')',
+            );
+          throw new DataFormatError(
+            `Screenshot mode zstd decompression failed: ` + errMsg,
+          );
+        }
+
+        if (!payload.slice(0, MAGIC.length).equals(MAGIC)) {
+          throw new DataFormatError(
+            'Invalid ROX format (pixel mode: missing ROX1 magic after decompression)',
+          );
+        }
+
+        payload = payload.slice(MAGIC.length);
+        if (opts.files) {
+          const unpacked = unpackBuffer(payload, opts.files);
+          if (unpacked) {
+            if (opts.onProgress) opts.onProgress({ phase: 'done' });
+            progressBar?.stop();
+            return { files: unpacked.files, meta: { name } };
+          }
+        }
+        if (opts.onProgress) opts.onProgress({ phase: 'done' });
+        progressBar?.stop();
+        return { buf: payload, meta: { name } };
+      }
+    } catch (e) {
+      if (
+        e instanceof PassphraseRequiredError ||
+        e instanceof IncorrectPassphraseError ||
+        e instanceof DataFormatError
+      ) {
+        throw e;
+      }
+      const errMsg = e instanceof Error ? e.message : String(e);
+      throw new Error('Failed to extract data from screenshot: ' + errMsg);
+    }
+  } catch (e) {
+    if (
+      e instanceof PassphraseRequiredError ||
+      e instanceof IncorrectPassphraseError ||
+      e instanceof DataFormatError
+    ) {
+      throw e;
+    }
+    const errMsg = e instanceof Error ? e.message : String(e);
+    throw new Error('Failed to decode PNG: ' + errMsg);
+  }
+  throw new DataFormatError('No valid data found in image');
+}
+

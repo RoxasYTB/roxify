@@ -1,0 +1,38 @@
+{
+  "name": "roxify",
+  "version": "1.0.4",
+  "description": "Encode binary data into PNG images and decode them back. CLI and programmatic API.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "rox": "dist/cli.js",
+    "roxify": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node test/roundtrip.js && node test/pixel-fallback-preview.js && node test/size-fallback-choice.js && node test/screenshot-roundtrip.js && node test/screenshot-fallback.js",
+    "cli": "node dist/cli.js"
+  },
+  "keywords": [
+    "steganography",
+    "png",
+    "brotli",
+    "rox"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "png-chunks-encode": "^1.0.0",
+    "png-chunks-extract": "^1.0.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.5"
+  }
+}
