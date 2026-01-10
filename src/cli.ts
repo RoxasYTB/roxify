@@ -2,6 +2,7 @@
 
 import cliProgress from 'cli-progress';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import {
   DataFormatError,
@@ -15,6 +16,40 @@ import {
 import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
 
 const VERSION = '1.2.9';
+
+async function readLargeFile(filePath: string): Promise<Buffer> {
+  const st = statSync(filePath);
+
+  if (st.size <= 2 * 1024 * 1024 * 1024) {
+    return readFileSync(filePath);
+  }
+
+  const chunkSize = 64 * 1024 * 1024;
+  const chunks: Buffer[] = [];
+  let position = 0;
+
+  const fd = await open(filePath, 'r');
+
+  try {
+    while (position < st.size) {
+      const currentChunkSize = Math.min(chunkSize, st.size - position);
+      const buffer = Buffer.alloc(currentChunkSize);
+
+      const { bytesRead } = await fd.read(
+        buffer,
+        0,
+        currentChunkSize,
+        position,
+      );
+      chunks.push(buffer.slice(0, bytesRead));
+      position += bytesRead;
+    }
+  } finally {
+    await fd.close();
+  }
+
+  return Buffer.concat(chunks);
+}
 
 function showHelp() {
   console.log(`
@@ -270,7 +305,7 @@ async function encodeCommand(args: string[]) {
           size: e.size,
         }));
       } else {
-        inputData = readFileSync(resolvedInput);
+        inputData = await readLargeFile(resolvedInput);
         inputSizeVal = inputData.length;
         displayName = basename(resolvedInput);
         options.includeFileList = true;
@@ -444,7 +479,7 @@ async function decodeCommand(args: string[]) {
       }
     };
 
-    const inputBuffer = readFileSync(resolvedInput);
+    const inputBuffer = await readLargeFile(resolvedInput);
     const result = await decodePngToBinary(inputBuffer, options);
     const decodeTime = Date.now() - startDecode;
     clearInterval(heartbeat);

@@ -107,7 +107,9 @@ pub fn zstd_compress_bytes(buf: &[u8], level: i32) -> std::result::Result<Vec<u8
     use std::io::Write;
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), level)
         .map_err(|e| format!("zstd encoder init error: {}", e))?;
-    // enable multi-threading
+    
+    encoder.window_log(32).map_err(|e| format!("zstd window_log error: {}", e))?;
+    
     let threads = num_cpus::get() as u32;
     if threads > 1 {
         let _ = encoder.multithread(threads);

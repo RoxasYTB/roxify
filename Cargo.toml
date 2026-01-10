@@ -28,3 +28,16 @@ png = "0.18.0"
 flate2 = "1.1.5"
 miniz_oxide = "0.8.9"
 walkdir = "2.5.0"
+
+wgpu = "0.19"
+memmap2 = "0.9"
+bytemuck = { version = "1.14", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "rt"] }
+parking_lot = "0.12"
+pollster = "0.3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.51", features = ["Win32_Graphics_Direct3D12"] }
+
+[features]
+default = []
