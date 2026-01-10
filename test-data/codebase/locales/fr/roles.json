@@ -1,0 +1,8 @@
+{
+  "created": { "title": "Rôle créé", "description": "Un nouveau rôle a été créé sur le serveur." },
+  "updated": { "title": "Rôle mis à jour", "description": "Un rôle a été mis à jour sur le serveur." },
+  "deleted": { "title": "Rôle supprimé", "description": "Un rôle a été supprimé du serveur." },
+  "properties": { "name": "Nom du rôle", "color": "Couleur du rôle", "permissions": "Permissions du rôle", "hoist": "Affiché séparément", "mentionable": "Mentionnable" },
+  "logs": { "footer": "Logs de rôle" },
+  "menu": { "title": "📢 Configuration des rôles", "description": "Veuillez sélectionner les rôles sélectionnables.", "fields": { "selectable": "Rôles sélectionnables", "quantity": "Quantité de rôles sélectionnables" }, "values": { "none": "Aucun rôle sélectionnable", "multiple": "Plusieurs sélectionnables", "single": "Un seul sélectionnable" }, "buttons": { "validate": "Valider", "all": "Tout sélectionnable", "single": "Un seul sélectionnable" }, "other": "Autre", "otherdesc": "Voir plus de rôles", "selection": { "placeholder": "Sélectionnez un rôle", "addRole": "Ajouter le rôle", "oneRole": "le rôle", "multipleRoles": "les rôles", "title": "Sélectionnez {type} qui vous concern{ending} :", "removeRole": "Vous avez enlevé le rôle", "addedRole": "Vous avez reçu le rôle" } }
+}

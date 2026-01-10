@@ -1,0 +1,9 @@
+{
+  "colors": { "primary": "#FFD700", "success": "#ffd700", "error": "#ffd700", "warning": "#FFA500", "info": "#0099FF" },
+  "emojis": { "success": "<:true:1304519561814741063>", "error": "<:false:1304519593083011093>", "warning": "<a:warning:1269193959503040553>", "loading": "⏳" },
+  "globalMessages": {
+    "fr": { "noPermission": "Vous n'avez pas les permissions nécessaires pour effectuer cette action.", "unknownError": "Une erreur inconnue s'est produite. Veuillez réessayer.", "processing": "Traitement en cours...", "success": "Opération réussie !", "cancelled": "Opération annulée.", "timeout": "Délai d'attente dépassé.", "invalidChannel": "Canal invalide ou introuvable.", "invalidUser": "Utilisateur invalide ou introuvable.", "serverNotFound": "Serveur introuvable. Vérifiez l'ID du serveur.", "noAdminPermission": "Je n'ai pas les permissions administrateur pour effectuer cette action.", "tooManyChannels": "Vous avez déjà un serveur, veuillez supprimer les salons textuels existants avant de recommencer." },
+    "en": { "noPermission": "You do not have the necessary permissions to perform this action.", "unknownError": "An unknown error occurred. Please try again.", "processing": "Processing...", "success": "Operation successful!", "cancelled": "Operation cancelled.", "timeout": "Timeout exceeded.", "invalidChannel": "Invalid or not found channel.", "invalidUser": "Invalid or not found user.", "serverNotFound": "Server not found. Check the server ID.", "noAdminPermission": "I don't have administrator permissions to perform this action.", "tooManyChannels": "You already have a server, please delete existing text channels before starting again." }
+  },
+  "embedDefaults": { "footer": { "text": "Glados Bot", "iconURL": null }, "timestamp": true }
+}

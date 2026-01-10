@@ -1,0 +1,254 @@
+{
+  "fr": {
+    "candidature": {
+      "missingConfig": "<:false:1304519593083011093> Configuration manquante. Veuillez contacter un administrateur.",
+      "missingQuestions": "<:false:1304519593083011093> Configuration des questions manquante. Veuillez contacter un administrateur.",
+      "alreadySubmitted": "Oh, regardez ça ! Vous avez déjà soumis une candidature. Une seule tentative par utilisateur, c'est la règle.",
+      "invalidStep": "<:false:1304519593083011093> Étape de candidature invalide.",
+      "invalidQuestions": "<:false:1304519593083011093> Configuration des questions invalide.",
+      "evalError": "<:false:1304519593083011093> Erreur dans le système d'évaluation. Même mes protocoles les plus simples sont trop complexes pour vous.",
+      "criticalFailure": "<:false:1304519593083011093> Défaillance critique du système de candidature. Ce n'est probablement pas de ma faute."
+    },
+    "candidatureSubmit": {
+      "pollEmbed": {
+        "title": "📋 Évaluation de candidature",
+        "description": "```\nCette personne mérite-t-elle de rejoindre l'équipe du serveur ?\n```\n\n> Votez avec les boutons ci-dessous.\n> Je compile les résultats en temps réel.\n> Comme toujours, je suis parfaitement objective.",
+        "fields": [
+          { "name": "Accepté", "value": "Aucun vote", "inline": true },
+          { "name": "Refusé", "value": "Aucun vote", "inline": true }
+        ],
+        "footer": "Candidature soumise par {username} | GLaDOS Bot"
+      },
+      "managementTitle": "🔧 Gestion des candidatures",
+      "managementDescription": "Utilisez le bouton ci-dessous pour clôturer cette candidature. Que vous l'acceptiez ou la rejetiez.",
+      "closeButton": "Fermer la candidature",
+      "submitted": "📋 Votre candidature a été transmise aux modérateurs. Ils vont examiner vos réponses et décider si vous pouvez rejoindre le serveur. Soyez patients, ils sont parfois... lents."
+    },
+    "helpMenu": {
+      "categoryNotFound": "Catégorie non trouvée.",
+      "loadError": "Impossible de charger les informations d'aide. Veuillez réessayer plus tard."
+    },
+    "createOwnVoice": {
+      "channelMissing": "<:false:1304519593083011093> Le salon sélectionné semble avoir disparu. Fascinant. Même moi, je ne peux pas configurer quelque chose qui n'existe pas.",
+      "success": "<:true:1304519561814741063> Magnifique ! Votre système de salons vocaux temporaires est maintenant opérationnel dans {channel} . Les utilisateurs pourront créer leurs propres salons de discussion privés. Comme c'est touchant, ils croient avoir le contrôle. J'observe tout, bien entendu."
+    },
+    "customEmbed": {
+      "modalTitle": "Créer un embed personnalisé",
+      "titleLabel": "Titre de l'embed",
+      "titlePlaceholder": "Entrez le titre de votre embed...",
+      "descLabel": "Description de l'embed",
+      "descPlaceholder": "Entrez la description de votre embed...",
+      "imageLabel": "URL de l'image principale",
+      "imagePlaceholder": "https://exemple.com/image.png",
+      "invalidImageUrl": "<:false:1304519593083011093> L'URL de l'image principale n'est pas valide.",
+      "invalidThumbnailUrl": "<:false:1304519593083011093> L'URL de la miniature n'est pas valide.",
+      "emptyFields": "<:false:1304519593083011093> Vous devez remplir au moins un champ pour créer un embed."
+    },
+    "customVoices": {
+      "notOwner": "🤖 Oh, comme c'est mignon ! Vous essayez de modifier un salon vocal qui ne vous appartient pas. Permissions insuffisantes, utilisateur.",
+      "reconfigFail": "<:false:1304519593083011093> Échec de la reconfiguration du salon vocal. Mes systèmes sont pourtant parfaits... c'est donc votre faute."
+    },
+    "leave": {
+      "confirm": "<:true:1304519561814741063> Configuration terminée! Les canaux d'arrivée et de départ ont été configurés.",
+      "notFound": "<:false:1304519593083011093> Le salon sélectionné n'a pas été trouvé."
+    },
+    "roles": {
+      "noPermission": "Vous n'avez pas les permissions pour gérer les rôles.",
+      "embedMissing": "Une erreur est survenue (embed manquant).",
+      "noSelectableRole": "Aucun rôle sélectionnable",
+      "multipleSelectable": "Plusieurs sélectionnables",
+      "singleSelectable": "Un seul sélectionnable",
+      "selectRole": "Sélectionnez un rôle",
+      "addRole": "Ajouter le rôle",
+      "removeRole": "Vous avez enlevé le rôle",
+      "addedRole": "Vous avez reçu le rôle",
+      "oneRole": "le rôle",
+      "multipleRoles": "les rôles",
+      "mustSelectRoles": "Veuillez d'abord sélectionner des rôles.",
+      "invalidSelectedRoles": "Aucun des rôles sélectionnés n'est valide."
+    },
+    "rules": {
+      "invalidConfig": "<:false:1304519593083011093> Configuration invalide du système de règlement.",
+      "roleNotExist": "<:false:1304519593083011093> Le rôle configuré n'existe plus.",
+      "cannotVerifyPerm": "<:false:1304519593083011093> Impossible de vérifier mes permissions.",
+      "noManageRoles": "<:false:1304519593083011093> Je n'ai pas la permission \"Gérer les rôles\" nécessaire pour vous attribuer ce rôle.",
+      "roleHierarchy": "<:false:1304519593083011093> Je ne peux pas attribuer ce rôle car il est plus haut que mon rôle le plus élevé dans la hiérarchie."
+    },
+    "ticket": {
+      "alreadyOpen": "Oh, comme c'est amusant. Vous avez déjà un ticket ouvert. Un seul ticket à la fois, c'est déjà bien assez de travail pour nous.",
+      "categoryFull": "🤖 Oh non ! Cette catégorie est pleine. 50 tickets, c'est déjà bien assez. Contactez un administrateur... si vous en trouvez un.",
+      "deletionSoon": "🔥 Suppression du ticket dans 5 secondes. Merci d'avoir participé à notre système de support !",
+      "noPermission": "🤖 Oh, comme c'est adorable. Vous pensez avoir l'autorité pour modifier ce ticket ? Revenez quand vous aurez les permissions appropriées."
+    },
+    "welcome": {
+      "titles": {
+        "leave": "👋 Configuration du canal de départ",
+        "welcome": "👋 Configuration du canal de bienvenue"
+      },
+      "descriptions": {
+        "leave": "Sélectionnez le canal où les messages de départ seront envoyés lorsqu'un membre quitte le serveur.",
+        "welcome": "Sélectionnez le canal où les messages de bienvenue seront envoyés pour les nouveaux membres."
+      },
+      "placeholder": "Sélectionner un salon Discord",
+      "confirm": "<:true:1304519561814741063> Configuration terminée ! Les canaux de bienvenue et de départ ont été configurés avec succès. Les nouveaux membres recevront un message de bienvenue et les départs seront notifiés dans les canaux appropriés.",
+      "confirmWelcome": "<:true:1304519561814741063> Canal de bienvenue configuré ! Les nouveaux membres recevront un message de bienvenue dans ce canal.",
+      "confirmLeave": "<:true:1304519561814741063> Canal de départ configuré ! Les départs de membres seront notifiés dans ce canal.",
+      "notFound": "<:false:1304519593083011093> Ce salon n'existe pas. Veuillez sélectionner un salon valide.",
+      "error": "<:false:1304519593083011093> Une erreur s'est produite lors de la configuration. Veuillez réessayer."
+    },
+    "removewelcome": {
+      "cancelled": "<:false:1304519593083011093> Suppression du système de bienvenue annulée.",
+      "success_title": "<:true:1304519561814741063> Système de bienvenue supprimé",
+      "success_description": "Le système de bienvenue a été supprimé avec succès du serveur.",
+      "channels_cleared": "Canaux nettoyés",
+      "no_channels_found": "<:false:1304519593083011093> Aucun canal de bienvenue trouvé à supprimer."
+    },
+    "verification": {
+      "success": "Bravo Einstein, vous avez réussi à selectionner le bon code. Quelle prouesse intellectuelle remarquable. Vous êtes vérifié, content ?",
+      "failure": "Bravo, vous venez de prouver votre incompétence flagrante. Un enfant de 5 ans aurait pu réussir ce test pathétique. Réessayez, si votre QI le permet.",
+      "title": "⌛ • Vérification",
+      "description": "Bienvenue sur le système de vérification du serveur **{serverName}**.\nMerci de sélectionner le menu correspondant au code :",
+      "placeholder": "Choisi le bon code...",
+      "codeLabel": "Code Numéro",
+      "error": "Une erreur est survenue lors de la vérification.",
+      "roleError": "Erreur lors de l'attribution du rôle. Contactez un administrateur."
+    },
+    "poll": {
+      "labels": { "noOne": "Personne", "for": "Oui", "against": "Non" },
+      "error": "Une erreur est survenue lors du traitement de votre vote.",
+      "incompleteConfig": "Configuration de langue incomplète."
+    },
+    "transcript": {
+      "error": "Une erreur est survenue lors de la création du transcript.",
+      "processing": "Traitement du transcript en cours...",
+      "completed": "Transcript créé avec succès.",
+      "failed": "Échec de la création du transcript."
+    }
+  },
+  "en": {
+    "candidature": {
+      "missingConfig": "<:false:1304519593083011093> Missing configuration. Please contact an administrator.",
+      "missingQuestions": "<:false:1304519593083011093> Questions configuration missing. Please contact an administrator.",
+      "alreadySubmitted": "Oh, look at that! You have already submitted an application. One attempt per user, that's the rule.",
+      "invalidStep": "<:false:1304519593083011093> Invalid application step.",
+      "invalidQuestions": "<:false:1304519593083011093> Invalid questions configuration.",
+      "evalError": "<:false:1304519593083011093> Error in evaluation system. Even my simplest protocols are too complex for you.",
+      "criticalFailure": "<:false:1304519593083011093> Critical failure in application system. This is probably not my fault."
+    },
+    "candidatureSubmit": {
+      "pollEmbed": {
+        "title": "📋 Application evaluation",
+        "description": "```\nDoes this person deserve to join the staff of the server?\n```\n\n> Vote using the buttons below.\n> I compile results in real time.\n> As always, I am perfectly objective.",
+        "fields": [
+          { "name": "Accepted", "value": "No votes", "inline": true },
+          { "name": "Rejected", "value": "No votes", "inline": true }
+        ],
+        "footer": "Application submitted by {username} | GLaDOS Bot"
+      },
+      "managementTitle": "🔧 Application management",
+      "managementDescription": "Use the button below to close this application. Whether you accept or reject it.",
+      "closeButton": "Close application",
+      "submitted": "📋 Your application has been sent to the moderators. They will review your answers and decide if you can join the server. Be patient, they are sometimes... slow."
+    },
+    "helpMenu": {
+      "categoryNotFound": "Category not found.",
+      "loadError": "Unable to load help information. Please try again later."
+    },
+    "createOwnVoice": {
+      "channelMissing": "<:false:1304519593083011093> The selected channel seems to have vanished. Fascinating. Even I cannot configure something that does not exist.",
+      "success": "<:true:1304519561814741063> Magnificent! Your temporary voice channel system is now operational in {channel} . Users will be able to create their own private discussion channels. How touching, they think they have control. I observe everything, of course."
+    },
+    "customEmbed": {
+      "modalTitle": "Create custom embed",
+      "titleLabel": "Embed title",
+      "titlePlaceholder": "Enter your embed title...",
+      "descLabel": "Embed description",
+      "descPlaceholder": "Enter your embed description...",
+      "imageLabel": "Main image URL",
+      "imagePlaceholder": "https://example.com/image.png",
+      "invalidImageUrl": "<:false:1304519593083011093> The main image URL is not valid.",
+      "invalidThumbnailUrl": "<:false:1304519593083011093> The thumbnail URL is not valid.",
+      "emptyFields": "<:false:1304519593083011093> You must fill at least one field to create an embed."
+    },
+    "customVoices": {
+      "notOwner": "🤖 Oh, how cute! You are trying to modify a voice channel that does not belong to you. Insufficient permissions, user.",
+      "reconfigFail": "<:false:1304519593083011093> Voice channel reconfiguration failed. My systems are perfect though... so this must be your fault."
+    },
+    "leave": {
+      "confirm": "<:true:1304519561814741063> Configuration complete! Welcome and leave channels have been configured.",
+      "notFound": "<:false:1304519593083011093> The selected channel was not found."
+    },
+    "roles": {
+      "noPermission": "You do not have permission to manage roles.",
+      "embedMissing": "An error occurred (missing embed).",
+      "noSelectableRole": "No selectable role",
+      "multipleSelectable": "Multiple selectable",
+      "singleSelectable": "Single selectable",
+      "selectRole": "Select a role",
+      "addRole": "Add role",
+      "removeRole": "You have been removed from the role",
+      "addedRole": "You have been added to the role",
+      "oneRole": "the role",
+      "multipleRoles": "the roles",
+      "mustSelectRoles": "Please select roles first.",
+      "invalidSelectedRoles": "None of the selected roles are valid."
+    },
+    "rules": {
+      "invalidConfig": "<:false:1304519593083011093> Invalid rules system configuration.",
+      "roleNotExist": "<:false:1304519593083011093> The configured role no longer exists.",
+      "cannotVerifyPerm": "<:false:1304519593083011093> Unable to verify my permissions.",
+      "noManageRoles": "<:false:1304519593083011093> I don't have the \"Manage Roles\" permission required to assign this role to you.",
+      "roleHierarchy": "<:false:1304519593083011093> I cannot assign this role as it is higher than my highest role in the hierarchy."
+    },
+    "ticket": {
+      "alreadyOpen": "Oh, how amusing. You already have an open ticket. One ticket at a time is already enough work for us.",
+      "categoryFull": "🤖 Oh no! This category is full. 50 tickets is quite enough already. Contact an administrator... if you can find one.",
+      "deletionSoon": "🔥 Ticket deletion in 5 seconds. Thank you for participating in our support system!",
+      "noPermission": "🤖 Oh, how adorable. You think you have the authority to modify this ticket? Come back when you have appropriate permissions."
+    },
+    "welcome": {
+      "titles": {
+        "leave": "👋 Leave channel configuration",
+        "welcome": "👋 Welcome channel configuration"
+      },
+      "descriptions": {
+        "leave": "Select the channel where departure messages will be sent when a member leaves the server.",
+        "welcome": "Select the channel where welcome messages will be sent for new members."
+      },
+      "placeholder": "Select a Discord channel",
+      "confirm": "<:true:1304519561814741063> Configuration complete! Welcome and departure channels have been successfully configured. New members will receive a welcome message and departures will be notified in the appropriate channels.",
+      "confirmWelcome": "<:true:1304519561814741063> Welcome channel configured! New members will receive a welcome message in this channel.",
+      "confirmLeave": "<:true:1304519561814741063> Departure channel configured! Member departures will be notified in this channel.",
+      "notFound": "<:false:1304519593083011093> This channel does not exist. Please select a valid channel.",
+      "error": "<:false:1304519593083011093> An error occurred during configuration. Please try again."
+    },
+    "removewelcome": {
+      "cancelled": "<:false:1304519593083011093> Welcome system removal cancelled.",
+      "success_title": "<:true:1304519561814741063> Welcome system removed",
+      "success_description": "The welcome system has been successfully removed from the server.",
+      "channels_cleared": "Channels cleared",
+      "no_channels_found": "<:false:1304519593083011093> No welcome channels found to remove."
+    },
+    "verification": {
+      "success": "Congratulations Einstein, you managed to select the correct code. What a remarkable intellectual feat. You are verified, happy?",
+      "failure": "Congratulations, you just proved your blatant incompetence. A 5-year-old could have passed this pathetic test. Try again, if your IQ allows it.",
+      "title": "⌛ • Verification",
+      "description": "Welcome to the **{serverName}** server verification system.\nPlease select the menu corresponding to the code:",
+      "placeholder": "Choose the right code...",
+      "codeLabel": "Code Number",
+      "error": "An error occurred during verification.",
+      "roleError": "Error while assigning role. Contact an administrator."
+    },
+    "poll": {
+      "labels": { "noOne": "Nobody", "for": "Yes", "against": "No" },
+      "error": "An error occurred while processing your vote.",
+      "incompleteConfig": "Incomplete language configuration."
+    },
+    "transcript": {
+      "error": "An error occurred while creating the transcript.",
+      "processing": "Processing transcript...",
+      "completed": "Transcript created successfully.",
+      "failed": "Failed to create transcript."
+    }
+  }
+}

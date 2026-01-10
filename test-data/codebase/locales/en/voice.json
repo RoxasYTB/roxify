@@ -1,0 +1,12 @@
+{
+  "customVoice": {
+    "title": "<a:vocal:1269193877571764265> Voice Channel Options",
+    "description": "Ah, look who's here. I hope your intelligence is advanced enough to understand how to use the buttons below. Otherwise, I suppose I should expect disappointing results, shouldn't I? Yes, I'm talking about you, {members}.",
+    "footer": "Use the buttons below to modify the settings.",
+    "properties": { "isPrivate": "Private", "microphone": "Microphone", "video": "Video", "soundboards": "Soundboards", "limited": "User Limit (10)" },
+    "status": { "active": "Enabled", "inactive": "Disabled" },
+    "buttons": { "isPrivate": { "true": { "label": "Enable private", "emoji": "<:true:1304519561814741063>" }, "false": { "label": "Disable private", "emoji": "<:false:1304519593083011093>" } }, "micro": { "true": { "label": "Enable microphone", "emoji": "<:true:1304519561814741063>" }, "false": { "label": "Disable microphone", "emoji": "<:false:1304519593083011093>" } }, "video": { "true": { "label": "Enable video", "emoji": "<:true:1304519561814741063>" }, "false": { "label": "Disable video", "emoji": "<:false:1304519593083011093>" } }, "soundboards": { "true": { "label": "Enable soundboards", "emoji": "<:true:1304519561814741063>" }, "false": { "label": "Disable soundboards", "emoji": "<:false:1304519593083011093>" } }, "limited": { "true": { "label": "Enable limit", "emoji": "<:true:1304519561814741063>" }, "false": { "label": "Disable limit", "emoji": "<:false:1304519593083011093>" } } },
+    "setup": { "title": "📢 Custom Voice Channel Creation Setup", "description": "Please select the custom voice channel creation channel to use.", "placeholder": "Custom Voice Channel", "success": "The custom voice channel has been successfully configured on channel {channel}." },
+    "error": { "noPermission": "You cannot modify the permissions of this voice channel.", "updateFailed": "An error occurred while updating the permissions.", "channelNotFound": "<:false:1304519593083011093> The selected channel was not found." }
+  }
+}

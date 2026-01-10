@@ -1,0 +1,17 @@
+{
+  "animeGeneralChannel": { "name": "🌸・général-anime", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "mangaChannel": { "name": "📚・manga", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "fanartsChannel": { "name": "🎨・fanarts", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "cosplayChannel": { "name": "👘・cosplay", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "ostChannel": { "name": "🎶・ost", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "animeNewsChannel": { "name": "📰・news-anime", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "recommendationsChannel": { "name": "💡・recommandations", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "spoilersAnimeChannel": { "name": "⚠️・spoilers-anime", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "openingsChannel": { "name": "🎵・openings", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "endingsChannel": { "name": "🎶・endings", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "waifuChannel": { "name": "💕・waifu-husbando", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "animeQuizChannel": { "name": "❓・quiz-anime", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "animeGamesChannel": { "name": "🎲・jeux-anime", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "animeEventsChannel": { "name": "🎉・events-anime", "category": "animeCategory", "permissions": "publicPerms", "type": "text" },
+  "animeCategory": { "name": "❍─────Anime & Manga─────➤", "type": "category" }
+}

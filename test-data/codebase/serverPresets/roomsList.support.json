@@ -1,0 +1,17 @@
+{
+  "techHelpChannel": { "name": "🛠️・aide-technique", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "faqSupportChannel": { "name": "❓・faq", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "ticketsSupportChannel": { "name": "🎫・tickets", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "bugsChannel": { "name": "🐞・bugs", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "suggestionsSupportChannel": { "name": "💡・suggestions", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "feedbackChannel": { "name": "📝・retours", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "guidesChannel": { "name": "📚・guides", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "tutorialsChannel": { "name": "🎓・tutos", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "statusChannel": { "name": "📊・statut", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "maintenanceChannel": { "name": "🔧・maintenance", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "incidentsChannel": { "name": "🚨・incidents", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "contactStaffChannel": { "name": "☎️・contact-staff", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "resourcesChannel": { "name": "📁・ressources", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "toolsChannel": { "name": "🛠️・outils", "category": "supportCategory", "permissions": "publicPerms", "type": "text" },
+  "supportCategory": { "name": "❍─────Support─────➤", "type": "category" }
+}

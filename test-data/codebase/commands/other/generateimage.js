@@ -1,0 +1,3 @@
+function generateImage() {}
+
+export { generateImage };

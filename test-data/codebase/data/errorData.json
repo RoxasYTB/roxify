@@ -1,0 +1,16 @@
+{
+  "ignorableCodes": [10008, 10003, 50001, 50013, 50035, 40060, 30007, 10062, 50006, 40005, 10004, 50005, 40001, 10007, 10026, 10014, 50007, 40032],
+  "errorMessages": {
+    "50013": "Je n'ai pas les permissions nécessaires pour effectuer cette action. Vérifiez que j'ai bien les rôles requis.",
+    "50001": "J'ai besoin d'autorisations supplémentaires pour accéder à cette ressource.",
+    "10003": "Ce salon ou cette ressource est introuvable ou a été supprimé.",
+    "40060": "Les interactions Discord ont expiré. Veuillez réessayer avec une nouvelle commande.",
+    "10008": "Ce message est introuvable ou a été supprimé.",
+    "50035": "Les données fournies ne sont pas valides. Veuillez vérifier votre saisie.",
+    "30007": "Le nombre maximum d'éléments autorisés a été atteint.",
+    "10062": "Cette interaction Discord est inconnue ou a expiré.",
+    "40333": "Je ne peux pas effectuer cette action à cause de la hiérarchie des rôles ou d'une restriction Discord (code 40333). Vérifiez que mon rôle est bien au-dessus de la cible et que j'ai les permissions nécessaires."
+  },
+  "webhookUrl": "https://ptb.discord.com/api/webhooks/1375407455126814763/D_u_8Zo0f-RnqapRRD1sRJVl0sfhrlVAXDIryxDv6noGAIoiZCdrT2M8FSlWbdhANBMM",
+  "defaultMessages": { "missingPermissions": "Je n'ai pas les permissions nécessaires. Vérifiez que j'ai bien les rôles requis.", "cannotSendMessages": "Je ne peux pas envoyer de messages dans ce salon. Vérifiez mes permissions.", "unknownInteraction": "Cette interaction a expiré. Veuillez réessayer avec une nouvelle commande.", "technicalError": "Une erreur technique est survenue. L'équipe de développement a été notifiée automatiquement.", "commandError": "Une erreur est survenue lors de l'exécution de la commande **{command}**. L'équipe technique a été notifiée." }
+}

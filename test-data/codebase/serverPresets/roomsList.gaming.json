@@ -1,0 +1,17 @@
+{
+  "gamesChannel": { "name": "🎮・jeux-vidéo", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "esportChannel": { "name": "🏆・esport", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "groupFinderChannel": { "name": "🔎・recherche-groupe", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "tipsChannel": { "name": "💡・astuces", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "screenshotsChannel": { "name": "📸・screenshots", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "clipsChannel": { "name": "🎬・clips", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "tournamentsChannel": { "name": "🎲・tournois", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "buildsChannel": { "name": "🛠️・builds", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "modsChannel": { "name": "🔧・mods", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "speedrunChannel": { "name": "⚡・speedrun", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "gamingHelpChannel": { "name": "🆘・entraide-gaming", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "gameNewsChannel": { "name": "📰・news-jeux", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "mcServersChannel": { "name": "🌍・serveurs-mc", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "fpsChannel": { "name": "🔫・fps", "category": "gamingCategory", "permissions": "publicPerms", "type": "text" },
+  "gamingCategory": { "name": "❍─────Gaming─────➤", "type": "category" }
+}

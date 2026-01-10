@@ -1,0 +1,17 @@
+{
+  "photosAestheticChannel": { "name": "📸・photos", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "artChannel": { "name": "🎨・art", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "poetryChannel": { "name": "📝・poésie", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "musicAestheticChannel": { "name": "🎶・musique", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "fashionChannel": { "name": "👗・mode", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "inspirationsChannel": { "name": "💡・inspirations", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "wallpapersChannel": { "name": "🖼️・wallpapers", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "designChannel": { "name": "🖌️・design", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "minimalismChannel": { "name": "⚪・minimalisme", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "vintageChannel": { "name": "📻・vintage", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "pastelChannel": { "name": "🌸・pastel", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "quotesChannel": { "name": "💬・quotes", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "ambianceChannel": { "name": "🌙・ambiance", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "selfiesChannel": { "name": "🤳・selfies", "category": "aestheticCategory", "permissions": "publicPerms", "type": "text" },
+  "aestheticCategory": { "name": "❍─────Aesthetic─────➤", "type": "category" }
+}

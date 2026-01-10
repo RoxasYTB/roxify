@@ -1,0 +1,12 @@
+{
+  "exists": "> You already have an open ticket.",
+  "openLabel": "Open a ticket",
+  "categoryError": "> Unable to find the category.",
+  "created": "> Ticket created: ",
+  "title": "<a:ticket:1269193818302054430> Welcome to your ticket!",
+  "description": "> <a:identite:1269193853882335243> A staff member will respond to you soon <@{userId}>.\n> <a:interdit:1269193896790065152> Click the button below to close this ticket.",
+  "buttons": { "close": "Close ticket", "reopen": "Reopen ticket", "transcript": "Transcript", "delete": "Delete" },
+  "messages": { "close": "> The ticket has been closed...", "openAgain": "> This ticket has been reopened by a staff member...", "transcript": "> A transcript of the ticket has been sent to the transcript channel..." },
+  "info": { "createdBy": "This ticket was created by <@{userId}>.", "closedBy": "This ticket was closed by <@{userId}>.", "reopenedBy": "This ticket was reopened by <@{userId}>." },
+  "logs": { "title": "Ticket {action}", "description": "A ticket has been {action} on the server.", "ticketName": "Ticket name", "transcribedBy": "Transcribed by", "footer": "Ticket logs" }
+}

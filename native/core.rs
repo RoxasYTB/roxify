@@ -103,19 +103,64 @@ pub fn delta_decode_bytes(buf: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn zstd_compress_bytes(buf: &[u8], level: i32) -> std::result::Result<Vec<u8>, String> {
+fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), level)
+
+    let actual_level = if level >= 19 { 22 } else { level };
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), actual_level)
         .map_err(|e| format!("zstd encoder init error: {}", e))?;
-    
-    encoder.window_log(32).map_err(|e| format!("zstd window_log error: {}", e))?;
-    
+
     let threads = num_cpus::get() as u32;
     if threads > 1 {
         let _ = encoder.multithread(threads);
     }
-    encoder.write_all(buf).map_err(|e| format!("zstd write error: {}", e))?;
+
+    if buf.len() > 10 * 1024 * 1024 {
+        let _ = encoder.long_distance_matching(true);
+    }
+
+    let _ = encoder.set_pledged_src_size(Some(buf.len() as u64));
+
+    for chunk in buf.chunks(chunk_size) {
+        encoder.write_all(chunk).map_err(|e| format!("zstd write error: {}", e))?;
+    }
+
     encoder.finish().map_err(|e| format!("zstd finish error: {}", e))
+}
+
+pub fn zstd_compress_bytes(buf: &[u8], level: i32) -> std::result::Result<Vec<u8>, String> {
+    if buf.len() < 50 * 1024 * 1024 {
+        return compress_with_chunk_size(buf, level, buf.len());
+    }
+
+    let test_sizes = [
+        4 * 1024 * 1024,
+        8 * 1024 * 1024,
+        16 * 1024 * 1024,
+        32 * 1024 * 1024,
+    ];
+
+    let sample_size = (buf.len() / 5).min(100 * 1024 * 1024);
+    let sample = &buf[..sample_size];
+
+    let mut best_ratio = f64::MAX;
+    let mut best_chunk_size = buf.len();
+
+    for &chunk_size in &test_sizes {
+        if chunk_size >= sample.len() / 3 {
+            continue;
+        }
+
+        if let Ok(compressed) = compress_with_chunk_size(sample, level, chunk_size) {
+            let ratio = compressed.len() as f64 / sample.len() as f64;
+            if ratio < best_ratio && ratio < 0.99 {
+                best_ratio = ratio;
+                best_chunk_size = chunk_size;
+            }
+        }
+    }
+
+    compress_with_chunk_size(buf, level, best_chunk_size)
 }
 
 pub fn zstd_decompress_bytes(buf: &[u8]) -> std::result::Result<Vec<u8>, String> {

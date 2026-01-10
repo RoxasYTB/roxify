@@ -7,7 +7,7 @@ use crate::pool::BufferPool;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-const BLOCK_SIZE: usize = 8 * 1024 * 1024;
+const BLOCK_SIZE: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct CompressionStats {

@@ -1,0 +1,15 @@
+{
+  "title": "🤖 List of Available Actions",
+  "sections": [
+    { "name": "👥 User Management", "actions": ["Rename members", "Reset nicknames", "Ban/Unban", "Kick", "Mute/Unmute"] },
+    { "name": "💬 Channel Management", "actions": ["Create/Delete text channels and categories", "Create/Delete voice channels", "Rename/Move", "Configure slow mode", "Lock/Unlock", "Synchronize channel permissions with a category", "Purge channels", "Purge all channels", "Create a logs system", "Configure a voice channel to create temporary voice channels", "Change the font of all channels on a server"] },
+    { "name": "⚜️ Role Management", "actions": ["Create/Delete roles", "Rename/Change color", "Assign/Remove roles", "Add a role to all server members", "Remove a role from all server members", "Configure role selection menu", "Set up automatic roles"] },
+    { "name": "🛠️ Special Systems", "actions": ["Custom rules with optional role", "Application system", "Ticket system", "Verification system with role", "Role selection menu", "Configure an automatic role", "Create a giveaway system"] },
+    { "name": "🎙️ Voice", "actions": ["Speak in voice channels (requires the bot's presence here)", "Configure the voice channel to create temporary voice channels"] },
+    { "name": "💬 Message Management", "actions": ["Create embeds", "Create quotes", "Generate images (also view images)", "Create an announcement with AI", "Delete messages", "Send messages", "Create polls"] },
+    { "name": "<a:warning2:1305656318740140124> WARNING <a:warning2:1305656318740140124>", "actions": ["*This action is irreversible and cannot be undone, so it should be used with caution. It should only be used if the server is empty and has no roles or channels.*", "Create a server (roles, channels and categories, with setup permissions on included channels)"] },
+    { "name": "🔄 Server Management", "actions": ["Backup server channels", "Restore server channels", "Configure arrival/departure messages", "Rename the server", "Copy emojis and stickers from a server", "Change the font of all channels on a server", "Change the server style by renaming channels and categories with a preset", "**REMINDER: An anti-raid is active on the server, no need to manage it (it deletes channels automatically created by the raid and will kick those responsible for the raid, it will also automatically delete messages created by the raid). It is also active for anti-nuke. These systems are automatic and require no intervention on your part.**\n\n"] },
+    { "name": "❓ Help", "actions": ["Display help menu", "Get list of available commands"] }
+  ],
+  "howTo": { "title": "📝 How to Use", "description": "To trigger an action, use keywords in your requests followed by \"Glados\" anywhere in the message:", "examples": ["\"Glados create a rules channel\" to create a rules channel", "\"Glados ban @user\" to ban a user", "\"Glados add the role @role to @user\" to add a role to a user"] }
+}
