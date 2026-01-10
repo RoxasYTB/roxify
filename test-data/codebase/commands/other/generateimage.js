@@ -1,3 +1,0 @@
-function generateImage() {}
-
-export { generateImage };

@@ -1,7 +1,0 @@
-{
-  "welcome": { "title": "🎉 Un nouveau membre a rejoint ! 🎉", "description": "Bienvenue à <@{userId}>, qui a décidé de se joindre à nous.", "message": "vient de rejoindre le serveur !" },
-  "specialMember": { "title": "✨ Une personne spéciale a rejoint ! ✨", "description": "Bienvenue à <@{userId}>, ***__une des personnes qui m'ont créée__***, et qui a décidé de se joindre à nous.", "message": "nous fait l'honneur de sa présence !" },
-  "leave": { "title": "😢 Un membre nous a quitté ! 😢", "description": "Nous sommes tristes d'annoncer le départ de <@{userId}>. À bientôt, nous l'espérons !", "message": "vient de quitter le serveur !" },
-  "rules": { "accepted": "Ah, génial, vous avez enfin décidé d'accepter le règlement. Comme si c'était si difficile." },
-  "commands": { "welcome": { "detection_title": "Salons détectés automatiquement", "channels_detected": "Salons de bienvenue et départs détectés automatiquement :", "welcome_channel": "Salon d'arrivée", "leave_channel": "Salon de départ", "detection_proceed": "Procéder avec ces salons ?", "confirm": "Prendre la configuration automatique", "continue_setup": "Continuer la configuration manuellement" } }
-}

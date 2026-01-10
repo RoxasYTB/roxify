@@ -1,7 +1,0 @@
-{
-  "welcome": { "title": "🎉 A new member has joined! 🎉", "description": "Welcome to <@{userId}>, who has decided to join us.", "message": "has just joined the server!" },
-  "specialMember": { "title": "✨ A special person has joined! ✨", "description": "Welcome to <@{userId}>, ***__one of the people who created me__***, who has decided to join us.", "message": "honors us with their presence!" },
-  "leave": { "title": "😢 A member has left us! 😢", "description": "We are sad to announce the departure of <@{userId}>. See you soon, we hope!", "message": "has just left the server!" },
-  "rules": { "accepted": "Ah, great, you've finally decided to accept the rules. As if it was so difficult." },
-  "commands": { "welcome": { "detection_title": "Automatically Detected Channels", "channels_detected": "Welcome and leave channels automatically detected:", "welcome_channel": "Welcome channel", "leave_channel": "Leave channel", "detection_proceed": "Proceed with these channels?", "confirm": "Confirm the automatic setup", "continue_setup": "Continue manual setup" } }
-}

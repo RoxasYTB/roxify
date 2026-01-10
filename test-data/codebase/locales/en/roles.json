@@ -1,8 +1,0 @@
-{
-  "created": { "title": "Role Created", "description": "A new role has been created on the server." },
-  "updated": { "title": "Role Updated", "description": "A role has been updated on the server." },
-  "deleted": { "title": "Role Deleted", "description": "A role has been deleted from the server." },
-  "properties": { "name": "Role name", "color": "Role color", "permissions": "Role permissions", "hoist": "Displayed separately", "mentionable": "Mentionable" },
-  "logs": { "footer": "Role logs" },
-  "menu": { "title": "📢 Role Configuration", "description": "Please select the selectable roles.", "fields": { "selectable": "Selectable roles", "quantity": "Quantity of selectable roles" }, "values": { "none": "No selectable role", "multiple": "Multiple selectable", "single": "Only one selectable" }, "buttons": { "validate": "Validate", "all": "All selectable", "single": "Only one selectable" }, "selection": { "placeholder": "Select a role", "addRole": "Add role", "oneRole": "the role", "multipleRoles": "the roles", "title": "Select {type} that concern{ending} you:", "removeRole": "You have been removed from the role", "addedRole": "You have been added to the role" } }
-}
