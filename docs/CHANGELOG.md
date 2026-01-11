@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.0] - 2026-01-11
+
+### Real-world benchmarks & improvements ✅
+
+- **Large codebase benchmark**: 4,000 MB dataset (≈3.93 GB input)
+  - **Roxify**: 3.93 GB → 111.42 MB ( **2.8%** ), **26.91s** @ **149.4 MB/s**
+  - **Gzip (zip/tar.gz)**: 3.93 GB → 2.26 GB ( **57.5%** )
+  - **LZMA (7z)**: 3.93 GB → 1.87 GB ( **47.6%** )
+- **Many-files dataset** (1,000 MB, 141,522 files)
+  - **Roxify**: 1.03 GB → 205.0 MB ( **19.4%** ), **6.2s** @ **~170 MB/s**
+  - Gzip: 1.03 GB → 324.8 MB ( **30.7%** )
+  - LZMA: 1.03 GB → 195.7 MB ( **18.5%** )
+
+### What's new in 1.3.0
+
+- Improved multi-file encoding performance (parallel file I/O with Rayon) → large speedups on many small files
+- Default encode path optimized for speed (default level reduced; fast mode used for encode)
+- Clarified real-world benchmark comparisons to **ZIP (gzip)** and **7z (LZMA)** in docs
+- Minor compression heuristics tuned for real-world repositories
+
 ## [1.2.10] - 2026-01-09
 
 ### Performance 🚀🚀

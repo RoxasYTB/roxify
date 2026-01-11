@@ -13,9 +13,30 @@
 - 🎨 **Multiple modes**: Compact, chunk, pixel, and screenshot modes
 - 📦 **CLI & API**: Use as command-line tool or JavaScript library
 - 🔄 **Lossless**: Perfect roundtrip encoding/decoding
-- 📊 **Efficient**: Typically 0.01-0.05% of original size with Zstd compression
 - 📖 **Full TSDoc**: Complete TypeScript documentation
 - 🦀 **Rust Powered**: Optional native module for extreme performance (falls back to pure JS)
+
+## Real-world benchmarks 🔧
+
+**Highlights**
+
+- Practical benchmarks on large codebase datasets showing significant compression and high throughput while handling many small files efficiently.
+
+**Results**
+
+| Dataset  |   Files | Original | Compressed |     Ratio |   Time | Throughput | Notes                                       |
+| -------- | ------: | -------: | ---------: | --------: | -----: | ---------: | ------------------------------------------- |
+| 4,000 MB | 731,340 |  3.93 GB |  111.42 MB |  **2.8%** | 26.9 s | 149.4 MB/s | gzip: 2.26 GB (57.5%); 7z: 1.87 GB (47.6%)  |
+| 1,000 MB | 141,522 |  1.03 GB |     205 MB | **19.4%** | ~6.2 s |  ≈170 MB/s | shows benefits for many-small-file datasets |
+
+### Methodology
+
+- Compression: multithreaded Zstd (level 19) and Brotli (configurable).
+- Setup: parallel I/O and multithreaded compression on modern SSD-backed systems.
+- Measurements: wall-clock time; throughput = original size / time; comparisons against gzip and 7z with typical defaults.
+- Reproducibility: full benchmark details, commands and raw data are available in `docs/BENCHMARK_FINAL_REPORT.md`.
+
+These results demonstrate Roxify's strength for packaging large codebases and many-small-file archives where speed and a good compression/throughput trade-off matter.
 
 ## Documentation
 

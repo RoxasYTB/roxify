@@ -16,3 +16,4 @@ test-native.cjs
 test/
 *.png
 *.tgz
+test-*

@@ -2,7 +2,7 @@
 
 set -e
 
-CODEBASE_DIR="/home/yohan/roxify/test-data/codebase"
+CODEBASE_DIR="/home/yohan/Musique/codebase"
 OUTPUT_DIR="/home/yohan/test-real-data"
 
 if [ ! -d "$CODEBASE_DIR" ]; then
@@ -26,48 +26,49 @@ mkdir -p "$OUTPUT_DIR"
 
 generate_dataset() {
     local target_mb=$1
-    local output="$OUTPUT_DIR/codebase-${target_mb}mb.tar"
-    
-    if [ -f "$output" ]; then
+    local output_dir="$OUTPUT_DIR/codebase-${target_mb}mb"
+
+    if [ -d "$output_dir" ]; then
         echo "⏭️  ${target_mb}MB existe déjà"
         return
     fi
-    
+
     echo "⏳ Génération ${target_mb}MB..."
-    
+
+    mkdir -p "$output_dir"
+
     local needed_copies=$((target_mb / BASE_SIZE_MB + 1))
-    local temp_dir="$OUTPUT_DIR/temp-${target_mb}"
-    
-    mkdir -p "$temp_dir"
-    
+
     for i in $(seq 1 $needed_copies); do
-        cp -r "$CODEBASE_DIR" "$temp_dir/copy-$i" 2>/dev/null || true
-        
-        current_size=$(du -sb "$temp_dir" | awk '{print $1}')
+        echo -ne "  Copie $i/${needed_copies}...\r"
+        cp -r "$CODEBASE_DIR" "$output_dir/codebase-copy-$i" 2>/dev/null
+
+        current_size=$(du -sb "$output_dir" | awk '{print $1}')
         current_mb=$((current_size / 1024 / 1024))
-        
+
         if [ $current_mb -ge $target_mb ]; then
             break
         fi
     done
-    
-    tar -cf "$output" -C "$temp_dir" . 2>/dev/null
-    
-    rm -rf "$temp_dir"
-    
-    actual_size=$(stat -c%s "$output")
+
+    actual_size=$(du -sb "$output_dir" | awk '{print $1}')
     actual_mb=$((actual_size / 1024 / 1024))
-    
-    echo "  ✅ ${actual_mb} MB créé: $output"
+    file_count=$(find "$output_dir" -type f | wc -l)
+
+    echo "  ✅ ${actual_mb} MB créé ($file_count fichiers): $output_dir                "
 }
 
-for size in 200 500 1000 2000 4000; do
-    generate_dataset $size
-done
+generate_dataset 4000
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📊 Datasets générés:"
-ls -lh "$OUTPUT_DIR"/*.tar 2>/dev/null | awk '{print "  ✓", $9, "(" $5 ")"}'
+for dir in "$OUTPUT_DIR"/codebase-*mb; do
+    if [ -d "$dir" ]; then
+        size=$(du -sh "$dir" | awk '{print $1}')
+        files=$(find "$dir" -type f | wc -l)
+        echo "  ✓ $dir ($size, $files fichiers)"
+    fi
+done
 echo ""
 echo "✅ Génération terminée"
