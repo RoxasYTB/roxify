@@ -172,7 +172,15 @@ async function encodeCommand(args) {
         console.log('Usage: npx rox encode <input> [output] [options]');
         process.exit(1);
     }
-    const resolvedInputs = inputPaths.map((p) => resolve(p));
+    let safeCwd = '/';
+    try {
+        safeCwd = process.cwd();
+    }
+    catch (e) {
+        // ENOENT: fallback sur racine
+        safeCwd = '/';
+    }
+    const resolvedInputs = inputPaths.map((p) => resolve(safeCwd, p));
     let outputName = inputPaths.length === 1 ? basename(firstInput) : 'archive';
     if (inputPaths.length === 1 && !statSync(resolvedInputs[0]).isDirectory()) {
         outputName = outputName.replace(/(\.[^.]+)?$/, '.png');
@@ -180,7 +188,13 @@ async function encodeCommand(args) {
     else {
         outputName += '.png';
     }
-    const resolvedOutput = resolve(parsed.output || outputPath || outputName);
+    let resolvedOutput;
+    try {
+        resolvedOutput = resolve(safeCwd, parsed.output || outputPath || outputName);
+    }
+    catch (e) {
+        resolvedOutput = join('/', parsed.output || outputPath || outputName);
+    }
     if (isRustBinaryAvailable() && !parsed.forceTs) {
         try {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
