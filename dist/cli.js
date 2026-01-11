@@ -5,7 +5,8 @@ import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInPng, IncorrectPassphraseError, listFilesInPng, PassphraseRequiredError, } from './index.js';
 import { packPathsGenerator, unpackBuffer } from './pack.js';
-const VERSION = '1.2.9';
+import { encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
+const VERSION = '1.3.1';
 async function readLargeFile(filePath) {
     const st = statSync(filePath);
     if (st.size <= 2 * 1024 * 1024 * 1024) {
@@ -47,6 +48,7 @@ Options:
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
   --no-compress             Disable compression
+  --force-ts                Force TypeScript encoder (slower but supports encryption)
   -o, --output <path>       Output file path
   -s, --sizes               Show file sizes in 'list' output (default)
   --no-sizes                Disable file size reporting in 'list'
@@ -87,6 +89,10 @@ function parseArgs(args) {
             }
             else if (key === 'debug') {
                 parsed.debug = true;
+                i++;
+            }
+            else if (key === 'force-ts') {
+                parsed.forceTs = true;
                 i++;
             }
             else if (key === 'debug-dir') {
@@ -174,7 +180,59 @@ async function encodeCommand(args) {
     else {
         outputName += '.png';
     }
-    const resolvedOutput = parsed.output || outputPath || outputName;
+    const resolvedOutput = resolve(parsed.output || outputPath || outputName);
+    if (isRustBinaryAvailable() && !parsed.forceTs) {
+        try {
+            console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
+            const startTime = Date.now();
+            const encodeBar = new cliProgress.SingleBar({ format: ' {bar} {percentage}% | {step} | {elapsed}s' }, cliProgress.Presets.shades_classic);
+            let barValue = 0;
+            encodeBar.start(100, 0, { step: 'Encoding', elapsed: '0' });
+            const progressInterval = setInterval(() => {
+                barValue = Math.min(barValue + 1, 99);
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                encodeBar.update(barValue, {
+                    step: 'Encoding',
+                    elapsed: String(elapsed),
+                });
+            }, 500);
+            const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
+            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 3, parsed.passphrase, encryptType);
+            clearInterval(progressInterval);
+            const encodeTime = Date.now() - startTime;
+            encodeBar.update(100, {
+                step: 'done',
+                elapsed: String(Math.floor(encodeTime / 1000)),
+            });
+            encodeBar.stop();
+            const { statSync: fstatSync } = await import('fs');
+            let inputSize = 0;
+            if (inputPaths.length === 1 &&
+                fstatSync(resolvedInputs[0]).isDirectory()) {
+                const { execSync } = await import('child_process');
+                const sizeOutput = execSync(`du -sb "${resolvedInputs[0]}"`, {
+                    encoding: 'utf-8',
+                });
+                inputSize = parseInt(sizeOutput.split(/\s+/)[0]);
+            }
+            else {
+                inputSize = fstatSync(resolvedInputs[0]).size;
+            }
+            const outputSize = fstatSync(resolvedOutput).size;
+            const ratio = ((outputSize / inputSize) * 100).toFixed(1);
+            console.log(`\nSuccess!`);
+            console.log(`  Input:  ${(inputSize / 1024 / 1024).toFixed(2)} MB`);
+            console.log(`  Output: ${(outputSize / 1024 / 1024).toFixed(2)} MB (${ratio}% of original)`);
+            console.log(`  Time:   ${encodeTime}ms`);
+            console.log(`  Saved:  ${resolvedOutput}`);
+            console.log(' ');
+            return;
+        }
+        catch (err) {
+            console.warn('\nRust encoder failed, falling back to TypeScript encoder...');
+            console.warn(`Reason: ${err.message}\n`);
+        }
+    }
     let options = {};
     try {
         const encodeBar = new cliProgress.SingleBar({
@@ -212,6 +270,7 @@ async function encodeCommand(args) {
             mode,
             name: parsed.outputName || 'archive',
             skipOptimization: true,
+            compressionLevel: 19,
         });
         if (parsed.verbose)
             options.verbose = true;

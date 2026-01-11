@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 mod core;
 mod encoder;
 mod packer;
+mod crypto;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -21,6 +22,10 @@ enum Commands {
         output: PathBuf,
         #[arg(short, long, default_value_t = 3)]
         level: i32,
+        #[arg(short, long)]
+        passphrase: Option<String>,
+        #[arg(short, long, default_value = "aes")]
+        encrypt: String,
     },
     Scan {
         input: PathBuf,
@@ -88,9 +93,15 @@ fn parse_markers(v: &[String]) -> Option<Vec<u8>> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Encode { input, output, level } => {
+        Commands::Encode { input, output, level, passphrase, encrypt } => {
             let data = packer::pack_path(&input)?;
-            let png = encoder::encode_to_png(&data, level)?;
+
+            let png = if let Some(ref pass) = passphrase {
+                encoder::encode_to_png_with_encryption(&data, level, Some(pass), Some(&encrypt))?
+            } else {
+                encoder::encode_to_png(&data, level)?
+            };
+
             write_all(&output, &png)?;
         }
         Commands::Scan { input, channels, markers } => {

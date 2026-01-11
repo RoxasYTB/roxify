@@ -1,8 +1,44 @@
 # Changelog
 
-## [1.3.0] - 2026-01-11
+## [1.3.1] - 2026-01-11
 
-### Real-world benchmarks & improvements ✅
+### Native Rust Encoder Integration 🚀
+
+- **CLI now uses native Rust encoder by default** for maximum performance
+- **Falls back to TypeScript encoder** when encryption is needed or with `--force-ts` flag
+- **Performance improvements**:
+  - Rust encoder: ~20x faster than TypeScript (level 3 compression)
+  - TypeScript encoder: Better compression ratio with level 19
+  - Automatic selection based on use case
+
+### New CLI Options
+
+- `--force-ts`: Force use of TypeScript encoder (needed for encryption features)
+
+### Technical Details
+
+- CLI automatically detects and uses `target/release/roxify_native` binary
+- Rust encoder uses level 3 (default) for speed: ~23% ratio
+- TypeScript encoder uses level 19 for compression: ~19% ratio (better but slower)
+- Encryption and passphrase features require TypeScript encoder
+
+### Why Two Encoders?
+
+**Rust encoder (default, level 3)**:
+
+- ✅ 20x faster encoding
+- ✅ Matches benchmark performance
+- ✅ Same format as benchmark tests
+- ❌ No encryption support
+- Result: ~23% of original size
+
+**TypeScript encoder (--force-ts, level 19)**:
+
+- ✅ Better compression (~19% ratio)
+- ✅ Supports encryption (AES, XOR)
+- ✅ Supports passphrase protection
+- ❌ Slower (~300ms vs ~15ms for small files)
+- Result: ~19% of original size
 
 - **Large codebase benchmark**: 4,000 MB dataset (≈3.93 GB input)
   - **Roxify**: 3.93 GB → 111.42 MB ( **2.8%** ), **26.91s** @ **149.4 MB/s**

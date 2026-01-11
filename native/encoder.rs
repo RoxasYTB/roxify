@@ -10,12 +10,31 @@ const MARKER_END: [(u8, u8, u8); 3] = [(0, 0, 255), (0, 255, 0), (255, 0, 0)];
 const MARKER_ZSTD: (u8, u8, u8) = (0, 255, 0);
 
 pub fn encode_to_png(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
+    encode_to_png_with_encryption(data, compression_level, None, None)
+}
+
+pub fn encode_to_png_with_encryption(
+    data: &[u8],
+    compression_level: i32,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+) -> Result<Vec<u8>> {
     let payload_input = [MAGIC, data].concat();
 
     let compressed = crate::core::zstd_compress_bytes(&payload_input, compression_level)
         .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
-    let meta_pixel = build_meta_pixel(&compressed)?;
+    let encrypted = if let Some(pass) = passphrase {
+        match encrypt_type.unwrap_or("aes") {
+            "xor" => crate::crypto::encrypt_xor(&compressed, pass),
+            "aes" => crate::crypto::encrypt_aes(&compressed, pass)?,
+            _ => crate::crypto::encrypt_aes(&compressed, pass)?,
+        }
+    } else {
+        crate::crypto::no_encryption(&compressed)
+    };
+
+    let meta_pixel = build_meta_pixel(&encrypted)?;
     let data_without_markers = [PIXEL_MAGIC, &meta_pixel].concat();
 
     let padding_needed = (3 - (data_without_markers.len() % 3)) % 3;
@@ -78,15 +97,12 @@ pub fn encode_to_png(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
 fn build_meta_pixel(payload: &[u8]) -> Result<Vec<u8>> {
     let version = 1u8;
     let name_len = 0u8;
-    let enc_flag = ENC_NONE;
-    let payload_total_len = 1 + payload.len();
-    let payload_len_bytes = (payload_total_len as u32).to_be_bytes();
+    let payload_len_bytes = (payload.len() as u32).to_be_bytes();
 
-    let mut result = Vec::with_capacity(1 + 1 + 4 + 1 + payload.len());
+    let mut result = Vec::with_capacity(1 + 1 + 4 + payload.len());
     result.push(version);
     result.push(name_len);
     result.extend_from_slice(&payload_len_bytes);
-    result.push(enc_flag);
     result.extend_from_slice(payload);
 
     Ok(result)

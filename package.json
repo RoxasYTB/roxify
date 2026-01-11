@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Encode binary data into PNG images and decode them back. CLI and programmatic API with native Rust acceleration.",
   "type": "module",
   "main": "dist/index.js",
@@ -22,7 +22,7 @@
     "build:cli": "cargo build --release --bin roxify_native && cp target/release/roxify_native dist/roxify-cli",
     "build:all": "npm run build:native && npm run build && npm run build:cli",
     "prepublishOnly": "npm run build:all",
-    "test": "node test/roundtrip.js && node test/pixel-fallback-preview.js && node test/size-fallback-choice.js && node test/screenshot-roundtrip.js && node test/screenshot-fallback.js",
+    "test": "node test/test-*.js",
     "cli": "node dist/cli.js"
   },
   "keywords": [

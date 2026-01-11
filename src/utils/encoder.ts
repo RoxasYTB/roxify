@@ -69,7 +69,7 @@ export async function encodeBinaryToPng(
   if (opts.onProgress)
     opts.onProgress({ phase: 'compress_start', total: totalLen });
 
-  const compressionLevel = opts.compressionLevel ?? 7;
+  const compressionLevel = opts.compressionLevel ?? 19;
   let payload = await parallelZstdCompress(
     payloadInput,
     compressionLevel,
