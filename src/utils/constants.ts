@@ -1,6 +1,7 @@
 export const CHUNK_TYPE = 'rXDT';
 export const MAGIC = Buffer.from('ROX1');
 export const PIXEL_MAGIC = Buffer.from('PXL1');
+export const PIXEL_MAGIC_BLOCK = Buffer.from('BLK2');
 export const ENC_NONE = 0;
 export const ENC_AES = 1;
 export const ENC_XOR = 2;
@@ -20,4 +21,3 @@ export const COMPRESSION_MARKERS = {
   zstd: [{ r: 0, g: 255, b: 0 }],
   lzma: [{ r: 255, g: 255, b: 0 }],
 };
-

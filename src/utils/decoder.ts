@@ -10,6 +10,7 @@ import {
   MARKER_END,
   MARKER_START,
   PIXEL_MAGIC,
+  PIXEL_MAGIC_BLOCK,
   PNG_HEADER,
 } from './constants.js';
 import {
@@ -272,45 +273,111 @@ export async function decodePngToBinary(
     const currentWidth = metadata.width!;
     const currentHeight = metadata.height!;
 
-    const rawRGB = Buffer.allocUnsafe(currentWidth * currentHeight * 3);
-    let writeOffset = 0;
+    let rawRGB: Buffer = Buffer.alloc(0);
+    let isBlockEncoded = false;
 
-    const rowsPerChunk = 2000;
-
-    for (let startRow = 0; startRow < currentHeight; startRow += rowsPerChunk) {
-      const endRow = Math.min(startRow + rowsPerChunk, currentHeight);
-      const chunkHeight = endRow - startRow;
-
-      const { data: chunkData, info: chunkInfo } = await sharp(processedBuf)
+    if (currentWidth % 2 === 0 && currentHeight % 2 === 0) {
+      const { data: testData } = await sharp(processedBuf)
         .extract({
           left: 0,
-          top: startRow,
-          width: currentWidth,
-          height: chunkHeight,
+          top: 0,
+          width: Math.min(4, currentWidth),
+          height: Math.min(4, currentHeight),
         })
         .raw()
         .toBuffer({ resolveWithObject: true });
 
-      const channels = chunkInfo.channels;
-      const pixelsInChunk = currentWidth * chunkHeight;
+      let hasBlockPattern = true;
+      for (let y = 0; y < Math.min(2, currentHeight / 2); y++) {
+        for (let x = 0; x < Math.min(2, currentWidth / 2); x++) {
+          const px00 = (y * 2 * Math.min(4, currentWidth) + x * 2) * 3;
+          const px01 = (y * 2 * Math.min(4, currentWidth) + (x * 2 + 1)) * 3;
+          const px10 = ((y * 2 + 1) * Math.min(4, currentWidth) + x * 2) * 3;
+          const px11 =
+            ((y * 2 + 1) * Math.min(4, currentWidth) + (x * 2 + 1)) * 3;
 
-      if (channels === 3) {
-        chunkData.copy(rawRGB, writeOffset);
-        writeOffset += pixelsInChunk * 3;
-      } else if (channels === 4) {
-        for (let i = 0; i < pixelsInChunk; i++) {
-          rawRGB[writeOffset++] = chunkData[i * 4];
-          rawRGB[writeOffset++] = chunkData[i * 4 + 1];
-          rawRGB[writeOffset++] = chunkData[i * 4 + 2];
+          if (
+            testData[px00] !== testData[px01] ||
+            testData[px00] !== testData[px10] ||
+            testData[px00] !== testData[px11] ||
+            testData[px00 + 1] !== testData[px01 + 1] ||
+            testData[px00 + 1] !== testData[px10 + 1] ||
+            testData[px00 + 1] !== testData[px11 + 1]
+          ) {
+            hasBlockPattern = false;
+            break;
+          }
         }
+        if (!hasBlockPattern) break;
       }
 
-      if (opts.onProgress) {
-        opts.onProgress({
-          phase: 'extract_pixels',
-          loaded: endRow,
-          total: currentHeight,
-        });
+      if (hasBlockPattern) {
+        isBlockEncoded = true;
+        const blocksWide = currentWidth / 2;
+        const blocksHigh = currentHeight / 2;
+        rawRGB = Buffer.alloc(blocksWide * blocksHigh * 3);
+
+        let outIdx = 0;
+        for (let by = 0; by < blocksHigh; by++) {
+          for (let bx = 0; bx < blocksWide; bx++) {
+            const { data: blockData } = await sharp(processedBuf)
+              .extract({ left: bx * 2, top: by * 2, width: 1, height: 1 })
+              .raw()
+              .toBuffer({ resolveWithObject: true });
+
+            rawRGB[outIdx++] = blockData[0];
+            rawRGB[outIdx++] = blockData[1];
+            rawRGB[outIdx++] = blockData[2];
+          }
+        }
+      }
+    }
+
+    if (!isBlockEncoded) {
+      rawRGB = Buffer.allocUnsafe(currentWidth * currentHeight * 3);
+      let writeOffset = 0;
+
+      const rowsPerChunk = 2000;
+
+      for (
+        let startRow = 0;
+        startRow < currentHeight;
+        startRow += rowsPerChunk
+      ) {
+        const endRow = Math.min(startRow + rowsPerChunk, currentHeight);
+        const chunkHeight = endRow - startRow;
+
+        const { data: chunkData, info: chunkInfo } = await sharp(processedBuf)
+          .extract({
+            left: 0,
+            top: startRow,
+            width: currentWidth,
+            height: chunkHeight,
+          })
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+
+        const channels = chunkInfo.channels;
+        const pixelsInChunk = currentWidth * chunkHeight;
+
+        if (channels === 3) {
+          chunkData.copy(rawRGB, writeOffset);
+          writeOffset += pixelsInChunk * 3;
+        } else if (channels === 4) {
+          for (let i = 0; i < pixelsInChunk; i++) {
+            rawRGB[writeOffset++] = chunkData[i * 4];
+            rawRGB[writeOffset++] = chunkData[i * 4 + 1];
+            rawRGB[writeOffset++] = chunkData[i * 4 + 2];
+          }
+        }
+
+        if (opts.onProgress) {
+          opts.onProgress({
+            phase: 'extract_pixels',
+            loaded: endRow,
+            total: currentHeight,
+          });
+        }
       }
     }
 
@@ -339,6 +406,7 @@ export async function decodePngToBinary(
     }
 
     let hasPixelMagic = false;
+    let hasBlockMagic = false;
     if (rawRGB.length >= 8 + PIXEL_MAGIC.length) {
       const widthFromDim = rawRGB.readUInt32BE(0);
       const heightFromDim = rawRGB.readUInt32BE(4);
@@ -348,6 +416,10 @@ export async function decodePngToBinary(
         rawRGB.slice(8, 8 + PIXEL_MAGIC.length).equals(PIXEL_MAGIC)
       ) {
         hasPixelMagic = true;
+      } else if (
+        rawRGB.slice(8, 8 + PIXEL_MAGIC_BLOCK.length).equals(PIXEL_MAGIC_BLOCK)
+      ) {
+        hasBlockMagic = true;
       }
     }
 
@@ -355,7 +427,7 @@ export async function decodePngToBinary(
     let logicalHeight: number;
     let logicalData: Buffer;
 
-    if (hasMarkerStart || hasPixelMagic) {
+    if (hasMarkerStart || hasPixelMagic || hasBlockMagic) {
       logicalWidth = currentWidth;
       logicalHeight = currentHeight;
       logicalData = rawRGB;
@@ -722,12 +794,20 @@ export async function decodePngToBinary(
 
       if (pixelBytes.length >= PIXEL_MAGIC.length) {
         const at0 = pixelBytes.slice(0, PIXEL_MAGIC.length).equals(PIXEL_MAGIC);
+        const at0Block = pixelBytes
+          .slice(0, PIXEL_MAGIC_BLOCK.length)
+          .equals(PIXEL_MAGIC_BLOCK);
         if (at0) {
           idx = PIXEL_MAGIC.length;
+        } else if (at0Block) {
+          idx = PIXEL_MAGIC_BLOCK.length;
         } else {
           const found = pixelBytes.indexOf(PIXEL_MAGIC);
+          const foundBlock = pixelBytes.indexOf(PIXEL_MAGIC_BLOCK);
           if (found !== -1) {
             idx = found + PIXEL_MAGIC.length;
+          } else if (foundBlock !== -1) {
+            idx = foundBlock + PIXEL_MAGIC_BLOCK.length;
           }
         }
       }
@@ -829,4 +909,3 @@ export async function decodePngToBinary(
   }
   throw new DataFormatError('No valid data found in image');
 }
-

@@ -9,10 +9,12 @@ export interface EncodeOptions {
   encrypt?: 'auto' | 'aes' | 'xor' | 'none';
   _skipAuto?: boolean;
   output?: 'auto' | 'png' | 'rox';
+  outputFormat?: 'png' | 'webp';
   includeName?: boolean;
   includeFileList?: boolean;
   fileList?: Array<string | { name: string; size: number }>;
   skipOptimization?: boolean;
+  useBlockEncoding?: boolean;
   onProgress?: (info: {
     phase: string;
     loaded?: number;

@@ -1,4 +1,6 @@
 use anyhow::Result;
+use std::process::{Command, Stdio};
+use std::io::Write;
 
 const MAGIC: &[u8] = b"ROX1";
 const ENC_NONE: u8 = 0x00;
@@ -9,8 +11,63 @@ const MARKER_START: [(u8, u8, u8); 3] = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
 const MARKER_END: [(u8, u8, u8); 3] = [(0, 0, 255), (0, 255, 0), (255, 0, 0)];
 const MARKER_ZSTD: (u8, u8, u8) = (0, 255, 0);
 
+#[derive(Debug, Clone, Copy)]
+pub enum ImageFormat {
+    Png,
+    WebP,
+    JpegXL,
+}
+
 pub fn encode_to_png(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption(data, compression_level, None, None)
+    let format = predict_best_format_raw(data);
+    encode_to_png_with_encryption_and_format(data, compression_level, None, None, format)
+}
+
+fn predict_best_format_raw(data: &[u8]) -> ImageFormat {
+    if data.len() < 512 {
+        return ImageFormat::Png;
+    }
+
+    let sample_size = data.len().min(4096);
+    let sample = &data[..sample_size];
+
+    let entropy = calculate_shannon_entropy(sample);
+    let repetition_score = detect_repetition_patterns(sample);
+    let unique_bytes = count_unique_bytes(sample);
+    let unique_ratio = unique_bytes as f64 / 256.0;
+    let is_sequential = detect_sequential_pattern(sample);
+
+    if entropy > 7.8 {
+        ImageFormat::Png
+    } else if is_sequential || repetition_score > 0.15 {
+        ImageFormat::JpegXL
+    } else if unique_ratio < 0.4 && entropy < 6.5 {
+        ImageFormat::JpegXL
+    } else if entropy < 5.0 {
+        ImageFormat::JpegXL
+    } else {
+        ImageFormat::Png
+    }
+}
+
+pub fn encode_to_png_raw(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
+    encode_to_png_with_encryption_and_format(data, compression_level, None, None, ImageFormat::Png)
+}
+
+fn encode_to_png_with_encryption_and_format(
+    data: &[u8],
+    compression_level: i32,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    format: ImageFormat,
+) -> Result<Vec<u8>> {
+    let png = encode_to_png_with_encryption(data, compression_level, passphrase, encrypt_type)?;
+
+    match format {
+        ImageFormat::Png => Ok(png),
+        ImageFormat::WebP => optimize_to_webp(&png).or(Ok(png)),
+        ImageFormat::JpegXL => optimize_to_jxl(&png).or(Ok(png)),
+    }
 }
 
 pub fn encode_to_png_with_encryption(
@@ -170,4 +227,176 @@ fn create_raw_deflate(data: &[u8]) -> Vec<u8> {
     result.extend_from_slice(&adler.to_be_bytes());
 
     result
+}
+
+fn predict_best_format(data: &[u8]) -> ImageFormat {
+    if data.len() < 2048 {
+        return ImageFormat::Png;
+    }
+
+    let sample_size = data.len().min(4096);
+    let sample = &data[..sample_size];
+
+    let entropy = calculate_shannon_entropy(sample);
+    let repetition_score = detect_repetition_patterns(sample);
+
+    let unique_bytes = count_unique_bytes(sample);
+    let unique_ratio = unique_bytes as f64 / 256.0;
+
+    let is_sequential = detect_sequential_pattern(sample);
+
+    if entropy > 7.8 {
+        ImageFormat::Png
+    } else if is_sequential || repetition_score > 0.2 {
+        ImageFormat::JpegXL
+    } else if unique_ratio < 0.3 && entropy < 6.5 {
+        ImageFormat::JpegXL
+    } else if entropy < 5.5 {
+        ImageFormat::JpegXL
+    } else {
+        ImageFormat::Png
+    }
+}
+
+fn detect_sequential_pattern(data: &[u8]) -> bool {
+    if data.len() < 256 {
+        return false;
+    }
+
+    let check_len = data.len().min(256);
+    let mut sequential = 0;
+
+    for i in 0..check_len - 1 {
+        let diff = (data[i + 1] as i16 - data[i] as i16).abs();
+        if diff <= 1 {
+            sequential += 1;
+        }
+    }
+
+    sequential as f64 / (check_len - 1) as f64 > 0.6
+}
+
+fn count_unique_bytes(data: &[u8]) -> usize {
+    let mut seen = [false; 256];
+    for &byte in data {
+        seen[byte as usize] = true;
+    }
+    seen.iter().filter(|&&x| x).count()
+}
+
+fn calculate_shannon_entropy(data: &[u8]) -> f64 {
+    let mut freq = [0u32; 256];
+    for &byte in data {
+        freq[byte as usize] += 1;
+    }
+
+    let len = data.len() as f64;
+    let mut entropy = 0.0;
+
+    for &count in &freq {
+        if count > 0 {
+            let p = count as f64 / len;
+            entropy -= p * p.log2();
+        }
+    }
+
+    entropy
+}
+
+fn detect_repetition_patterns(data: &[u8]) -> f64 {
+    if data.len() < 4 {
+        return 0.0;
+    }
+
+    let mut repetitions = 0;
+    let mut total_checks = 0;
+
+    for i in 0..data.len().min(1024) {
+        if i + 3 < data.len() {
+            let byte = data[i];
+            if data[i + 1] == byte && data[i + 2] == byte && data[i + 3] == byte {
+                repetitions += 1;
+            }
+            total_checks += 1;
+        }
+    }
+
+    if total_checks > 0 {
+        repetitions as f64 / total_checks as f64
+    } else {
+        0.0
+    }
+}
+
+fn optimize_format(png_data: &[u8]) -> Result<Vec<u8>> {
+    let formats = [
+        ("webp", optimize_to_webp(png_data)),
+        ("jxl", optimize_to_jxl(png_data)),
+    ];
+
+    let mut best = png_data.to_vec();
+    let mut best_size = png_data.len();
+
+    for (name, result) in formats {
+        if let Ok(optimized) = result {
+            if optimized.len() < best_size {
+                best = optimized;
+                best_size = best.len();
+            }
+        }
+    }
+
+    Ok(best)
+}
+
+fn optimize_to_webp(png_data: &[u8]) -> Result<Vec<u8>> {
+    use std::fs;
+
+    let tmp_in = "/tmp/roxify_temp_in.png";
+    let tmp_out = "/tmp/roxify_temp_out.webp";
+
+    fs::write(tmp_in, png_data)?;
+
+    let status = Command::new("cwebp")
+        .args(&["-lossless", tmp_in, "-o", tmp_out])
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .status()?;
+
+    if status.success() {
+        let result = fs::read(tmp_out)?;
+        let _ = fs::remove_file(tmp_in);
+        let _ = fs::remove_file(tmp_out);
+        Ok(result)
+    } else {
+        let _ = fs::remove_file(tmp_in);
+        let _ = fs::remove_file(tmp_out);
+        Err(anyhow::anyhow!("WebP conversion failed"))
+    }
+}
+
+fn optimize_to_jxl(png_data: &[u8]) -> Result<Vec<u8>> {
+    use std::fs;
+
+    let tmp_in = "/tmp/roxify_temp_in.png";
+    let tmp_out = "/tmp/roxify_temp_out.jxl";
+
+    fs::write(tmp_in, png_data)?;
+
+    let status = Command::new("cjxl")
+        .args(&[tmp_in, tmp_out, "-d", "0", "-e", "9"])
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .status()?;
+
+    if status.success() {
+        let result = fs::read(tmp_out)?;
+        let _ = fs::remove_file(tmp_in);
+        let _ = fs::remove_file(tmp_out);
+        Ok(result)
+    } else {
+        let _ = fs::remove_file(tmp_in);
+        let _ = fs::remove_file(tmp_out);
+        Err(anyhow::anyhow!("JXL conversion failed"))
+    }
 }

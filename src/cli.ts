@@ -19,7 +19,7 @@ import {
   isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
-const VERSION = '1.3.2';
+const VERSION = '1.4.0';
 
 async function readLargeFile(filePath: string): Promise<Buffer> {
   const st = statSync(filePath);
@@ -248,7 +248,7 @@ async function encodeCommand(args: string[]) {
       await encodeWithRustCLI(
         inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0],
         resolvedOutput,
-        3,
+        19,
         parsed.passphrase,
         encryptType,
       );
@@ -341,8 +341,9 @@ async function encodeCommand(args: string[]) {
     Object.assign(options, {
       mode,
       name: parsed.outputName || 'archive',
-      skipOptimization: true,
+      skipOptimization: false,
       compressionLevel: 19,
+      outputFormat: 'auto',
     });
 
     if (parsed.verbose) options.verbose = true;

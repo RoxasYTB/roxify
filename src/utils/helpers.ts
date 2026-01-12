@@ -115,3 +115,62 @@ export function tryDecryptIfNeeded(buf: Buffer, passphrase?: string): Buffer {
 
   return buf;
 }
+
+export function generatePalette256(): Buffer {
+  const palette = Buffer.alloc(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    palette[i * 3] = i;
+    palette[i * 3 + 1] = (i * 127) & 0xff;
+    palette[i * 3 + 2] = 255 - i;
+  }
+  return palette;
+}
+
+export function encodeDataToBlocks2x2(data: Buffer): {
+  buffer: Buffer;
+  width: number;
+  height: number;
+} {
+  const totalBytes = data.length;
+  const totalBlocks = totalBytes;
+  const blocksPerRow = Math.ceil(Math.sqrt(totalBlocks));
+  const numRows = Math.ceil(totalBlocks / blocksPerRow);
+
+  const pixelWidth = blocksPerRow * 2;
+  const pixelHeight = numRows * 2;
+
+  const indexedBuffer = Buffer.alloc(pixelWidth * pixelHeight);
+
+  for (let i = 0; i < totalBytes; i++) {
+    const blockX = (i % blocksPerRow) * 2;
+    const blockY = Math.floor(i / blocksPerRow) * 2;
+    const value = data[i];
+
+    indexedBuffer[blockY * pixelWidth + blockX] = value;
+    indexedBuffer[blockY * pixelWidth + blockX + 1] = value;
+    indexedBuffer[(blockY + 1) * pixelWidth + blockX] = value;
+    indexedBuffer[(blockY + 1) * pixelWidth + blockX + 1] = value;
+  }
+
+  return { buffer: indexedBuffer, width: pixelWidth, height: pixelHeight };
+}
+
+export function decodeBlocksToData(
+  indexedBuffer: Buffer,
+  width: number,
+  height: number,
+): Buffer {
+  const blocksPerRow = width / 2;
+  const numRows = height / 2;
+  const totalBlocks = blocksPerRow * numRows;
+
+  const data = Buffer.alloc(totalBlocks);
+
+  for (let i = 0; i < totalBlocks; i++) {
+    const blockX = (i % blocksPerRow) * 2;
+    const blockY = Math.floor(i / blocksPerRow) * 2;
+    data[i] = indexedBuffer[blockY * width + blockX];
+  }
+
+  return data;
+}

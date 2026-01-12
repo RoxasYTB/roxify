@@ -27,8 +27,8 @@ async function testFinalComplete() {
   const encodedPng = await encodeBinaryToPng(inputBuffer, {
     mode: 'screenshot',
     name: 'test-final.txt',
-    compression: 'br',
-    brQuality: 1,
+    compressionLevel: 19,
+    useBlockEncoding: false,
   });
 
   console.log('PNG encodé:', encodedPng.length, 'octets');
@@ -43,6 +43,27 @@ async function testFinalComplete() {
     'x',
     encodedInfo.height,
   );
+  console.log('Canaux:', encodedInfo.channels);
+
+  if (encodedInfo.channels === 4) {
+    console.log(
+      '⚠️  Canal alpha détecté - vérification que toutes les valeurs alpha sont 255...',
+    );
+    let hasTransparency = false;
+    for (let i = 3; i < encodedData.length; i += 4) {
+      if (encodedData[i] !== 255) {
+        hasTransparency = true;
+        break;
+      }
+    }
+    if (hasTransparency) {
+      console.log('✗ ÉCHEC: Transparence détectée dans le canal alpha');
+      process.exit(1);
+    }
+    console.log('✓ Canal alpha présent mais opaque partout (255)');
+  } else if (encodedInfo.channels === 3) {
+    console.log('✓ Pas de canal alpha (RGB seulement)');
+  }
 
   const encBuf = Buffer.from(encodedData);
   const encFound = encBuf.indexOf(Buffer.from('PXL1'));

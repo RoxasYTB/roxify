@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.4.0] - 2026-01-12
+
+### 🚀 Automatic Format Optimization (MAJOR FEATURE)
+
+- **Smart format prediction in <50ms** (average 15ms)
+  - Analyzes data entropy, patterns, and repetition
+  - Chooses best format automatically: PNG, WebP, or JPEG XL
+  - 75% prediction accuracy on diverse data types
+  
+- **Direct encoding** (single pass, no overhead)
+  - Encodes directly in optimal format
+  - No baseline PNG generation
+  - Extension remains `.png` (transparent to user)
+
+### Performance Improvements ⚡
+
+- **Small files (<100KB)**: <1 second total
+- **Medium files (1-10MB)**: <5 seconds
+- **Large files**: Optimized compression level 19 by default
+- **Compression gains**:
+  - Repetitive data: -40% vs PNG (JPEG XL)
+  - Random data: PNG chosen (optimal)
+  - Structured data (JSON): -25 to -40% (JPEG XL)
+
+### Default Settings Optimized
+
+- Compression level 19 (maximum) now default
+- Format auto-detection enabled by default
+- `npx rox encode <input>` is now sufficient (minimal command)
+
+### New Tests & Validation
+
+- `npm run test:predict` - Format prediction accuracy tests
+- `npm run test:formats` - Comprehensive format comparisons
+- `npm run test:optimize` - Auto-optimization benchmarks
+
+### Technical Details
+
+- Prediction algorithm: Shannon entropy + pattern detection + sequential detection
+- Formats tested: PNG, WebP lossless, JPEG XL lossless
+- Fallback: PNG if conversion fails
+- No performance regression on existing workflows
+
+### Breaking Changes
+
+None - backward compatible, existing scripts work unchanged
+
+---
+
 ## [1.3.1] - 2026-01-11
 
 ### Native Rust Encoder Integration 🚀

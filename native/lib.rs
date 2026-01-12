@@ -9,6 +9,9 @@ mod bwt;
 mod context_mixing;
 mod pool;
 mod hybrid;
+mod encoder;
+mod packer;
+mod crypto;
 
 pub use core::*;
 pub use gpu::*;
@@ -175,4 +178,18 @@ mod tests {
         let entropy = context_mixing::analyze_entropy(data);
         assert!(entropy > 0.0 && entropy < 8.0);
     }
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_png(buffer: Buffer, compression_level: i32) -> Result<Vec<u8>> {
+    encoder::encode_to_png(&buffer, compression_level)
+        .map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_png_raw(buffer: Buffer, compression_level: i32) -> Result<Vec<u8>> {
+    encoder::encode_to_png_raw(&buffer, compression_level)
+        .map_err(|e| Error::from_reason(e.to_string()))
 }

@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'path';
 import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInPng, IncorrectPassphraseError, listFilesInPng, PassphraseRequiredError, } from './index.js';
 import { packPathsGenerator, unpackBuffer } from './pack.js';
 import { encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
-const VERSION = '1.3.2';
+const VERSION = '1.4.0';
 async function readLargeFile(filePath) {
     const st = statSync(filePath);
     if (st.size <= 2 * 1024 * 1024 * 1024) {
@@ -211,7 +211,7 @@ async function encodeCommand(args) {
                 });
             }, 500);
             const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
-            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 3, parsed.passphrase, encryptType);
+            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 19, parsed.passphrase, encryptType);
             clearInterval(progressInterval);
             const encodeTime = Date.now() - startTime;
             encodeBar.update(100, {
@@ -283,8 +283,9 @@ async function encodeCommand(args) {
         Object.assign(options, {
             mode,
             name: parsed.outputName || 'archive',
-            skipOptimization: true,
+            skipOptimization: false,
             compressionLevel: 19,
+            outputFormat: 'auto',
         });
         if (parsed.verbose)
             options.verbose = true;

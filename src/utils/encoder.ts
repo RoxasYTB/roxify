@@ -12,6 +12,7 @@ import {
   MARKER_END,
   MARKER_START,
   PIXEL_MAGIC,
+  PIXEL_MAGIC_BLOCK,
   PNG_HEADER,
 } from './constants.js';
 import { crc32 } from './crc.js';
@@ -242,7 +243,10 @@ export async function encodeBinaryToPng(
       lenBuf.writeUInt32BE(jsonBuf.length, 0);
       metaPixel = [...metaPixel, Buffer.from('rXFL', 'utf8'), lenBuf, jsonBuf];
     }
-    const dataWithoutMarkers: Buffer[] = [PIXEL_MAGIC, ...metaPixel];
+
+    const useBlockEncoding = opts.useBlockEncoding ?? true;
+    const pixelMagic = useBlockEncoding ? PIXEL_MAGIC_BLOCK : PIXEL_MAGIC;
+    const dataWithoutMarkers: Buffer[] = [pixelMagic, ...metaPixel];
 
     const dataWithoutMarkersLen = dataWithoutMarkers.reduce(
       (a, b) => a + b.length,
@@ -262,73 +266,235 @@ export async function encodeBinaryToPng(
       ...paddedData,
     ];
 
-    const bytesPerPixel = 3;
     const dataWithMarkersLen = dataWithMarkers.reduce(
       (a, b) => a + b.length,
       0,
     );
-    const dataPixels = Math.ceil(dataWithMarkersLen / 3);
-    const totalPixels = dataPixels + MARKER_END.length;
-    const maxWidth = 16384;
 
-    let side = Math.ceil(Math.sqrt(totalPixels));
-    if (side < MARKER_END.length) side = MARKER_END.length;
+    let width: number;
+    let height: number;
+    let bufScr: Buffer;
 
-    let logicalWidth: number;
-    let logicalHeight: number;
-    if (side <= maxWidth) {
-      logicalWidth = side;
-      logicalHeight = side;
-    } else {
-      logicalWidth = Math.min(maxWidth, totalPixels);
-      logicalHeight = Math.ceil(totalPixels / logicalWidth);
-    }
-
-    const scale = 1;
-    const width = logicalWidth * scale;
-    const height = logicalHeight * scale;
-
-    const LARGE_IMAGE_PIXELS = 10_000_000;
-    const useManualPng =
-      width * height > LARGE_IMAGE_PIXELS || !!process.env.ROX_FAST_PNG;
-
-    let raw: Buffer;
-    let stride = 0;
-
-    if (useManualPng) {
-      stride = width * 3 + 1;
-      raw = Buffer.alloc(height * stride);
-
+    if (useBlockEncoding) {
       const flatData = Buffer.concat(dataWithMarkers);
-      const markerEndBytes = Buffer.alloc(MARKER_END.length * 3);
-      for (let i = 0; i < MARKER_END.length; i++) {
-        markerEndBytes[i * 3] = MARKER_END[i].r;
-        markerEndBytes[i * 3 + 1] = MARKER_END[i].g;
-        markerEndBytes[i * 3 + 2] = MARKER_END[i].b;
+
+      const blocksPerRow = Math.ceil(Math.sqrt(flatData.length));
+      const numRows = Math.ceil(flatData.length / blocksPerRow);
+
+      width = blocksPerRow * 2;
+      height = numRows * 2;
+
+      const rgbBuffer = Buffer.alloc(width * height * 3);
+
+      for (let i = 0; i < flatData.length; i++) {
+        const blockRow = Math.floor(i / blocksPerRow);
+        const blockCol = i % blocksPerRow;
+
+        const pixelRow = blockRow * 2;
+        const pixelCol = blockCol * 2;
+
+        const byte = flatData[i];
+
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const px = (pixelRow + dy) * width + (pixelCol + dx);
+            rgbBuffer[px * 3] = byte;
+            rgbBuffer[px * 3 + 1] = byte;
+            rgbBuffer[px * 3 + 2] = byte;
+          }
+        }
       }
 
-      const totalDataBytes = logicalWidth * logicalHeight * 3;
-      const fullData = Buffer.alloc(totalDataBytes);
+      bufScr = await sharp(rgbBuffer, {
+        raw: { width, height, channels: 3 },
+      })
+        .png({
+          compressionLevel: 9,
+          adaptiveFiltering: true,
+          effort: 9,
+        })
+        .toBuffer();
+    } else {
+      const bytesPerPixel = 3;
+      const dataPixels = Math.ceil(dataWithMarkersLen / 3);
+      const totalPixels = dataPixels + MARKER_END.length;
+      const maxWidth = 16384;
 
-      const markerStartPos =
-        (logicalHeight - 1) * logicalWidth * 3 +
-        (logicalWidth - MARKER_END.length) * 3;
-      flatData.copy(fullData, 0, 0, Math.min(flatData.length, markerStartPos));
-      markerEndBytes.copy(fullData, markerStartPos);
+      let side = Math.ceil(Math.sqrt(totalPixels));
+      if (side < MARKER_END.length) side = MARKER_END.length;
 
-      for (let row = 0; row < height; row++) {
-        raw[row * stride] = 0;
-        fullData.copy(
-          raw,
-          row * stride + 1,
-          row * width * 3,
-          (row + 1) * width * 3,
+      let logicalWidth: number;
+      let logicalHeight: number;
+      if (side <= maxWidth) {
+        logicalWidth = side;
+        logicalHeight = side;
+      } else {
+        logicalWidth = Math.min(maxWidth, totalPixels);
+        logicalHeight = Math.ceil(totalPixels / logicalWidth);
+      }
+
+      const scale = 1;
+      width = logicalWidth * scale;
+      height = logicalHeight * scale;
+
+      const LARGE_IMAGE_PIXELS = 10_000_000;
+      const useManualPng =
+        (width * height > LARGE_IMAGE_PIXELS || !!process.env.ROX_FAST_PNG) &&
+        opts.outputFormat !== 'webp';
+
+      if (process.env.ROX_DEBUG) {
+        console.log(
+          `[DEBUG] Width=${width}, Height=${height}, Pixels=${width * height}`,
+        );
+        console.log(
+          `[DEBUG] outputFormat=${opts.outputFormat}, useManualPng=${useManualPng}`,
         );
       }
-    } else {
-      raw = Buffer.alloc(width * height * bytesPerPixel);
-      const flatData = Buffer.concat(dataWithMarkers);
-      flatData.copy(raw, 0, 0, Math.min(flatData.length, raw.length));
+
+      let raw: Buffer;
+      let stride = 0;
+
+      if (useManualPng) {
+        stride = width * 3 + 1;
+        raw = Buffer.alloc(height * stride);
+
+        const flatData = Buffer.concat(dataWithMarkers);
+        const markerEndBytes = Buffer.alloc(MARKER_END.length * 3);
+        for (let i = 0; i < MARKER_END.length; i++) {
+          markerEndBytes[i * 3] = MARKER_END[i].r;
+          markerEndBytes[i * 3 + 1] = MARKER_END[i].g;
+          markerEndBytes[i * 3 + 2] = MARKER_END[i].b;
+        }
+
+        const totalDataBytes = logicalWidth * logicalHeight * 3;
+        const fullData = Buffer.alloc(totalDataBytes);
+
+        const markerStartPos =
+          (logicalHeight - 1) * logicalWidth * 3 +
+          (logicalWidth - MARKER_END.length) * 3;
+        flatData.copy(
+          fullData,
+          0,
+          0,
+          Math.min(flatData.length, markerStartPos),
+        );
+        markerEndBytes.copy(fullData, markerStartPos);
+
+        for (let row = 0; row < height; row++) {
+          raw[row * stride] = 0;
+          fullData.copy(
+            raw,
+            row * stride + 1,
+            row * width * 3,
+            (row + 1) * width * 3,
+          );
+        }
+      } else {
+        raw = Buffer.alloc(width * height * 3);
+        const flatData = Buffer.concat(dataWithMarkers);
+        flatData.copy(raw, 0, 0, Math.min(flatData.length, raw.length));
+      }
+
+      if (opts.onProgress)
+        opts.onProgress({ phase: 'png_gen', loaded: 0, total: height });
+
+      if (useManualPng) {
+        const bytesPerRow = width * 3;
+        const scanlinesData = Buffer.alloc(height * (1 + bytesPerRow));
+
+        const progressStep = Math.max(1, Math.floor(height / 20));
+        for (let row = 0; row < height; row++) {
+          scanlinesData[row * (1 + bytesPerRow)] = 0;
+          const srcStart = row * stride + 1;
+          const dstStart = row * (1 + bytesPerRow) + 1;
+          raw.copy(scanlinesData, dstStart, srcStart, srcStart + bytesPerRow);
+
+          if (opts.onProgress && row % progressStep === 0) {
+            opts.onProgress({ phase: 'png_gen', loaded: row, total: height });
+          }
+        }
+
+        if (opts.onProgress)
+          opts.onProgress({ phase: 'png_compress', loaded: 0, total: 100 });
+
+        const idatData = zlib.deflateSync(scanlinesData, {
+          level: 0,
+          memLevel: 8,
+          strategy: zlib.constants.Z_FILTERED,
+        });
+
+        raw = Buffer.alloc(0);
+
+        const ihdrData = Buffer.alloc(13);
+        ihdrData.writeUInt32BE(width, 0);
+        ihdrData.writeUInt32BE(height, 4);
+        ihdrData[8] = 8;
+        ihdrData[9] = 2;
+        ihdrData[10] = 0;
+        ihdrData[11] = 0;
+        ihdrData[12] = 0;
+
+        const ihdrType = Buffer.from('IHDR', 'utf8');
+        const ihdrCrc = crc32(ihdrData, crc32(ihdrType));
+        const ihdrCrcBuf = Buffer.alloc(4);
+        ihdrCrcBuf.writeUInt32BE(ihdrCrc, 0);
+        const ihdrLen = Buffer.alloc(4);
+        ihdrLen.writeUInt32BE(ihdrData.length, 0);
+
+        const idatType = Buffer.from('IDAT', 'utf8');
+        const idatCrc = crc32(idatData, crc32(idatType));
+        const idatCrcBuf = Buffer.alloc(4);
+        idatCrcBuf.writeUInt32BE(idatCrc, 0);
+        const idatLen = Buffer.alloc(4);
+        idatLen.writeUInt32BE(idatData.length, 0);
+
+        const iendType = Buffer.from('IEND', 'utf8');
+        const iendCrc = crc32(Buffer.alloc(0), crc32(iendType));
+        const iendCrcBuf = Buffer.alloc(4);
+        iendCrcBuf.writeUInt32BE(iendCrc, 0);
+        const iendLen = Buffer.alloc(4);
+        iendLen.writeUInt32BE(0, 0);
+
+        bufScr = Buffer.concat([
+          PNG_HEADER,
+          ihdrLen,
+          ihdrType,
+          ihdrData,
+          ihdrCrcBuf,
+          idatLen,
+          idatType,
+          idatData,
+          idatCrcBuf,
+          iendLen,
+          iendType,
+          iendCrcBuf,
+        ]);
+      } else {
+        const outputFormat = opts.outputFormat || 'png';
+
+        if (outputFormat === 'webp') {
+          bufScr = await sharp(raw, {
+            raw: { width, height, channels: 3 },
+          })
+            .webp({
+              lossless: true,
+              quality: 100,
+              effort: 6,
+            })
+            .toBuffer();
+        } else {
+          bufScr = await sharp(raw, {
+            raw: { width, height, channels: 3 },
+          })
+            .png({
+              compressionLevel: 3,
+              palette: false,
+              effort: 1,
+              adaptiveFiltering: false,
+            })
+            .toBuffer();
+        }
+      }
     }
 
     payload.length = 0;
@@ -339,100 +505,9 @@ export async function encodeBinaryToPng(
     dataWithoutMarkers.length = 0;
 
     if (opts.onProgress)
-      opts.onProgress({ phase: 'png_gen', loaded: 0, total: height });
-
-    let bufScr: Buffer;
-
-    if (useManualPng) {
-      const bytesPerRow = width * 3;
-      const scanlinesData = Buffer.alloc(height * (1 + bytesPerRow));
-
-      const progressStep = Math.max(1, Math.floor(height / 20));
-      for (let row = 0; row < height; row++) {
-        scanlinesData[row * (1 + bytesPerRow)] = 0;
-        const srcStart = row * stride + 1;
-        const dstStart = row * (1 + bytesPerRow) + 1;
-        raw.copy(scanlinesData, dstStart, srcStart, srcStart + bytesPerRow);
-
-        if (opts.onProgress && row % progressStep === 0) {
-          opts.onProgress({ phase: 'png_gen', loaded: row, total: height });
-        }
-      }
-
-      if (opts.onProgress)
-        opts.onProgress({ phase: 'png_compress', loaded: 0, total: 100 });
-
-      const idatData = zlib.deflateSync(scanlinesData, {
-        level: 0,
-        memLevel: 8,
-        strategy: zlib.constants.Z_FILTERED,
-      });
-
-      raw = Buffer.alloc(0);
-
-      const ihdrData = Buffer.alloc(13);
-      ihdrData.writeUInt32BE(width, 0);
-      ihdrData.writeUInt32BE(height, 4);
-      ihdrData[8] = 8;
-      ihdrData[9] = 2;
-      ihdrData[10] = 0;
-      ihdrData[11] = 0;
-      ihdrData[12] = 0;
-
-      const ihdrType = Buffer.from('IHDR', 'utf8');
-      const ihdrCrc = crc32(ihdrData, crc32(ihdrType));
-      const ihdrCrcBuf = Buffer.alloc(4);
-      ihdrCrcBuf.writeUInt32BE(ihdrCrc, 0);
-      const ihdrLen = Buffer.alloc(4);
-      ihdrLen.writeUInt32BE(ihdrData.length, 0);
-
-      const idatType = Buffer.from('IDAT', 'utf8');
-      const idatCrc = crc32(idatData, crc32(idatType));
-      const idatCrcBuf = Buffer.alloc(4);
-      idatCrcBuf.writeUInt32BE(idatCrc, 0);
-      const idatLen = Buffer.alloc(4);
-      idatLen.writeUInt32BE(idatData.length, 0);
-
-      const iendType = Buffer.from('IEND', 'utf8');
-      const iendCrc = crc32(Buffer.alloc(0), crc32(iendType));
-      const iendCrcBuf = Buffer.alloc(4);
-      iendCrcBuf.writeUInt32BE(iendCrc, 0);
-      const iendLen = Buffer.alloc(4);
-      iendLen.writeUInt32BE(0, 0);
-
-      bufScr = Buffer.concat([
-        PNG_HEADER,
-        ihdrLen,
-        ihdrType,
-        ihdrData,
-        ihdrCrcBuf,
-        idatLen,
-        idatType,
-        idatData,
-        idatCrcBuf,
-        iendLen,
-        iendType,
-        iendCrcBuf,
-      ]);
-    } else {
-      bufScr = await sharp(raw, {
-        raw: { width, height, channels: 3 },
-      })
-        .png({
-          compressionLevel: 3,
-          palette: false,
-          effort: 1,
-          adaptiveFiltering: false,
-        })
-        .toBuffer();
-    }
-
-    raw = Buffer.alloc(0);
-
-    if (opts.onProgress)
       opts.onProgress({ phase: 'png_compress', loaded: 100, total: 100 });
 
-    if (opts.skipOptimization) {
+    if (opts.skipOptimization || opts.outputFormat === 'webp') {
       progressBar?.stop();
       return bufScr;
     }
