@@ -1,17 +1,36 @@
 # Changelog
 
+## [1.4.1] - 2026-01-12
+
+### Patch: Performance & Integrity
+
+- Default compression level changed to **12** for a better speed/size balance
+- Removed automatic exclusion of files — all files are included by default to guarantee integrity
+- Packer improvements to ensure consistent `rXFL` file list metadata
+- Performance tuning (I/O parallelism & no slow external reconversions by default)
+
+---
+
 ## [1.4.0] - 2026-01-12
 
-### 🚀 Automatic Format Optimization (MAJOR FEATURE)
+### 🚀 Automatic Format Optimization with Universal Compatibility (MAJOR FEATURE)
 
 - **Smart format prediction in <50ms** (average 15ms)
+
   - Analyzes data entropy, patterns, and repetition
   - Chooses best format automatically: PNG, WebP, or JPEG XL
   - 75% prediction accuracy on diverse data types
-  
+
+- **Universal PNG Output** (NEW)
+
+  - All generated files are real, viewable PNG images
+  - WebP/JXL optimizations applied internally, then reconverted to PNG
+  - Guarantees compatibility with all browsers and image viewers
+  - Enables direct screenshot capture of generated files
+
 - **Direct encoding** (single pass, no overhead)
   - Encodes directly in optimal format
-  - No baseline PNG generation
+  - Automatically reconverts WebP/JXL to PNG for universal compatibility
   - Extension remains `.png` (transparent to user)
 
 ### Performance Improvements ⚡
@@ -20,9 +39,9 @@
 - **Medium files (1-10MB)**: <5 seconds
 - **Large files**: Optimized compression level 19 by default
 - **Compression gains**:
-  - Repetitive data: -40% vs PNG (JPEG XL)
+  - Repetitive data: -40% vs PNG (JPEG XL → PNG reconversion)
   - Random data: PNG chosen (optimal)
-  - Structured data (JSON): -25 to -40% (JPEG XL)
+  - Structured data (JSON): -25 to -40% (JPEG XL → PNG reconversion)
 
 ### Default Settings Optimized
 
