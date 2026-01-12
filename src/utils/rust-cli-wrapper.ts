@@ -7,17 +7,55 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 function findRustBinary(): string | null {
-  const possiblePaths = [
-    join(__dirname, '..', '..', 'target', 'release', 'roxify_native'),
-    join(__dirname, '..', 'dist', 'roxify-cli'),
-    '/usr/local/bin/roxify_native',
+  const candidates = [] as string[];
+
+  const binNames =
+    process.platform === 'win32'
+      ? ['roxify-cli.exe', 'roxify_cli.exe', 'roxify_native.exe']
+      : ['roxify-cli', 'roxify_cli', 'roxify_native'];
+
+  // Possible locations relative to this file (works in repo and in packaged dist)
+  const relativeDirs = [
+    join(__dirname, '..', '..', 'target', 'release'),
+    join(__dirname, '..', '..', 'dist'),
+    join(__dirname, '..'),
+    join(__dirname, '..', '..'),
   ];
 
-  for (const path of possiblePaths) {
-    if (existsSync(path)) {
-      return path;
+  for (const dir of relativeDirs) {
+    for (const name of binNames) {
+      candidates.push(join(dir, name));
     }
   }
+
+  // Common global paths
+  if (process.platform !== 'win32') {
+    candidates.push('/usr/local/bin/roxify_native');
+    candidates.push('/usr/bin/roxify_native');
+  }
+
+  for (const p of candidates) {
+    try {
+      if (existsSync(p)) return p;
+    } catch (e) {}
+  }
+
+  // Search in PATH for common binary names
+  try {
+    const which = process.platform === 'win32' ? 'where' : 'which';
+    const { execSync } = require('child_process');
+    for (const name of binNames) {
+      try {
+        const out = execSync(`${which} ${name}`, { encoding: 'utf-8' })
+          .split('\n')[0]
+          .trim();
+        if (out && existsSync(out)) return out;
+      } catch (e) {
+        // ignore
+      }
+    }
+  } catch (e) {}
+
   return null;
 }
 

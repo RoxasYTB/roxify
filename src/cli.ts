@@ -19,7 +19,7 @@ import {
   isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
-const VERSION = '1.3.1';
+const VERSION = '1.3.2';
 
 async function readLargeFile(filePath: string): Promise<Buffer> {
   const st = statSync(filePath);

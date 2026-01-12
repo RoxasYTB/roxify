@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'path';
 import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInPng, IncorrectPassphraseError, listFilesInPng, PassphraseRequiredError, } from './index.js';
 import { packPathsGenerator, unpackBuffer } from './pack.js';
 import { encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
-const VERSION = '1.3.1';
+const VERSION = '1.3.2';
 async function readLargeFile(filePath) {
     const st = statSync(filePath);
     if (st.size <= 2 * 1024 * 1024 * 1024) {

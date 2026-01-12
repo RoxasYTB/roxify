@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Encode binary data into PNG images and decode them back. CLI and programmatic API with native Rust acceleration.",
   "type": "module",
   "main": "dist/index.js",
