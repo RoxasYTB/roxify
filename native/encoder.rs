@@ -20,7 +20,16 @@ pub enum ImageFormat {
 
 pub fn encode_to_png(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
     let format = predict_best_format_raw(data);
-    encode_to_png_with_encryption_and_format(data, compression_level, None, None, format)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, None, None)
+}
+
+pub fn encode_to_png_with_name(data: &[u8], compression_level: i32, name: Option<&str>) -> Result<Vec<u8>> {
+    let format = predict_best_format_raw(data);
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, name, None)
+}
+
+pub fn encode_to_png_with_name_and_filelist(data: &[u8], compression_level: i32, name: Option<&str>, file_list: Option<&str>) -> Result<Vec<u8>> {
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, name, file_list)
 }
 
 fn predict_best_format_raw(data: &[u8]) -> ImageFormat {
@@ -51,30 +60,66 @@ fn predict_best_format_raw(data: &[u8]) -> ImageFormat {
 }
 
 pub fn encode_to_png_raw(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption_and_format(data, compression_level, None, None, ImageFormat::Png)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, None, None)
 }
 
-fn encode_to_png_with_encryption_and_format(
+pub fn encode_to_png_with_encryption_and_name(
+    data: &[u8],
+    compression_level: i32,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    name: Option<&str>,
+) -> Result<Vec<u8>> {
+    let format = predict_best_format_raw(data);
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, format, name, None)
+}
+
+pub fn encode_to_png_with_encryption_name_and_filelist(
+    data: &[u8],
+    compression_level: i32,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    name: Option<&str>,
+    file_list: Option<&str>,
+) -> Result<Vec<u8>> {
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, ImageFormat::Png, name, file_list)
+}
+
+fn encode_to_png_with_encryption_name_and_format_and_filelist(
     data: &[u8],
     compression_level: i32,
     passphrase: Option<&str>,
     encrypt_type: Option<&str>,
     format: ImageFormat,
+    name: Option<&str>,
+    file_list: Option<&str>,
 ) -> Result<Vec<u8>> {
-    let png = encode_to_png_with_encryption(data, compression_level, passphrase, encrypt_type)?;
+    let png = encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, passphrase, encrypt_type, name, file_list)?;
 
     match format {
         ImageFormat::Png => Ok(png),
-        ImageFormat::WebP => optimize_to_webp(&png).or(Ok(png)),
-        ImageFormat::JpegXL => optimize_to_jxl(&png).or(Ok(png)),
+        ImageFormat::WebP => {
+            match optimize_to_webp(&png) {
+                Ok(optimized) => reconvert_to_png(&optimized, "webp").or_else(|_| Ok(png)),
+                Err(_) => Ok(png),
+            }
+        },
+        ImageFormat::JpegXL => {
+            match optimize_to_jxl(&png) {
+                Ok(optimized) => reconvert_to_png(&optimized, "jxl").or_else(|_| Ok(png)),
+                Err(_) => Ok(png),
+            }
+        },
     }
 }
 
-pub fn encode_to_png_with_encryption(
+fn encode_to_png_with_encryption_name_and_filelist_internal(
     data: &[u8],
     compression_level: i32,
     passphrase: Option<&str>,
     encrypt_type: Option<&str>,
+    name: Option<&str>,
+    file_list: Option<&str>,
 ) -> Result<Vec<u8>> {
     let payload_input = [MAGIC, data].concat();
 
@@ -91,7 +136,7 @@ pub fn encode_to_png_with_encryption(
         crate::crypto::no_encryption(&compressed)
     };
 
-    let meta_pixel = build_meta_pixel(&encrypted)?;
+    let meta_pixel = build_meta_pixel_with_name_and_filelist(&encrypted, name, file_list)?;
     let data_without_markers = [PIXEL_MAGIC, &meta_pixel].concat();
 
     let padding_needed = (3 - (data_without_markers.len() % 3)) % 3;
@@ -152,15 +197,37 @@ pub fn encode_to_png_with_encryption(
 }
 
 fn build_meta_pixel(payload: &[u8]) -> Result<Vec<u8>> {
+    build_meta_pixel_with_name(payload, None)
+}
+
+fn build_meta_pixel_with_name(payload: &[u8], name: Option<&str>) -> Result<Vec<u8>> {
+    build_meta_pixel_with_name_and_filelist(payload, name, None)
+}
+
+fn build_meta_pixel_with_name_and_filelist(payload: &[u8], name: Option<&str>, file_list: Option<&str>) -> Result<Vec<u8>> {
     let version = 1u8;
-    let name_len = 0u8;
+    let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
+    let name_len = name_bytes.len().min(255) as u8;
     let payload_len_bytes = (payload.len() as u32).to_be_bytes();
 
-    let mut result = Vec::with_capacity(1 + 1 + 4 + payload.len());
+    let mut result = Vec::with_capacity(1 + 1 + name_len as usize + 4 + payload.len() + 256);
     result.push(version);
     result.push(name_len);
+
+    if name_len > 0 {
+        result.extend_from_slice(&name_bytes[..name_len as usize]);
+    }
+
     result.extend_from_slice(&payload_len_bytes);
     result.extend_from_slice(payload);
+
+    if let Some(file_list_json) = file_list {
+        result.extend_from_slice(b"rXFL");
+        let json_bytes = file_list_json.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        result.extend_from_slice(&json_len.to_be_bytes());
+        result.extend_from_slice(json_bytes);
+    }
 
     Ok(result)
 }
@@ -398,5 +465,43 @@ fn optimize_to_jxl(png_data: &[u8]) -> Result<Vec<u8>> {
         let _ = fs::remove_file(tmp_in);
         let _ = fs::remove_file(tmp_out);
         Err(anyhow::anyhow!("JXL conversion failed"))
+    }
+}
+
+fn reconvert_to_png(data: &[u8], original_format: &str) -> Result<Vec<u8>> {
+    use std::fs;
+
+    let tmp_in = match original_format {
+        "webp" => "/tmp/roxify_reconvert_in.webp",
+        "jxl" => "/tmp/roxify_reconvert_in.jxl",
+        _ => return Err(anyhow::anyhow!("Unknown format")),
+    };
+    let tmp_out = "/tmp/roxify_reconvert_out.png";
+
+    fs::write(tmp_in, data)?;
+
+    let status = match original_format {
+        "webp" => Command::new("dwebp")
+            .args(&[tmp_in, "-o", tmp_out])
+            .stderr(Stdio::null())
+            .stdout(Stdio::null())
+            .status()?,
+        "jxl" => Command::new("djxl")
+            .args(&[tmp_in, tmp_out])
+            .stderr(Stdio::null())
+            .stdout(Stdio::null())
+            .status()?,
+        _ => return Err(anyhow::anyhow!("Unknown format")),
+    };
+
+    if status.success() {
+        let result = fs::read(tmp_out)?;
+        let _ = fs::remove_file(tmp_in);
+        let _ = fs::remove_file(tmp_out);
+        Ok(result)
+    } else {
+        let _ = fs::remove_file(tmp_in);
+        let _ = fs::remove_file(tmp_out);
+        Err(anyhow::anyhow!("Reconversion to PNG failed"))
     }
 }

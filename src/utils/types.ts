@@ -41,4 +41,5 @@ export interface DecodeOptions {
     total?: number;
   }) => void;
   showProgress?: boolean;
+  verbose?: boolean;
 }

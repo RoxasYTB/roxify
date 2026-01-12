@@ -69,6 +69,7 @@ export async function encodeWithRustCLI(
   compressionLevel = 3,
   passphrase?: string,
   encryptType: 'aes' | 'xor' = 'aes',
+  name?: string,
 ): Promise<void> {
   const cliPath = findRustBinary();
 
@@ -84,6 +85,10 @@ export async function encodeWithRustCLI(
       '--level',
       String(compressionLevel),
     ];
+
+    if (name) {
+      args.push('--name', name);
+    }
 
     if (passphrase) {
       args.push('--passphrase', passphrase);

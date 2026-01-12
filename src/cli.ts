@@ -245,12 +245,15 @@ async function encodeCommand(args: string[]) {
 
       const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
 
+      const fileName = basename(inputPaths[0]);
+
       await encodeWithRustCLI(
         inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0],
         resolvedOutput,
-        19,
+        12,
         parsed.passphrase,
         encryptType,
+        fileName,
       );
 
       clearInterval(progressInterval);
@@ -342,7 +345,7 @@ async function encodeCommand(args: string[]) {
       mode,
       name: parsed.outputName || 'archive',
       skipOptimization: false,
-      compressionLevel: 19,
+      compressionLevel: 12,
       outputFormat: 'auto',
     });
 

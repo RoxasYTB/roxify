@@ -26,6 +26,8 @@ enum Commands {
         passphrase: Option<String>,
         #[arg(short, long, default_value = "aes")]
         encrypt: String,
+        #[arg(short, long)]
+        name: Option<String>,
     },
     Scan {
         input: PathBuf,
@@ -93,13 +95,28 @@ fn parse_markers(v: &[String]) -> Option<Vec<u8>> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Encode { input, output, level, passphrase, encrypt } => {
-            let data = packer::pack_path(&input)?;
+        Commands::Encode { input, output, level, passphrase, encrypt, name } => {
+            let pack_result = packer::pack_path_with_metadata(&input)?;
+
+            let file_name = name.as_deref()
+                .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
             let png = if let Some(ref pass) = passphrase {
-                encoder::encode_to_png_with_encryption(&data, level, Some(pass), Some(&encrypt))?
+                encoder::encode_to_png_with_encryption_name_and_filelist(
+                    &pack_result.data,
+                    level,
+                    Some(pass),
+                    Some(&encrypt),
+                    file_name,
+                    pack_result.file_list_json.as_deref()
+                )?
             } else {
-                encoder::encode_to_png(&data, level)?
+                encoder::encode_to_png_with_name_and_filelist(
+                    &pack_result.data,
+                    level,
+                    file_name,
+                    pack_result.file_list_json.as_deref()
+                )?
             };
 
             write_all(&output, &png)?;

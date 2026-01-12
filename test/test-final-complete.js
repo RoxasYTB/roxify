@@ -8,8 +8,12 @@ import {
 
 process.env.ROX_DEBUG = '1';
 
-async function testFinalComplete() {
-  console.log('=== TEST FINAL COMPLET ===\n');
+const FORMATS_TO_TEST = ['png', 'webp', 'jxl'];
+
+async function testFormat(format) {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`TEST FORMAT: ${format.toUpperCase()}`);
+  console.log('='.repeat(60));
 
   const testText =
     'Reconstruction parfaite avec gradient et position aléatoire!';
@@ -29,6 +33,7 @@ async function testFinalComplete() {
     name: 'test-final.txt',
     compressionLevel: 19,
     useBlockEncoding: false,
+    outputFormat: format,
   });
 
   console.log('PNG encodé:', encodedPng.length, 'octets');
@@ -453,7 +458,31 @@ async function testFinalComplete() {
   console.log('✓ Reconstruction exacte de la grille logique');
   console.log('✓ Décodage sans approximation ni modification');
   console.log('✓ Intégrité parfaite des données');
-  console.log('\n🎉 TOUS LES TESTS SONT PASSÉS 🎉');
+  console.log(
+    `\n🎉 FORMAT ${format.toUpperCase()} : TOUS LES TESTS SONT PASSÉS 🎉`,
+  );
+}
+
+async function testFinalComplete() {
+  console.log('=== TEST FINAL COMPLET - TOUS FORMATS ===\n');
+
+  for (const format of FORMATS_TO_TEST) {
+    try {
+      await testFormat(format);
+    } catch (err) {
+      console.error(
+        `\n✗ ERREUR pour le format ${format.toUpperCase()}:`,
+        err.message,
+      );
+      console.error(err.stack);
+      process.exit(1);
+    }
+  }
+
+  console.log('\n' + '='.repeat(60));
+  console.log('🎉 TOUS LES FORMATS VALIDÉS 🎉');
+  console.log('='.repeat(60));
+  console.log(`Tests réussis: ${FORMATS_TO_TEST.join(', ').toUpperCase()}`);
 }
 
 testFinalComplete().catch((err) => {

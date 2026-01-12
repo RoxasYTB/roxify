@@ -1,5 +1,8 @@
+import { execFileSync } from 'child_process';
 import cliProgress from 'cli-progress';
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import extract from 'png-chunks-extract';
 import sharp from 'sharp';
 
@@ -51,6 +54,64 @@ async function tryDecompress(
     } catch (e3) {
       throw e;
     }
+  }
+}
+
+function detectImageFormat(buf: Buffer): 'png' | 'webp' | 'jxl' | 'unknown' {
+  if (buf.length < 12) return 'unknown';
+
+  if (
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47
+  ) {
+    return 'png';
+  }
+
+  if (
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return 'webp';
+  }
+
+  if (buf[0] === 0xff && buf[1] === 0x0a) {
+    return 'jxl';
+  }
+
+  return 'unknown';
+}
+
+function convertToPng(buf: Buffer, format: 'webp' | 'jxl'): Buffer {
+  const tempDir = mkdtempSync(join(tmpdir(), 'rox-decode-'));
+  const inputPath = join(
+    tempDir,
+    format === 'webp' ? 'input.webp' : 'input.jxl',
+  );
+  const outputPath = join(tempDir, 'output.png');
+
+  try {
+    writeFileSync(inputPath, buf);
+
+    if (format === 'webp') {
+      execFileSync('dwebp', [inputPath, '-o', outputPath]);
+    } else if (format === 'jxl') {
+      execFileSync('djxl', [inputPath, outputPath]);
+    }
+
+    const pngBuf = readFileSync(outputPath);
+    return pngBuf;
+  } finally {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch (e) {}
   }
 }
 

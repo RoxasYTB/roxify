@@ -21,3 +21,9 @@ export const COMPRESSION_MARKERS = {
   zstd: [{ r: 0, g: 255, b: 0 }],
   lzma: [{ r: 255, g: 255, b: 0 }],
 };
+
+export const FORMAT_MARKERS = {
+  png: { r: 0, g: 255, b: 255 },
+  webp: { r: 255, g: 0, b: 255 },
+  jxl: { r: 255, g: 255, b: 0 },
+};
