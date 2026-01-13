@@ -92,15 +92,25 @@ run_test() {
 
     case $compressor in
         roxify)
-            if [ ! -f dist/cli.js ]; then
-                echo "⏭️  (not compiled)"
-                return
+            if command -v rox >/dev/null 2>&1; then
+                echo "  → Using global 'rox' command"
+                timeout 600 rox encode "$input_file" -o "$output" > "$RESULTS_DIR/roxify-${size_mb}mb.log" 2>&1 || {
+                    echo "❌ (error rox, voir $RESULTS_DIR/roxify-${size_mb}mb.log)"
+                    cat "$RESULTS_DIR/roxify-${size_mb}mb.log"
+                    return
+                }
+            else
+                if [ ! -f dist/cli.js ]; then
+                    echo "⏭️  (not compiled)"
+                    return
+                fi
+                echo "  → Using local dist/cli.js (fallback)"
+                timeout 600 node dist/cli.js encode "$input_file" -o "$output" > "$RESULTS_DIR/roxify-${size_mb}mb.log" 2>&1 || {
+                    echo "❌ (error roxify via dist/cli.js, voir $RESULTS_DIR/roxify-${size_mb}mb.log)"
+                    cat "$RESULTS_DIR/roxify-${size_mb}mb.log"
+                    return
+                }
             fi
-            timeout 600 node dist/cli.js encode "$input_file" -o "$output" > "$RESULTS_DIR/roxify-${size_mb}mb.log" 2>&1 || {
-                echo "❌ (error roxify, voir $RESULTS_DIR/roxify-${size_mb}mb.log)"
-                cat "$RESULTS_DIR/roxify-${size_mb}mb.log"
-                return
-            }
             ;;
         lzma)
             if ! command -v lzma >/dev/null 2>&1; then
