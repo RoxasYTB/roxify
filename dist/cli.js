@@ -195,6 +195,28 @@ async function encodeCommand(args) {
     catch (e) {
         resolvedOutput = join('/', parsed.output || outputPath || outputName);
     }
+    // Check for empty directories *before* attempting native Rust encoder.
+    try {
+        const anyDir = inputPaths.some((p) => {
+            try {
+                return statSync(resolve(safeCwd, p)).isDirectory();
+            }
+            catch (e) {
+                return false;
+            }
+        });
+        if (anyDir) {
+            const { index } = await packPathsGenerator(inputPaths, undefined, () => { });
+            if (!index || index.length === 0) {
+                console.log(' ');
+                console.error('Error: No files found in specified input paths.');
+                process.exit(1);
+            }
+        }
+    }
+    catch (e) {
+        // ignore errors from the quick pre-check and proceed to try Rust encoding
+    }
     if (isRustBinaryAvailable() && !parsed.forceTs) {
         try {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
@@ -313,6 +335,11 @@ async function encodeCommand(args) {
         if (inputPaths.length > 1) {
             currentEncodeStep = 'Reading files';
             const { index, stream, totalSize } = await packPathsGenerator(inputPaths, undefined, onProgress);
+            if (!index || index.length === 0) {
+                console.log(' ');
+                console.error('Error: No files found in specified input paths.');
+                process.exit(1);
+            }
             inputData = stream;
             inputSizeVal = totalSize;
             displayName = parsed.outputName || 'archive';
@@ -328,6 +355,11 @@ async function encodeCommand(args) {
             if (st.isDirectory()) {
                 currentEncodeStep = 'Reading files';
                 const { index, stream, totalSize } = await packPathsGenerator([resolvedInput], dirname(resolvedInput), onProgress);
+                if (!index || index.length === 0) {
+                    console.log(' ');
+                    console.error(`Error: No files found in ${resolvedInput}`);
+                    process.exit(1);
+                }
                 inputData = stream;
                 inputSizeVal = totalSize;
                 displayName = parsed.outputName || basename(resolvedInput);
