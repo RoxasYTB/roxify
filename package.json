@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "type": "module",
   "main": "dist/index.js",
@@ -12,14 +12,22 @@
   "files": [
     "dist",
     "libroxify_native.node",
+    "libroxify_native-*.so",
+    "libroxify_native-*.dylib",
+    "libroxify_native-*.dll",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
-    "build:native": "cargo build --release --lib && cp target/release/libroxify_native.so libroxify_native.node",
+    "build:native": "cargo build --release --lib",
+    "build:native:linux": "cargo build --release --lib --target x86_64-unknown-linux-gnu && cp target/x86_64-unknown-linux-gnu/release/libroxify_native.so libroxify_native-x86_64-unknown-linux-gnu.so",
+    "build:native:macos-x64": "cargo build --release --lib --target x86_64-apple-darwin && cp target/x86_64-apple-darwin/release/libroxify_native.dylib libroxify_native-x86_64-apple-darwin.dylib",
+    "build:native:macos-arm": "cargo build --release --lib --target aarch64-apple-darwin && cp target/aarch64-apple-darwin/release/libroxify_native.dylib libroxify_native-aarch64-apple-darwin.dylib",
+    "build:native:windows": "cargo build --release --lib --target x86_64-pc-windows-msvc && cp target/x86_64-pc-windows-msvc/release/roxify_native.dll libroxify_native-x86_64-pc-windows-msvc.dll",
     "build:cli": "cargo build --release --bin roxify_native && cp target/release/roxify_native dist/roxify-cli",
     "build:all": "npm run build:native && npm run build && npm run build:cli",
+    "postbuild:native": "node scripts/copy-native.js",
     "prepublishOnly": "npm run build:all",
     "test": "npm run build && node test/run-all-tests.js",
     "cli": "node dist/cli.js"
