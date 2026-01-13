@@ -1,6 +1,4 @@
-import cliProgress from 'cli-progress';
 import { createCipheriv, pbkdf2Sync, randomBytes } from 'crypto';
-import sharp from 'sharp';
 import * as zlib from 'zlib';
 import { unpackBuffer } from '../pack.js';
 import {
@@ -17,7 +15,7 @@ import {
 } from './constants.js';
 import { crc32 } from './crc.js';
 import { colorsToBytes } from './helpers.js';
-import { optimizePngBuffer } from './optimization.js';
+import { native } from './native.js';
 import { EncodeOptions } from './types.js';
 import { parallelZstdCompress } from './zstd.js';
 
@@ -25,15 +23,13 @@ export async function encodeBinaryToPng(
   input: Buffer | Buffer[],
   opts: EncodeOptions = {},
 ): Promise<Buffer> {
-  let progressBar: cliProgress.SingleBar | null = null;
+  let progressBar: any = null;
   if (opts.showProgress) {
-    progressBar = new cliProgress.SingleBar(
-      {
-        format: ' {bar} {percentage}% | {step} | {elapsed}s',
-      },
-      cliProgress.Presets.shades_classic,
-    );
-    progressBar.start(100, 0, { step: 'Starting', elapsed: '0' });
+    progressBar = {
+      start: () => {},
+      update: () => {},
+      stop: () => {},
+    };
     const startTime = Date.now();
     if (!opts.onProgress) {
       opts.onProgress = (info) => {
@@ -49,10 +45,6 @@ export async function encodeBinaryToPng(
         } else if (info.phase === 'done') {
           pct = 100;
         }
-        progressBar!.update(Math.floor(pct), {
-          step: info.phase.replace('_', ' '),
-          elapsed: String(Math.floor((Date.now() - startTime) / 1000)),
-        });
       };
     }
   }
@@ -244,7 +236,7 @@ export async function encodeBinaryToPng(
       metaPixel = [...metaPixel, Buffer.from('rXFL', 'utf8'), lenBuf, jsonBuf];
     }
 
-    const useBlockEncoding = opts.useBlockEncoding ?? true;
+    const useBlockEncoding = false;
     const pixelMagic = useBlockEncoding ? PIXEL_MAGIC_BLOCK : PIXEL_MAGIC;
     const dataWithoutMarkers: Buffer[] = [pixelMagic, ...metaPixel];
 
@@ -305,15 +297,7 @@ export async function encodeBinaryToPng(
         }
       }
 
-      bufScr = await sharp(rgbBuffer, {
-        raw: { width, height, channels: 3 },
-      })
-        .png({
-          compressionLevel: 9,
-          adaptiveFiltering: true,
-          effort: 9,
-        })
-        .toBuffer();
+      bufScr = Buffer.from(native.rgbToPng(rgbBuffer, width, height));
     } else {
       const bytesPerPixel = 3;
       const dataPixels = Math.ceil(dataWithMarkersLen / 3);
@@ -473,26 +457,11 @@ export async function encodeBinaryToPng(
         const outputFormat = opts.outputFormat || 'png';
 
         if (outputFormat === 'webp') {
-          bufScr = await sharp(raw, {
-            raw: { width, height, channels: 3 },
-          })
-            .webp({
-              lossless: true,
-              quality: 100,
-              effort: 6,
-            })
-            .toBuffer();
+          throw new Error(
+            'WebP output format not supported with native backend',
+          );
         } else {
-          bufScr = await sharp(raw, {
-            raw: { width, height, channels: 3 },
-          })
-            .png({
-              compressionLevel: 3,
-              palette: false,
-              effort: 1,
-              adaptiveFiltering: false,
-            })
-            .toBuffer();
+          bufScr = Buffer.from(native.rgbToPng(raw, width, height));
         }
       }
     }
@@ -507,25 +476,7 @@ export async function encodeBinaryToPng(
     if (opts.onProgress)
       opts.onProgress({ phase: 'png_compress', loaded: 100, total: 100 });
 
-    if (opts.skipOptimization || opts.outputFormat === 'webp') {
-      progressBar?.stop();
-      return bufScr;
-    }
-
-    if (opts.onProgress)
-      opts.onProgress({ phase: 'optimizing', loaded: 0, total: 100 });
-
-    try {
-      const optimized = await optimizePngBuffer(bufScr, true);
-
-      if (opts.onProgress)
-        opts.onProgress({ phase: 'optimizing', loaded: 100, total: 100 });
-
-      progressBar?.stop();
-      return optimized;
-    } catch (e) {
-      progressBar?.stop();
-      return bufScr;
-    }
+    progressBar?.stop();
+    return bufScr;
   }
 }

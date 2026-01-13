@@ -1,7 +1,7 @@
 {
   "name": "roxify",
-  "version": "1.4.1",
-  "description": "Encode binary data into PNG images and decode them back. CLI and programmatic API with native Rust acceleration.",
+  "version": "1.5.0",
+  "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,8 +13,7 @@
     "dist",
     "libroxify_native.node",
     "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
@@ -23,33 +22,32 @@
     "build:all": "npm run build:native && npm run build && npm run build:cli",
     "prepublishOnly": "npm run build:all",
     "test": "npm run build && node test/run-all-tests.js",
-    "test:final": "node test/test-final-complete.js",
-    "test:benchmark": "node test/benchmark-large-data.js",
-    "test:stress": "node test/stress-test-datatypes.js",
-    "test:compare": "node test/compare-png-webp.js",
-    "test:formats": "node test/benchmark-image-formats.js",
-    "test:optimize": "node test/benchmark-auto-optimize.cjs",
-    "test:predict": "node test/test-fast-prediction.cjs",
     "cli": "node dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/roxify.git"
   },
   "keywords": [
     "steganography",
     "png",
-    "brotli",
-    "rox"
+    "compression",
+    "zstd",
+    "rust",
+    "native",
+    "encode",
+    "decode",
+    "binary",
+    "lightweight"
   ],
   "author": "",
   "license": "MIT",
-  "dependencies": {
-    "@mongodb-js/zstd": "^7.0.0",
-    "cli-progress": "^3.12.0",
-    "png-chunks-encode": "^1.0.0",
-    "png-chunks-extract": "^1.0.0",
-    "sharp": "^0.34.5"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/cli-progress": "^3.11.6",
-    "@types/node": "^25.0.3",
-    "typescript": "^4.9.5"
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

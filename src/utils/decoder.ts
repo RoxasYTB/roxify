@@ -1,10 +1,7 @@
 import { execFileSync } from 'child_process';
-import cliProgress from 'cli-progress';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import extract from 'png-chunks-extract';
-import sharp from 'sharp';
 
 import { unpackBuffer } from '../pack.js';
 import {
@@ -22,6 +19,7 @@ import {
   PassphraseRequiredError,
 } from './errors.js';
 import { colorsToBytes, deltaDecode, tryDecryptIfNeeded } from './helpers.js';
+import { native } from './native.js';
 import { cropAndReconstitute } from './reconstitution.js';
 import { DecodeOptions, DecodeResult } from './types.js';
 import { parallelZstdDecompress, tryZstdDecompress } from './zstd.js';
@@ -124,13 +122,17 @@ export async function decodePngToBinary(
     pngBuf = input;
   } else {
     try {
-      const metadata = await sharp(input).metadata();
-      const rawBytesEstimate =
-        (metadata.width || 0) * (metadata.height || 0) * 4;
-      const MAX_RAW_BYTES = 200 * 1024 * 1024;
+      if (native?.sharpMetadata) {
+        const inputBuf = readFileSync(input);
+        const metadata = native.sharpMetadata(inputBuf);
+        const rawBytesEstimate = metadata.width * metadata.height * 4;
+        const MAX_RAW_BYTES = 200 * 1024 * 1024;
 
-      if (rawBytesEstimate > MAX_RAW_BYTES) {
-        pngBuf = readFileSync(input);
+        if (rawBytesEstimate > MAX_RAW_BYTES) {
+          pngBuf = inputBuf;
+        } else {
+          pngBuf = inputBuf;
+        }
       } else {
         pngBuf = readFileSync(input);
       }
@@ -143,15 +145,13 @@ export async function decodePngToBinary(
     }
   }
 
-  let progressBar: cliProgress.SingleBar | null = null;
+  let progressBar: any = null;
   if (opts.showProgress) {
-    progressBar = new cliProgress.SingleBar(
-      {
-        format: ' {bar} {percentage}% | {step} | {elapsed}s',
-      },
-      cliProgress.Presets.shades_classic,
-    );
-    progressBar.start(100, 0, { step: 'Starting', elapsed: '0' });
+    progressBar = {
+      start: () => {},
+      update: () => {},
+      stop: () => {},
+    };
     const startTime = Date.now();
     if (!opts.onProgress) {
       opts.onProgress = (info) => {
@@ -163,10 +163,6 @@ export async function decodePngToBinary(
         } else if (info.phase === 'done') {
           pct = 100;
         }
-        progressBar!.update(Math.floor(pct), {
-          step: info.phase.replace('_', ' '),
-          elapsed: String(Math.floor((Date.now() - startTime) / 1000)),
-        });
       };
     }
   }
@@ -176,33 +172,21 @@ export async function decodePngToBinary(
   let processedBuf = pngBuf;
 
   try {
-    const info = await sharp(pngBuf).metadata();
-    if (info.width && info.height) {
-      const MAX_RAW_BYTES = 1200 * 1024 * 1024;
-      const rawBytesEstimate = info.width * info.height * 4;
-      if (rawBytesEstimate > MAX_RAW_BYTES) {
-        throw new DataFormatError(
-          `Image too large to decode in-process (${Math.round(
-            rawBytesEstimate / 1024 / 1024,
-          )} MB). Increase Node heap or use a smaller image/compact mode.`,
-        );
-      }
-
-      if (false) {
-        const doubledBuffer = await sharp(pngBuf)
-          .resize({
-            width: info.width * 2,
-            height: info.height * 2,
-            kernel: 'nearest',
-          })
-          .png()
-          .toBuffer();
-
-        processedBuf = await cropAndReconstitute(doubledBuffer, opts.debugDir);
-      } else {
-        processedBuf = pngBuf;
+    if (native?.sharpMetadata) {
+      const info = native.sharpMetadata(pngBuf);
+      if (info.width && info.height) {
+        const MAX_RAW_BYTES = 1200 * 1024 * 1024;
+        const rawBytesEstimate = info.width * info.height * 4;
+        if (rawBytesEstimate > MAX_RAW_BYTES) {
+          throw new DataFormatError(
+            `Image too large to decode in-process (${Math.round(
+              rawBytesEstimate / 1024 / 1024,
+            )} MB). Increase Node heap or use a smaller image/compact mode.`,
+          );
+        }
       }
     }
+    processedBuf = pngBuf;
   } catch (e) {
     if (e instanceof DataFormatError) throw e;
   }
@@ -251,29 +235,28 @@ export async function decodePngToBinary(
 
   let chunks: Array<{ name: string; data: Buffer }> = [];
   try {
-    const chunksRaw = extract(processedBuf) as Array<{
-      name: string;
-      data: Buffer | Uint8Array;
-    }>;
-    chunks = chunksRaw.map((c) => ({
-      name: c.name,
-      data: Buffer.isBuffer(c.data)
-        ? (c.data as Buffer)
-        : Buffer.from(c.data as Uint8Array),
-    }));
+    if (native?.extractPngChunks) {
+      const chunksRaw = native.extractPngChunks(processedBuf);
+      chunks = chunksRaw.map((c: any) => ({
+        name: c.name,
+        data: Buffer.from(c.data),
+      }));
+    } else {
+      throw new Error('Native PNG chunk extraction not available');
+    }
   } catch (e) {
     try {
       const withHeader = Buffer.concat([PNG_HEADER, pngBuf]);
-      const chunksRaw = extract(withHeader) as Array<{
-        name: string;
-        data: Buffer | Uint8Array;
-      }>;
-      chunks = chunksRaw.map((c) => ({
-        name: c.name,
-        data: Buffer.isBuffer(c.data)
-          ? (c.data as Buffer)
-          : Buffer.from(c.data as Uint8Array),
-      }));
+
+      if (native?.extractPngChunks) {
+        const chunksRaw = native.extractPngChunks(withHeader);
+        chunks = chunksRaw.map((c: any) => ({
+          name: c.name,
+          data: Buffer.from(c.data),
+        }));
+      } else {
+        throw new Error('Native PNG chunk extraction not available');
+      }
     } catch (e2) {
       chunks = [];
     }
@@ -330,32 +313,24 @@ export async function decodePngToBinary(
   }
 
   try {
-    const metadata = await sharp(processedBuf).metadata();
-    const currentWidth = metadata.width!;
-    const currentHeight = metadata.height!;
+    const metadata = native.sharpMetadata(processedBuf);
+    const currentWidth = metadata.width;
+    const currentHeight = metadata.height;
 
     let rawRGB: Buffer = Buffer.alloc(0);
     let isBlockEncoded = false;
 
     if (currentWidth % 2 === 0 && currentHeight % 2 === 0) {
-      const { data: testData } = await sharp(processedBuf)
-        .extract({
-          left: 0,
-          top: 0,
-          width: Math.min(4, currentWidth),
-          height: Math.min(4, currentHeight),
-        })
-        .raw()
-        .toBuffer({ resolveWithObject: true });
+      const rawData = native.sharpToRaw(processedBuf);
+      const testData = rawData.pixels;
 
       let hasBlockPattern = true;
       for (let y = 0; y < Math.min(2, currentHeight / 2); y++) {
         for (let x = 0; x < Math.min(2, currentWidth / 2); x++) {
-          const px00 = (y * 2 * Math.min(4, currentWidth) + x * 2) * 3;
-          const px01 = (y * 2 * Math.min(4, currentWidth) + (x * 2 + 1)) * 3;
-          const px10 = ((y * 2 + 1) * Math.min(4, currentWidth) + x * 2) * 3;
-          const px11 =
-            ((y * 2 + 1) * Math.min(4, currentWidth) + (x * 2 + 1)) * 3;
+          const px00 = (y * 2 * currentWidth + x * 2) * 3;
+          const px01 = (y * 2 * currentWidth + (x * 2 + 1)) * 3;
+          const px10 = ((y * 2 + 1) * currentWidth + x * 2) * 3;
+          const px11 = ((y * 2 + 1) * currentWidth + (x * 2 + 1)) * 3;
 
           if (
             testData[px00] !== testData[px01] ||
@@ -378,67 +353,31 @@ export async function decodePngToBinary(
         const blocksHigh = currentHeight / 2;
         rawRGB = Buffer.alloc(blocksWide * blocksHigh * 3);
 
+        const fullRaw = native.sharpToRaw(processedBuf);
+        const fullData = fullRaw.pixels;
+
         let outIdx = 0;
         for (let by = 0; by < blocksHigh; by++) {
           for (let bx = 0; bx < blocksWide; bx++) {
-            const { data: blockData } = await sharp(processedBuf)
-              .extract({ left: bx * 2, top: by * 2, width: 1, height: 1 })
-              .raw()
-              .toBuffer({ resolveWithObject: true });
-
-            rawRGB[outIdx++] = blockData[0];
-            rawRGB[outIdx++] = blockData[1];
-            rawRGB[outIdx++] = blockData[2];
+            const pixelOffset = (by * 2 * currentWidth + bx * 2) * 3;
+            rawRGB[outIdx++] = fullData[pixelOffset];
+            rawRGB[outIdx++] = fullData[pixelOffset + 1];
+            rawRGB[outIdx++] = fullData[pixelOffset + 2];
           }
         }
       }
     }
 
     if (!isBlockEncoded) {
-      rawRGB = Buffer.allocUnsafe(currentWidth * currentHeight * 3);
-      let writeOffset = 0;
+      const rawData = native.sharpToRaw(processedBuf);
+      rawRGB = Buffer.from(rawData.pixels);
 
-      const rowsPerChunk = 2000;
-
-      for (
-        let startRow = 0;
-        startRow < currentHeight;
-        startRow += rowsPerChunk
-      ) {
-        const endRow = Math.min(startRow + rowsPerChunk, currentHeight);
-        const chunkHeight = endRow - startRow;
-
-        const { data: chunkData, info: chunkInfo } = await sharp(processedBuf)
-          .extract({
-            left: 0,
-            top: startRow,
-            width: currentWidth,
-            height: chunkHeight,
-          })
-          .raw()
-          .toBuffer({ resolveWithObject: true });
-
-        const channels = chunkInfo.channels;
-        const pixelsInChunk = currentWidth * chunkHeight;
-
-        if (channels === 3) {
-          chunkData.copy(rawRGB, writeOffset);
-          writeOffset += pixelsInChunk * 3;
-        } else if (channels === 4) {
-          for (let i = 0; i < pixelsInChunk; i++) {
-            rawRGB[writeOffset++] = chunkData[i * 4];
-            rawRGB[writeOffset++] = chunkData[i * 4 + 1];
-            rawRGB[writeOffset++] = chunkData[i * 4 + 2];
-          }
-        }
-
-        if (opts.onProgress) {
-          opts.onProgress({
-            phase: 'extract_pixels',
-            loaded: endRow,
-            total: currentHeight,
-          });
-        }
+      if (opts.onProgress) {
+        opts.onProgress({
+          phase: 'extract_pixels',
+          loaded: currentHeight,
+          total: currentHeight,
+        });
       }
     }
 
@@ -498,22 +437,11 @@ export async function decodePngToBinary(
         opts.debugDir,
       );
 
-      const { data: rdata, info: rinfo } = await sharp(reconstructed)
-        .raw()
-        .toBuffer({ resolveWithObject: true });
+      const rawData = native.sharpToRaw(reconstructed);
 
-      logicalWidth = rinfo.width;
-      logicalHeight = rinfo.height;
-      logicalData = Buffer.alloc(rinfo.width * rinfo.height * 3);
-      if (rinfo.channels === 3) {
-        rdata.copy(logicalData);
-      } else if (rinfo.channels === 4) {
-        for (let i = 0; i < logicalWidth * logicalHeight; i++) {
-          logicalData[i * 3] = rdata[i * 4];
-          logicalData[i * 3 + 1] = rdata[i * 4 + 1];
-          logicalData[i * 3 + 2] = rdata[i * 4 + 2];
-        }
-      }
+      logicalWidth = rawData.width;
+      logicalHeight = rawData.height;
+      logicalData = Buffer.from(rawData.pixels);
     }
     if (process.env.ROX_DEBUG) {
       console.log(

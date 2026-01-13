@@ -1,9 +1,22 @@
-import {
-  compress as zstdCompress,
-  decompress as zstdDecompress,
-} from '@mongodb-js/zstd';
-import encode from 'png-chunks-encode';
 import { deflateSync } from 'zlib';
+import { native } from './utils/native.js';
+
+let nativeZstdCompress: ((data: Buffer, level: number) => Uint8Array) | null =
+  null;
+let nativeZstdDecompress: ((data: Buffer) => Uint8Array) | null = null;
+let nativeEncodePngChunks: ((chunks: any[]) => Uint8Array) | null = null;
+
+try {
+  if (native?.nativeZstdCompress) {
+    nativeZstdCompress = native.nativeZstdCompress;
+  }
+  if (native?.nativeZstdDecompress) {
+    nativeZstdDecompress = native.nativeZstdDecompress;
+  }
+  if (native?.encodePngChunks) {
+    nativeEncodePngChunks = native.encodePngChunks;
+  }
+} catch (e) {}
 
 const PIXEL_MAGIC = Buffer.from('MNPG');
 const MARKER_START = [
@@ -99,7 +112,10 @@ export async function encodeMinPng(
 
   const transformedBuf = Buffer.from(transformed);
 
-  const compressed = Buffer.from(await zstdCompress(transformedBuf, 19));
+  if (!nativeZstdCompress) {
+    throw new Error('Native zstd compression not available');
+  }
+  const compressed = Buffer.from(nativeZstdCompress(transformedBuf, 19));
 
   const header = Buffer.alloc(4 + 1 + 4 + 4);
   PIXEL_MAGIC.copy(header, 0);
@@ -164,19 +180,38 @@ export async function encodeMinPng(
     { name: 'IDAT', data: idat },
     { name: 'IEND', data: Buffer.alloc(0) },
   ];
-  return Buffer.from(encode(chunks));
+
+  if (nativeEncodePngChunks) {
+    return Buffer.from(nativeEncodePngChunks(chunks));
+  }
+
+  const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const output: Buffer[] = [PNG_SIG];
+
+  for (const chunk of chunks) {
+    const type = Buffer.from(chunk.name, 'ascii');
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(chunk.data.length, 0);
+
+    const crcData = Buffer.concat([type, chunk.data]);
+    const crc = Buffer.alloc(4);
+    const crc32fast = native?.nativeCrc32;
+    const crcVal = crc32fast ? crc32fast(crcData) : 0;
+    crc.writeUInt32BE(crcVal, 0);
+
+    output.push(length, type, chunk.data, crc);
+  }
+
+  return Buffer.concat(output);
 }
 
 export async function decodeMinPng(
   pngBuf: Buffer,
 ): Promise<{ buf: Buffer; width: number; height: number } | null> {
-  const sharp = await import('sharp');
-  const { data, info } = await sharp
-    .default(pngBuf)
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const currentWidth = info.width as number;
-  const currentHeight = info.height as number;
+  const rawData = native.sharpToRaw(pngBuf);
+  const data = rawData.pixels;
+  const currentWidth = rawData.width;
+  const currentHeight = rawData.height;
 
   const rawRGB = Buffer.alloc(currentWidth * currentHeight * 3);
   for (let i = 0; i < currentWidth * currentHeight; i++) {
@@ -219,7 +254,10 @@ export async function decodeMinPng(
   if (compStart + compressedLen > rawRGB.length) return null;
   const compressed = rawRGB.subarray(compStart, compStart + compressedLen);
 
-  const decompressed = Buffer.from(await zstdDecompress(compressed));
+  if (!nativeZstdDecompress) {
+    throw new Error('Native zstd decompression not available');
+  }
+  const decompressed = Buffer.from(nativeZstdDecompress(compressed));
 
   const indices = zigzagOrderIndices(origW, origH);
   const residualR = new Uint8Array(origW * origH);
@@ -272,4 +310,3 @@ export async function decodeMinPng(
 
   return { buf: out, width: origW, height: origH };
 }
-

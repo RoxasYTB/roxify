@@ -12,6 +12,9 @@ mod hybrid;
 mod encoder;
 mod packer;
 mod crypto;
+mod png_utils;
+mod image_utils;
+mod progress;
 
 pub use core::*;
 pub use gpu::*;
@@ -193,3 +196,123 @@ pub fn native_encode_png_raw(buffer: Buffer, compression_level: i32) -> Result<V
     encoder::encode_to_png_raw(&buffer, compression_level)
         .map_err(|e| Error::from_reason(e.to_string()))
 }
+
+#[napi(object)]
+pub struct PngChunkData {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn extract_png_chunks(png_buffer: Buffer) -> Result<Vec<PngChunkData>> {
+    let chunks = png_utils::extract_png_chunks(&png_buffer)
+        .map_err(|e| Error::from_reason(e))?;
+
+    Ok(chunks.into_iter().map(|c| PngChunkData {
+        name: c.name,
+        data: c.data,
+    }).collect())
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn encode_png_chunks(chunks: Vec<PngChunkData>) -> Result<Vec<u8>> {
+    let native_chunks: Vec<png_utils::PngChunk> = chunks.into_iter()
+        .map(|c| png_utils::PngChunk {
+            name: c.name,
+            data: c.data,
+        })
+        .collect();
+
+    png_utils::encode_png_chunks(&native_chunks)
+        .map_err(|e| Error::from_reason(e))
+}
+
+#[napi(object)]
+pub struct PngMetadata {
+    pub width: u32,
+    pub height: u32,
+    pub bit_depth: u32,
+    pub color_type: u32,
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn get_png_metadata(png_buffer: Buffer) -> Result<PngMetadata> {
+    let (width, height, bit_depth, color_type) = png_utils::get_png_metadata(&png_buffer)
+        .map_err(|e| Error::from_reason(e))?;
+
+    Ok(PngMetadata {
+        width,
+        height,
+        bit_depth: bit_depth as u32,
+        color_type: color_type as u32,
+    })
+}
+
+#[napi(object)]
+pub struct SharpMetadata {
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn sharp_resize_image(
+    input_buffer: Buffer,
+    width: u32,
+    height: u32,
+    kernel: String,
+) -> Result<Vec<u8>> {
+    image_utils::sharp_resize(&input_buffer, width, height, &kernel)
+        .map_err(|e| Error::from_reason(e))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn sharp_raw_pixels(input_buffer: Buffer) -> Result<Vec<u8>> {
+    let (pixels, _w, _h) = image_utils::sharp_raw_pixels(&input_buffer)
+        .map_err(|e| Error::from_reason(e))?;
+    Ok(pixels)
+}
+
+#[napi(object)]
+pub struct RawPixelsWithDimensions {
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn sharp_to_raw(input_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
+    let (pixels, width, height) = image_utils::sharp_raw_pixels(&input_buffer)
+        .map_err(|e| Error::from_reason(e))?;
+    Ok(RawPixelsWithDimensions { pixels, width, height })
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn sharp_metadata(input_buffer: Buffer) -> Result<SharpMetadata> {
+    let (width, height, format) = image_utils::sharp_metadata(&input_buffer)
+        .map_err(|e| Error::from_reason(e))?;
+    Ok(SharpMetadata { width, height, format })
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn rgb_to_png(rgb_buffer: Buffer, width: u32, height: u32) -> Result<Vec<u8>> {
+    image_utils::rgb_to_png(&rgb_buffer, width, height)
+        .map_err(|e| Error::from_reason(e))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn png_to_rgb(png_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
+    let (pixels, width, height) = image_utils::png_to_rgb(&png_buffer)
+        .map_err(|e| Error::from_reason(e))?;
+    Ok(RawPixelsWithDimensions { pixels, width, height })
+}
+

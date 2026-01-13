@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import cliProgress from 'cli-progress';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
@@ -14,6 +13,7 @@ import {
   PassphraseRequiredError,
 } from './index.js';
 import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
+import * as cliProgress from './stub-progress.js';
 import {
   encodeWithRustCLI,
   isRustBinaryAvailable,

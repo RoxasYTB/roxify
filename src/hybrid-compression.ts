@@ -1,3 +1,5 @@
+import { native } from './utils/native.js';
+
 let check_gpu_status: any;
 let entropy_estimate: any;
 let get_compression_stats: any;
@@ -5,7 +7,6 @@ let hybrid_compress: any;
 let hybrid_decompress: any;
 
 try {
-  const native = require('../libroxify_native.node');
   check_gpu_status = native.check_gpu_status;
   entropy_estimate = native.entropy_estimate;
   get_compression_stats = native.get_compression_stats;

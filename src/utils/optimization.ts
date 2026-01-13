@@ -2,8 +2,6 @@ import { spawn, spawnSync } from 'child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import encode from 'png-chunks-encode';
-import extract from 'png-chunks-extract';
 import * as zlib from 'zlib';
 import { PNG_HEADER, PNG_HEADER_HEX } from './constants.js';
 
@@ -13,6 +11,10 @@ export async function optimizePngBuffer(
 ): Promise<Buffer> {
   const MAX_OPTIMIZE_SIZE = 50 * 1024 * 1024;
   if (pngBuf.length > MAX_OPTIMIZE_SIZE) {
+    return pngBuf;
+  }
+
+  if (fast) {
     return pngBuf;
   }
 
@@ -74,28 +76,20 @@ export async function optimizePngBuffer(
   } catch (e) {}
 
   try {
-    const chunksRaw = extract(pngBuf) as Array<{
-      name: string;
-      data: Buffer | Uint8Array;
-    }>;
-    const ihdr = chunksRaw.find((c) => c.name === 'IHDR');
+    const nativeExtract = require('../../libroxify_native.node');
+    const chunksRaw = nativeExtract.extractPngChunks(pngBuf);
+    const ihdr = chunksRaw.find((c: any) => c.name === 'IHDR');
     if (!ihdr) return pngBuf;
-    const ihdrData = Buffer.isBuffer(ihdr.data)
-      ? (ihdr.data as Buffer)
-      : Buffer.from(ihdr.data as Uint8Array);
+    const ihdrData = Buffer.from(ihdr.data);
     const width = ihdrData.readUInt32BE(0);
     const height = ihdrData.readUInt32BE(4);
     const bitDepth = ihdrData[8];
     const colorType = ihdrData[9];
     if (bitDepth !== 8 || colorType !== 2) return pngBuf;
 
-    const idatChunks = chunksRaw.filter((c) => c.name === 'IDAT');
+    const idatChunks = chunksRaw.filter((c: any) => c.name === 'IDAT');
     const idatData = Buffer.concat(
-      idatChunks.map((c) =>
-        Buffer.isBuffer(c.data)
-          ? (c.data as Buffer)
-          : Buffer.from(c.data as Uint8Array),
-      ),
+      idatChunks.map((c: any) => Buffer.from(c.data)),
     );
     let raw: Buffer;
     try {
@@ -217,7 +211,8 @@ export async function optimizePngBuffer(
         : Buffer.concat([PNG_HEADER, buf]);
     }
 
-    const out = ensurePng(Buffer.from(encode(newChunks)));
+    const nativeEnc = require('../../libroxify_native.node');
+    const out = ensurePng(Buffer.from(nativeEnc.encodePngChunks(newChunks)));
     let bestBuf = out.length < pngBuf.length ? out : pngBuf;
 
     const strategies = [
@@ -241,7 +236,10 @@ export async function optimizePngBuffer(
         }));
         const idx = altChunks.findIndex((c) => c.name === 'IDAT');
         if (idx !== -1) altChunks[idx] = { name: 'IDAT', data: comp };
-        const candidate = ensurePng(Buffer.from(encode(altChunks)));
+        const nativeOptim = require('../../libroxify_native.node');
+        const candidate = ensurePng(
+          Buffer.from(nativeOptim.encodePngChunks(altChunks)),
+        );
         if (candidate.length < bestBuf.length) bestBuf = candidate;
       } catch (e) {}
     }
@@ -260,7 +258,10 @@ export async function optimizePngBuffer(
         const idx = altChunks.findIndex((c) => c.name === 'IDAT');
         if (idx !== -1)
           altChunks[idx] = { name: 'IDAT', data: Buffer.from(comp) };
-        const candidate = ensurePng(Buffer.from(encode(altChunks)));
+        const native = require('../../libroxify_native.node');
+        const candidate = ensurePng(
+          Buffer.from(native.encodePngChunks(altChunks)),
+        );
         if (candidate.length < bestBuf.length) bestBuf = candidate;
       } catch (e) {}
     } catch (e) {}
@@ -313,7 +314,10 @@ export async function optimizePngBuffer(
                 }));
                 const idx = altChunks.findIndex((c) => c.name === 'IDAT');
                 if (idx !== -1) altChunks[idx] = { name: 'IDAT', data: comp };
-                const candidate = ensurePng(Buffer.from(encode(altChunks)));
+                const native = require('../../libroxify_native.node');
+                const candidate = ensurePng(
+                  Buffer.from(native.encodePngChunks(altChunks)),
+                );
                 if (candidate.length < bestBuf.length) bestBuf = candidate;
               } catch (e) {}
             }
@@ -391,7 +395,10 @@ export async function optimizePngBuffer(
 
         const idx = altChunks.findIndex((c) => c.name === 'IDAT');
         if (idx !== -1) altChunks[idx] = { name: 'IDAT', data: comp };
-        const candidate = ensurePng(Buffer.from(encode(altChunks)));
+        const nativeOptim2 = require('../../libroxify_native.node');
+        const candidate = ensurePng(
+          Buffer.from(nativeOptim2.encodePngChunks(altChunks)),
+        );
         if (candidate.length < bestBuf.length) bestBuf = candidate;
       } catch (e) {}
     }
@@ -601,7 +608,10 @@ export async function optimizePngBuffer(
             data: zlib.deflateSync(idxFilteredAllVar, { level: 9 }),
           });
           palChunksVar.push({ name: 'IEND', data: Buffer.alloc(0) });
-          const palOutVar = ensurePng(Buffer.from(encode(palChunksVar)));
+          const native = require('../../libroxify_native.node');
+          const palOutVar = ensurePng(
+            Buffer.from(native.encodePngChunks(palChunksVar)),
+          );
           if (palOutVar.length < bestBuf.length) bestBuf = palOutVar;
         }
       }
@@ -648,4 +658,3 @@ export async function optimizePngBuffer(
     return pngBuf;
   }
 }
-

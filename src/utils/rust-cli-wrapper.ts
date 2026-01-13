@@ -78,13 +78,7 @@ export async function encodeWithRustCLI(
   }
 
   return new Promise((resolve, reject) => {
-    const args = [
-      'encode',
-      inputPath,
-      outputPath,
-      '--level',
-      String(compressionLevel),
-    ];
+    const args = ['encode', '--level', String(compressionLevel)];
 
     if (name) {
       args.push('--name', name);
@@ -94,6 +88,8 @@ export async function encodeWithRustCLI(
       args.push('--passphrase', passphrase);
       args.push('--encrypt', encryptType);
     }
+
+    args.push(inputPath, outputPath);
 
     const proc = spawn(cliPath, args);
 

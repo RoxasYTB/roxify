@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import cliProgress from 'cli-progress';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInPng, IncorrectPassphraseError, listFilesInPng, PassphraseRequiredError, } from './index.js';
 import { packPathsGenerator, unpackBuffer } from './pack.js';
+import * as cliProgress from './stub-progress.js';
 import { encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
 const VERSION = '1.4.0';
 async function readLargeFile(filePath) {

@@ -1,5 +1,3 @@
-import extract from 'png-chunks-extract';
-import sharp from 'sharp';
 import * as zlib from 'zlib';
 import { unpackBuffer } from '../pack.js';
 import {
@@ -12,6 +10,7 @@ import {
 } from './constants.js';
 import { decodePngToBinary } from './decoder.js';
 import { PassphraseRequiredError } from './errors.js';
+import { native } from './native.js';
 import { cropAndReconstitute } from './reconstitution.js';
 
 /**
@@ -25,7 +24,7 @@ export async function listFilesInPng(
   opts: { includeSizes?: boolean } = {},
 ): Promise<string[] | { name: string; size: number }[] | null> {
   try {
-    const chunks = extract(pngBuf);
+    const chunks = native.extractPngChunks(pngBuf);
     const ihdr = chunks.find((c: any) => c.name === 'IHDR');
     const idatChunks = chunks.filter((c: any) => c.name === 'IDAT');
 
@@ -168,17 +167,14 @@ export async function listFilesInPng(
 
   try {
     try {
-      const { data, info } = await sharp(pngBuf)
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-
-      const currentWidth = info.width as number;
-      const currentHeight = info.height as number;
+      const rawData = native.sharpToRaw(pngBuf);
+      const data = rawData.pixels;
+      const currentWidth = rawData.width;
+      const currentHeight = rawData.height;
 
       const rawRGB = Buffer.alloc(currentWidth * currentHeight * 3);
       for (let i = 0; i < currentWidth * currentHeight; i++) {
-        rawRGB[i * 3] = data[i * 4];
+        rawRGB[i * 3] = data[i * 3];
         rawRGB[i * 3 + 1] = data[i * 4 + 1];
         rawRGB[i * 3 + 2] = data[i * 4 + 2];
       }
@@ -255,19 +251,16 @@ export async function listFilesInPng(
   try {
     const reconstructed = await cropAndReconstitute(pngBuf);
     try {
-      const { data, info } = await sharp(reconstructed)
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-
-      const currentWidth = info.width as number;
-      const currentHeight = info.height as number;
+      const rawData = native.sharpToRaw(reconstructed);
+      const data = rawData.pixels;
+      const currentWidth = rawData.width;
+      const currentHeight = rawData.height;
 
       const rawRGB = Buffer.alloc(currentWidth * currentHeight * 3);
       for (let i = 0; i < currentWidth * currentHeight; i++) {
-        rawRGB[i * 3] = data[i * 4];
-        rawRGB[i * 3 + 1] = data[i * 4 + 1];
-        rawRGB[i * 3 + 2] = data[i * 4 + 2];
+        rawRGB[i * 3] = data[i * 3];
+        rawRGB[i * 3 + 1] = data[i * 3 + 1];
+        rawRGB[i * 3 + 2] = data[i * 3 + 2];
       }
 
       const found = rawRGB.indexOf(PIXEL_MAGIC);
@@ -339,15 +332,10 @@ export async function listFilesInPng(
     } catch (e) {}
 
     try {
-      const chunks = extract(reconstructed) as Array<{
-        name: string;
-        data: Buffer | Uint8Array;
-      }>;
-      const fileListChunk = chunks.find((c) => c.name === 'rXFL');
+      const chunks = native.extractPngChunks(reconstructed);
+      const fileListChunk = chunks.find((c: any) => c.name === 'rXFL');
       if (fileListChunk) {
-        const data = Buffer.isBuffer(fileListChunk.data)
-          ? fileListChunk.data
-          : Buffer.from(fileListChunk.data);
+        const data = Buffer.from(fileListChunk.data);
         const parsedFiles = JSON.parse(data.toString('utf8')) as any[];
         if (
           parsedFiles.length > 0 &&
@@ -372,11 +360,9 @@ export async function listFilesInPng(
         return files.sort();
       }
 
-      const metaChunk = chunks.find((c) => c.name === CHUNK_TYPE);
+      const metaChunk = chunks.find((c: any) => c.name === CHUNK_TYPE);
       if (metaChunk) {
-        const dataBuf = Buffer.isBuffer(metaChunk.data)
-          ? metaChunk.data
-          : Buffer.from(metaChunk.data);
+        const dataBuf = Buffer.from(metaChunk.data);
         const markerIdx = dataBuf.indexOf(Buffer.from('rXFL'));
         if (markerIdx !== -1 && markerIdx + 8 <= dataBuf.length) {
           const jsonLen = dataBuf.readUInt32BE(markerIdx + 4);
@@ -406,15 +392,10 @@ export async function listFilesInPng(
   } catch (e) {}
 
   try {
-    const chunks = extract(pngBuf) as Array<{
-      name: string;
-      data: Buffer | Uint8Array;
-    }>;
-    const fileListChunk = chunks.find((c) => c.name === 'rXFL');
+    const chunks = native.extractPngChunks(pngBuf);
+    const fileListChunk = chunks.find((c: any) => c.name === 'rXFL');
     if (fileListChunk) {
-      const data = Buffer.isBuffer(fileListChunk.data)
-        ? fileListChunk.data
-        : Buffer.from(fileListChunk.data);
+      const data = Buffer.from(fileListChunk.data);
       const parsedFiles = JSON.parse(data.toString('utf8')) as any[];
       if (
         parsedFiles.length > 0 &&
@@ -439,11 +420,9 @@ export async function listFilesInPng(
       return files.sort();
     }
 
-    const metaChunk = chunks.find((c) => c.name === CHUNK_TYPE);
+    const metaChunk = chunks.find((c: any) => c.name === CHUNK_TYPE);
     if (metaChunk) {
-      const dataBuf = Buffer.isBuffer(metaChunk.data)
-        ? metaChunk.data
-        : Buffer.from(metaChunk.data);
+      const dataBuf = Buffer.from(metaChunk.data);
       const markerIdx = dataBuf.indexOf(Buffer.from('rXFL'));
       if (markerIdx !== -1 && markerIdx + 8 <= dataBuf.length) {
         const jsonLen = dataBuf.readUInt32BE(markerIdx + 4);
@@ -512,11 +491,8 @@ export async function hasPassphraseInPng(pngBuf: Buffer): Promise<boolean> {
     }
 
     try {
-      const chunksRaw = extract(pngBuf) as Array<{
-        name: string;
-        data: Buffer | Uint8Array;
-      }>;
-      const target = chunksRaw.find((c) => c.name === CHUNK_TYPE);
+      const chunksRaw = native.extractPngChunks(pngBuf);
+      const target = chunksRaw.find((c: any) => c.name === CHUNK_TYPE);
       if (target) {
         const data = Buffer.isBuffer(target.data)
           ? target.data
@@ -533,12 +509,8 @@ export async function hasPassphraseInPng(pngBuf: Buffer): Promise<boolean> {
     } catch (e) {}
 
     try {
-      const sharpLib = await import('sharp');
-      const { data } = await sharpLib
-        .default(pngBuf)
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      const rawRGB = Buffer.from(data);
+      const rawData = native.sharpToRaw(pngBuf);
+      const rawRGB = Buffer.from(rawData.pixels);
 
       const markerLen = MARKER_COLORS.length * 3;
       for (let i = 0; i <= rawRGB.length - markerLen; i += 3) {
@@ -588,4 +560,3 @@ export async function hasPassphraseInPng(pngBuf: Buffer): Promise<boolean> {
     return false;
   }
 }
-

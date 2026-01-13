@@ -106,6 +106,12 @@ pub fn delta_decode_bytes(buf: &[u8]) -> Vec<u8> {
 fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
+    if buf.is_empty() {
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1)
+            .map_err(|e| format!("zstd encoder init error: {}", e))?;
+        return encoder.finish().map_err(|e| format!("zstd finish error: {}", e));
+    }
+
     let actual_level = if level >= 19 { 22 } else { level };
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), actual_level)
         .map_err(|e| format!("zstd encoder init error: {}", e))?;
