@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "type": "module",
   "main": "dist/index.js",
