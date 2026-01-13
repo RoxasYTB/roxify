@@ -412,28 +412,34 @@ export async function decodePngToBinary(
       logicalHeight = currentHeight;
       logicalData = rawRGB;
     } else {
-      console.log(
-        'DEBUG: about to call cropAndReconstitute, debugDir=',
-        opts.debugDir,
-      );
+      if (process.env.ROX_DEBUG || opts.debugDir) {
+        console.log(
+          'DEBUG: about to call cropAndReconstitute, debugDir=',
+          opts.debugDir,
+        );
+      }
       const reconstructed = await cropAndReconstitute(
         processedBuf,
         opts.debugDir,
       );
-      console.log(
-        'DEBUG: cropAndReconstitute returned, reconstructed len=',
-        reconstructed.length,
-      );
+      if (process.env.ROX_DEBUG || opts.debugDir) {
+        console.log(
+          'DEBUG: cropAndReconstitute returned, reconstructed len=',
+          reconstructed.length,
+        );
+      }
 
       const rawData = native.sharpToRaw(reconstructed);
-      console.log(
-        'DEBUG: rawData from reconstructed:',
-        rawData.width,
-        'x',
-        rawData.height,
-        'pixels=',
-        Math.floor(rawData.pixels.length / 3),
-      );
+      if (process.env.ROX_DEBUG || opts.debugDir) {
+        console.log(
+          'DEBUG: rawData from reconstructed:',
+          rawData.width,
+          'x',
+          rawData.height,
+          'pixels=',
+          Math.floor(rawData.pixels.length / 3),
+        );
+      }
       logicalWidth = rawData.width;
       logicalHeight = rawData.height;
       logicalData = Buffer.from(rawData.pixels);

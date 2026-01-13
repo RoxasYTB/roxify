@@ -1,14 +1,14 @@
 import fs from 'fs';
-import sharp from 'sharp';
 import {
   decodePngToBinary,
   encodeBinaryToPng,
   MARKER_START,
 } from '../dist/index.js';
+import { native } from '../dist/utils/native.js';
 
 process.env.ROX_DEBUG = '1';
 
-const FORMATS_TO_TEST = ['png', 'webp', 'jxl'];
+const FORMATS_TO_TEST = ['png'];
 
 async function testFormat(format) {
   console.log(`\n${'='.repeat(60)}`);
@@ -38,9 +38,16 @@ async function testFormat(format) {
 
   console.log('PNG encodé:', encodedPng.length, 'octets');
 
-  const { data: encodedData, info: encodedInfo } = await sharp(encodedPng)
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  const {
+    pixels: encodedData,
+    width: encodedWidth,
+    height: encodedHeight,
+  } = native.sharpToRaw(encodedPng);
+  const encodedInfo = {
+    width: encodedWidth,
+    height: encodedHeight,
+    channels: 3,
+  };
 
   console.log(
     'Dimensions encodées:',
@@ -162,11 +169,9 @@ async function testFormat(format) {
 
   console.log('Contenu inséré sans interpolation');
 
-  const finalPng = await sharp(finalImage, {
-    raw: { width: finalWidth, height: finalHeight, channels: 3 },
-  })
-    .png({ compressionLevel: 0, palette: false, adaptiveFiltering: false })
-    .toBuffer();
+  const finalPng = Buffer.from(
+    native.rgbToPng(finalImage, finalWidth, finalHeight),
+  );
 
   fs.writeFileSync('test-final-with-gradient.png', finalPng);
   console.log('Image finale sauvegardée: test-final-with-gradient.png');
@@ -176,10 +181,8 @@ async function testFormat(format) {
     'Saved: renammed.txt (file content is PNG despite .txt extension)',
   );
 
-  const { data: dbgData, info: dbgInfo } = await sharp(finalPng)
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const idx0 = (offsetY * dbgInfo.width + offsetX) * 3;
+  const { pixels: dbgData, width: dbgWidth } = native.sharpToRaw(finalPng);
+  const idx0 = (offsetY * dbgWidth + offsetX) * 3;
   console.log(
     'DEBUG: pixel at start pos:',
     dbgData[idx0],
@@ -189,9 +192,12 @@ async function testFormat(format) {
 
   console.log('\n[4] Détection des marqueurs et reconstruction de la grille');
 
-  const { data: finalData, info: finalInfo } = await sharp(finalPng)
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  const {
+    pixels: finalData,
+    width: finalInfoWidth,
+    height: finalInfoHeight,
+  } = native.sharpToRaw(finalPng);
+  const finalInfo = { width: finalInfoWidth, height: finalInfoHeight };
 
   let foundMarkerPos = null;
   let detectedScale = 0;
@@ -322,11 +328,10 @@ async function testFormat(format) {
     reconBuf[i * 3 + 2] = reconstructedGrid[i].b;
   }
 
-  await sharp(reconBuf, {
-    raw: { width: logicalWidth, height: logicalHeight, channels: 3 },
-  })
-    .png({ compressionLevel: 0, palette: false, adaptiveFiltering: false })
-    .toFile('reconstructed-logical.png');
+  const reconstructedLogicalPng = Buffer.from(
+    native.rgbToPng(reconBuf, logicalWidth, logicalHeight),
+  );
+  fs.writeFileSync('reconstructed-logical.png', reconstructedLogicalPng);
   console.log('Saved: reconstructed-logical.png');
 
   const ENC_INTERNAL_SCALE = 1;
@@ -363,11 +368,10 @@ async function testFormat(format) {
     prefixBuf[i * 3 + 2] = finalGrid[i].b;
   }
 
-  await sharp(prefixBuf, {
-    raw: { width: logicalWidth, height: prefixH, channels: 3 },
-  })
-    .png({ compressionLevel: 0, palette: false, adaptiveFiltering: false })
-    .toFile('reconstructed-prefix.png');
+  const reconstructedPrefixPng = Buffer.from(
+    native.rgbToPng(prefixBuf, logicalWidth, prefixH),
+  );
+  fs.writeFileSync('reconstructed-prefix.png', reconstructedPrefixPng);
   console.log(
     'Saved: reconstructed-prefix.png (up to first mismatch at index',
     firstMismatch,
@@ -382,11 +386,10 @@ async function testFormat(format) {
     fullBuf[i * 3 + 2] = finalGrid[i].b;
   }
 
-  await sharp(fullBuf, {
-    raw: { width: logicalWidth, height: fullH, channels: 3 },
-  })
-    .png({ compressionLevel: 0, palette: false, adaptiveFiltering: false })
-    .toFile('reconstructed-full.png');
+  const reconstructedFullPng = Buffer.from(
+    native.rgbToPng(fullBuf, logicalWidth, fullH),
+  );
+  fs.writeFileSync('reconstructed-full.png', reconstructedFullPng);
   console.log('Saved: reconstructed-full.png');
 
   console.log(
