@@ -18,7 +18,27 @@ import { colorsToBytes } from './helpers.js';
 import { native } from './native.js';
 import { EncodeOptions } from './types.js';
 import { parallelZstdCompress } from './zstd.js';
-
+/**
+ * Encode a buffer or array of buffers into a PNG image (ROX format).
+ *
+ * @param input - The buffer or array of buffers to encode.
+ * @param opts - Optional encoding options.
+ * @returns A Promise that resolves to a PNG Buffer containing the encoded data.
+ *
+ * @example
+ * ```js
+ * import { encodeBinaryToPng } from 'roxify';
+ *
+ * const png = await encodeBinaryToPng(Buffer.from('hello'), {
+ *   mode: 'screenshot',
+ *   name: 'hello.txt',
+ *   compressionLevel: 19,
+ *   outputFormat: 'png',
+ * });
+ *
+ * // write to disk using fs.writeFileSync('out.png', png)
+ * ```
+ */
 export async function encodeBinaryToPng(
   input: Buffer | Buffer[],
   opts: EncodeOptions = {},

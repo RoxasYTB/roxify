@@ -27,8 +27,9 @@
     "build:native:windows": "cargo build --release --lib --target x86_64-pc-windows-msvc && cp target/x86_64-pc-windows-msvc/release/roxify_native.dll libroxify_native-x86_64-pc-windows-msvc.dll",
     "build:cli": "cargo build --release --bin roxify_native && cp target/release/roxify_native dist/roxify-cli",
     "build:all": "npm run build:native && npm run build && npm run build:cli",
+    "build:cross": "node scripts/build-all-platforms.js && npm run build && npm run build:cli",
     "postbuild:native": "node scripts/copy-native.js",
-    "prepublishOnly": "npm run build:all",
+    "prepublishOnly": "npm run build:cross",
     "test": "npm run build && node test/run-all-tests.js",
     "cli": "node dist/cli.js"
   },

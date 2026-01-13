@@ -54,6 +54,14 @@ function zigzagOrderIndices(width: number, height: number): Int32Array {
   return indices;
 }
 
+/**
+ * Encode a buffer of raw RGB data into a minimal PNG (MinPNG format).
+ *
+ * @param rgb - Buffer of RGB data.
+ * @param width - Image width.
+ * @param height - Image height.
+ * @returns Promise resolving to a PNG Buffer.
+ */
 export async function encodeMinPng(
   rgb: Buffer,
   width: number,
@@ -205,6 +213,12 @@ export async function encodeMinPng(
   return Buffer.concat(output);
 }
 
+/**
+ * Decode a minimal PNG (MinPNG) buffer into raw RGB data and dimensions.
+ *
+ * @param pngBuf - Buffer containing a MinPNG image.
+ * @returns Promise resolving to an object with buf, width, and height, or null if invalid.
+ */
 export async function decodeMinPng(
   pngBuf: Buffer,
 ): Promise<{ buf: Buffer; width: number; height: number } | null> {

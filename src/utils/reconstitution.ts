@@ -2,6 +2,13 @@ import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { native } from './native.js';
 
+/**
+ * Reconstitute a PNG buffer by cropping and reconstructing the image.
+ *
+ * @param input - Buffer containing the PNG image.
+ * @param debugDir - Optional directory to write debug images.
+ * @returns Promise resolving to the reconstituted PNG buffer.
+ */
 export async function cropAndReconstitute(
   input: Buffer,
   debugDir?: string,

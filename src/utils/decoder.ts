@@ -93,6 +93,21 @@ function convertToPng(buf: Buffer, format: 'webp' | 'jxl'): Buffer {
   }
 }
 
+/**
+ * Decode a ROX PNG or buffer into the original binary payload or files list.
+ *
+ * @param input - Buffer or path to a PNG file.
+ * @param opts - Optional decode options.
+ * @returns A Promise resolving to DecodeResult ({ buf, meta } or { files }).
+ *
+ * @example
+ * ```js
+ * import { decodePngToBinary } from 'roxify';
+ * const png = fs.readFileSync('out.png');
+ * const res = await decodePngToBinary(png);
+ * console.log(res.meta?.name, res.buf.toString('utf8'));
+ * ```
+ */
 export async function decodePngToBinary(
   input: Buffer | string,
   opts: DecodeOptions = {},

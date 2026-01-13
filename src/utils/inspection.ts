@@ -14,10 +14,19 @@ import { native } from './native.js';
 import { cropAndReconstitute } from './reconstitution.js';
 
 /**
- * List files in a Rox PNG archive without decoding the full payload.
- * Returns the file list if available, otherwise null.
- * @param pngBuf - PNG data
- * @public
+ * List files stored inside a ROX PNG without fully extracting it.
+ * Returns `null` if no file list could be found.
+ *
+ * @param pngBuf - Buffer containing a PNG file.
+ * @param opts - Options to include sizes.
+ * @returns Promise resolving to an array of file names or objects with sizes.
+ *
+ * @example
+ * ```js
+ * import { listFilesInPng } from 'roxify';
+ * const files = await listFilesInPng(fs.readFileSync('out.png'), { includeSizes: true });
+ * console.log(files);
+ * ```
  */
 export async function listFilesInPng(
   pngBuf: Buffer,
@@ -475,8 +484,17 @@ async function getFileSizesFromPng(
 }
 
 /**
- * Detect if a PNG/ROX buffer contains an encrypted payload (requires passphrase)
- * Returns true if encryption flag indicates AES or XOR.
+ * Check if a PNG contains an encrypted payload requiring a passphrase.
+ *
+ * @param pngBuf - Buffer containing a PNG file.
+ * @returns Promise resolving to `true` if the PNG requires a passphrase.
+ *
+ * @example
+ * ```js
+ * import { hasPassphraseInPng } from 'roxify';
+ * const needPass = await hasPassphraseInPng(fs.readFileSync('out.png'));
+ * console.log('needs passphrase?', needPass);
+ * ```
  */
 export async function hasPassphraseInPng(pngBuf: Buffer): Promise<boolean> {
   try {
