@@ -412,13 +412,28 @@ export async function decodePngToBinary(
       logicalHeight = currentHeight;
       logicalData = rawRGB;
     } else {
+      console.log(
+        'DEBUG: about to call cropAndReconstitute, debugDir=',
+        opts.debugDir,
+      );
       const reconstructed = await cropAndReconstitute(
         processedBuf,
         opts.debugDir,
       );
+      console.log(
+        'DEBUG: cropAndReconstitute returned, reconstructed len=',
+        reconstructed.length,
+      );
 
       const rawData = native.sharpToRaw(reconstructed);
-
+      console.log(
+        'DEBUG: rawData from reconstructed:',
+        rawData.width,
+        'x',
+        rawData.height,
+        'pixels=',
+        Math.floor(rawData.pixels.length / 3),
+      );
       logicalWidth = rawData.width;
       logicalHeight = rawData.height;
       logicalData = Buffer.from(rawData.pixels);
@@ -756,6 +771,25 @@ export async function decodePngToBinary(
           pixelBytes.indexOf(markerEndBytes),
         );
       }
+
+      if (opts.debugDir) {
+        try {
+          console.log('DEBUG: writing extracted pixel bytes to', opts.debugDir);
+          writeFileSync(
+            join(opts.debugDir, 'extracted-pixel-bytes.bin'),
+            pixelBytes,
+          );
+          writeFileSync(
+            join(opts.debugDir, 'extracted-pixel-head.hex'),
+            pixelBytes.slice(0, 512).toString('hex'),
+          );
+        } catch (e) {
+          console.log(
+            'DEBUG: failed writing extracted bytes',
+            (e as any)?.message ?? e,
+          );
+        }
+      }
     }
 
     try {
@@ -830,9 +864,249 @@ export async function decodePngToBinary(
                 errMsg +
                 ')',
             );
-          throw new DataFormatError(
-            `Screenshot mode zstd decompression failed: ` + errMsg,
-          );
+
+          // Fallback: try reconstituting the image and re-extracting the pixels
+          try {
+            if (process.env.ROX_DEBUG)
+              console.log(
+                'DEBUG: decompress failed, attempting cropAndReconstitute fallback',
+              );
+            const reconstructed = await cropAndReconstitute(
+              processedBuf,
+              opts.debugDir,
+            );
+            const raw2 = native.sharpToRaw(reconstructed);
+            let logicalData2 = Buffer.from(raw2.pixels);
+            let logicalWidth2 = raw2.width;
+            let logicalHeight2 = raw2.height;
+
+            // find startIdx2 (linear)
+            let startIdx2 = -1;
+            const totalPixels2 = (logicalData2.length / 3) | 0;
+            for (let i2 = 0; i2 <= totalPixels2 - MARKER_START.length; i2++) {
+              let match2 = true;
+              for (let mi2 = 0; mi2 < MARKER_START.length && match2; mi2++) {
+                const offset2 = (i2 + mi2) * 3;
+                if (
+                  logicalData2[offset2] !== MARKER_START[mi2].r ||
+                  logicalData2[offset2 + 1] !== MARKER_START[mi2].g ||
+                  logicalData2[offset2 + 2] !== MARKER_START[mi2].b
+                ) {
+                  match2 = false;
+                }
+              }
+              if (match2) {
+                startIdx2 = i2;
+                break;
+              }
+            }
+
+            if (startIdx2 === -1) {
+              // try 2D scan
+              let found2D2 = false;
+              for (let y = 0; y < logicalHeight2 && !found2D2; y++) {
+                for (
+                  let x = 0;
+                  x <= logicalWidth2 - MARKER_START.length && !found2D2;
+                  x++
+                ) {
+                  let match = true;
+                  for (let mi = 0; mi < MARKER_START.length && match; mi++) {
+                    const idx = (y * logicalWidth2 + (x + mi)) * 3;
+                    if (
+                      idx + 2 >= logicalData2.length ||
+                      logicalData2[idx] !== MARKER_START[mi].r ||
+                      logicalData2[idx + 1] !== MARKER_START[mi].g ||
+                      logicalData2[idx + 2] !== MARKER_START[mi].b
+                    ) {
+                      match = false;
+                    }
+                  }
+                  if (match) {
+                    // compute rectangle
+                    let endX = x + MARKER_START.length - 1;
+                    let endY = y;
+                    for (let scanY = y; scanY < logicalHeight2; scanY++) {
+                      let rowHasData = false;
+                      for (let scanX = x; scanX < logicalWidth2; scanX++) {
+                        const scanIdx = (scanY * logicalWidth2 + scanX) * 3;
+                        if (scanIdx + 2 < logicalData2.length) {
+                          const r = logicalData2[scanIdx];
+                          const g = logicalData2[scanIdx + 1];
+                          const b = logicalData2[scanIdx + 2];
+
+                          const isBackground =
+                            (r === 100 && g === 120 && b === 110) ||
+                            (r === 0 && g === 0 && b === 0) ||
+                            (r >= 50 &&
+                              r <= 220 &&
+                              g >= 50 &&
+                              g <= 220 &&
+                              b >= 50 &&
+                              b <= 220 &&
+                              Math.abs(r - g) < 70 &&
+                              Math.abs(r - b) < 70 &&
+                              Math.abs(g - b) < 70);
+
+                          if (!isBackground) {
+                            rowHasData = true;
+                            if (scanX > endX) endX = scanX;
+                          }
+                        }
+                      }
+
+                      if (rowHasData) {
+                        endY = scanY;
+                      } else if (scanY > y) {
+                        break;
+                      }
+                    }
+
+                    const rectWidth = endX - x + 1;
+                    const rectHeight = endY - y + 1;
+
+                    const newDataLen = rectWidth * rectHeight * 3;
+                    const newData = Buffer.allocUnsafe(newDataLen);
+                    let writeIdx = 0;
+                    for (let ry = y; ry <= endY; ry++) {
+                      for (let rx = x; rx <= endX; rx++) {
+                        const idx = (ry * logicalWidth2 + rx) * 3;
+                        newData[writeIdx++] = logicalData2[idx];
+                        newData[writeIdx++] = logicalData2[idx + 1];
+                        newData[writeIdx++] = logicalData2[idx + 2];
+                      }
+                    }
+
+                    logicalData2 = newData;
+                    logicalWidth2 = rectWidth;
+                    logicalHeight2 = rectHeight;
+
+                    startIdx2 = 0;
+                    found2D2 = true;
+                  }
+                }
+              }
+
+              if (!found2D2)
+                throw new DataFormatError(
+                  'Screenshot fallback failed: START not found',
+                );
+            }
+
+            // compute endStartPixel2
+            const curTotalPixels2 = (logicalData2.length / 3) | 0;
+            const lastLineStart2 = (logicalHeight2 - 1) * logicalWidth2;
+            const endMarkerStartCol2 = logicalWidth2 - MARKER_END.length;
+
+            let endStartPixel2 = -1;
+            if (lastLineStart2 + endMarkerStartCol2 < curTotalPixels2) {
+              let matchEnd2 = true;
+              for (let mi = 0; mi < MARKER_END.length && matchEnd2; mi++) {
+                const pixelIdx = lastLineStart2 + endMarkerStartCol2 + mi;
+                if (pixelIdx >= curTotalPixels2) {
+                  matchEnd2 = false;
+                  break;
+                }
+                const offset = pixelIdx * 3;
+                if (
+                  logicalData2[offset] !== MARKER_END[mi].r ||
+                  logicalData2[offset + 1] !== MARKER_END[mi].g ||
+                  logicalData2[offset + 2] !== MARKER_END[mi].b
+                ) {
+                  matchEnd2 = false;
+                }
+              }
+
+              if (matchEnd2) {
+                endStartPixel2 =
+                  lastLineStart2 + endMarkerStartCol2 - startIdx2;
+                if (process.env.ROX_DEBUG) {
+                  console.log(
+                    'DEBUG: Found END marker in fallback at last line',
+                  );
+                }
+              }
+            }
+
+            if (endStartPixel2 === -1) {
+              if (process.env.ROX_DEBUG) {
+                console.log(
+                  'DEBUG: END marker not found in fallback; using end of grid',
+                );
+              }
+              endStartPixel2 = curTotalPixels2 - startIdx2;
+            }
+
+            const dataPixelCount2 = endStartPixel2 - (MARKER_START.length + 1);
+            const pixelBytes2 = Buffer.allocUnsafe(dataPixelCount2 * 3);
+            for (let i2 = 0; i2 < dataPixelCount2; i2++) {
+              const srcOffset = (startIdx2 + MARKER_START.length + 1 + i2) * 3;
+              const dstOffset = i2 * 3;
+              pixelBytes2[dstOffset] = logicalData2[srcOffset];
+              pixelBytes2[dstOffset + 1] = logicalData2[srcOffset + 1];
+              pixelBytes2[dstOffset + 2] = logicalData2[srcOffset + 2];
+            }
+
+            // try decompressing fallback payload
+            const foundPX = pixelBytes2.indexOf(PIXEL_MAGIC);
+            if (process.env.ROX_DEBUG)
+              console.log('DEBUG: PIXEL_MAGIC index in fallback:', foundPX);
+
+            if (pixelBytes2.length >= PIXEL_MAGIC.length) {
+              let ii = 0;
+              const at0 = pixelBytes2
+                .slice(0, PIXEL_MAGIC.length)
+                .equals(PIXEL_MAGIC);
+              if (at0) ii = PIXEL_MAGIC.length;
+              else {
+                const found = pixelBytes2.indexOf(PIXEL_MAGIC);
+                if (found !== -1) ii = found + PIXEL_MAGIC.length;
+              }
+
+              if (ii > 0) {
+                const version2 = pixelBytes2[ii++];
+                const nameLen2 = pixelBytes2[ii++];
+                const payloadLen2 = pixelBytes2.readUInt32BE(ii + nameLen2);
+                const rawPayload2 = pixelBytes2.slice(
+                  ii + nameLen2 + 4,
+                  ii + nameLen2 + 4 + payloadLen2,
+                );
+                let payload2 = tryDecryptIfNeeded(rawPayload2, opts.passphrase);
+                payload2 = await tryDecompress(payload2, (info) => {
+                  if (opts.onProgress) opts.onProgress(info);
+                });
+
+                if (!payload2.slice(0, MAGIC.length).equals(MAGIC)) {
+                  throw new DataFormatError(
+                    'Screenshot fallback failed: missing ROX1 magic after decompression',
+                  );
+                }
+
+                payload2 = payload2.slice(MAGIC.length);
+                if (opts.files) {
+                  const unpacked2 = unpackBuffer(payload2, opts.files);
+                  if (unpacked2) {
+                    if (opts.onProgress) opts.onProgress({ phase: 'done' });
+                    progressBar?.stop();
+                    return { files: unpacked2.files, meta: { name } };
+                  }
+                }
+
+                if (opts.onProgress) opts.onProgress({ phase: 'done' });
+                progressBar?.stop();
+                return { buf: payload2, meta: { name } };
+              }
+            }
+
+            throw new DataFormatError(
+              'Screenshot mode zstd decompression failed: ' + errMsg,
+            );
+          } catch (e2) {
+            // If fallback fails, rethrow original error
+            throw new DataFormatError(
+              `Screenshot mode zstd decompression failed: ` + errMsg,
+            );
+          }
         }
 
         if (!payload.slice(0, MAGIC.length).equals(MAGIC)) {
