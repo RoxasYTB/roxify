@@ -32,27 +32,7 @@ async function tryDecompress(
     total?: number;
   }) => void,
 ): Promise<Buffer> {
-  try {
-    return await parallelZstdDecompress(payload, onProgress);
-  } catch (e) {
-    try {
-      const mod = await import('lzma-purejs');
-      const decompressFn =
-        mod && (mod.decompress || (mod.LZMA && mod.LZMA.decompress));
-      if (!decompressFn) throw new Error('No lzma decompress');
-      const dec = await new Promise<Uint8Array>((resolve, reject) => {
-        try {
-          decompressFn(Buffer.from(payload), (out: any) => resolve(out));
-        } catch (err) {
-          reject(err);
-        }
-      });
-      const dBuf = Buffer.isBuffer(dec) ? dec : Buffer.from(dec);
-      return dBuf;
-    } catch (e3) {
-      throw e;
-    }
-  }
+  return await parallelZstdDecompress(payload, onProgress);
 }
 
 function detectImageFormat(buf: Buffer): 'png' | 'webp' | 'jxl' | 'unknown' {

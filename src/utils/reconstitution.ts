@@ -1,6 +1,8 @@
+import { native } from './native.js';
+
 export async function cropAndReconstitute(
   input: Buffer,
   debugDir?: string,
 ): Promise<Buffer> {
-  return input;
+  return Buffer.from(native.cropAndReconstitute(input));
 }

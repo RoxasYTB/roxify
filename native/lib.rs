@@ -15,6 +15,7 @@ mod crypto;
 mod png_utils;
 mod image_utils;
 mod progress;
+mod reconstitution;
 
 pub use core::*;
 pub use gpu::*;
@@ -314,5 +315,12 @@ pub fn png_to_rgb(png_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
     let (pixels, width, height) = image_utils::png_to_rgb(&png_buffer)
         .map_err(|e| Error::from_reason(e))?;
     Ok(RawPixelsWithDimensions { pixels, width, height })
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn crop_and_reconstitute(png_buffer: Buffer) -> Result<Vec<u8>> {
+    reconstitution::crop_and_reconstitute(&png_buffer)
+        .map_err(|e| Error::from_reason(e))
 }
 
