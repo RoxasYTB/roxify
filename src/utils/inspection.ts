@@ -1,5 +1,5 @@
 import * as zlib from 'zlib';
-import { unpackBuffer } from '../pack.js';
+import { unpackBuffer } from '../pack';
 import {
   CHUNK_TYPE,
   ENC_AES,
@@ -7,11 +7,11 @@ import {
   MAGIC,
   MARKER_COLORS,
   PIXEL_MAGIC,
-} from './constants.js';
-import { decodePngToBinary } from './decoder.js';
-import { PassphraseRequiredError } from './errors.js';
-import { native } from './native.js';
-import { cropAndReconstitute } from './reconstitution.js';
+} from './constants';
+import { decodePngToBinary } from './decoder';
+import { PassphraseRequiredError } from './errors';
+import { native } from './native';
+import { cropAndReconstitute } from './reconstitution';
 
 /**
  * List files stored inside a ROX PNG without fully extracting it.
@@ -34,6 +34,55 @@ export async function listFilesInPng(
 ): Promise<string[] | { name: string; size: number }[] | null> {
   try {
     const chunks = native.extractPngChunks(pngBuf);
+
+    const fileListChunk = chunks.find((c: any) => c.name === 'rXFL');
+    if (fileListChunk) {
+      const data = Buffer.from(fileListChunk.data);
+      const parsedFiles = JSON.parse(data.toString('utf8')) as any[];
+      if (
+        parsedFiles.length > 0 &&
+        typeof parsedFiles[0] === 'object' &&
+        (parsedFiles[0].name || parsedFiles[0].path)
+      ) {
+        const objs = parsedFiles.map((p) => ({
+          name: p.name ?? p.path,
+          size: typeof p.size === 'number' ? p.size : 0,
+        }));
+        return objs.sort((a, b) => a.name.localeCompare(b.name));
+      }
+      const files: string[] = parsedFiles as string[];
+      return files.sort();
+    }
+
+    const metaChunk = chunks.find((c: any) => c.name === CHUNK_TYPE);
+    if (metaChunk) {
+      const dataBuf = Buffer.from(metaChunk.data);
+      const markerIdx = dataBuf.indexOf(Buffer.from('rXFL'));
+      if (markerIdx !== -1 && markerIdx + 8 <= dataBuf.length) {
+        const jsonLen = dataBuf.readUInt32BE(markerIdx + 4);
+        const jsonStart = markerIdx + 8;
+        const jsonEnd = jsonStart + jsonLen;
+        if (jsonEnd <= dataBuf.length) {
+          const parsedFiles = JSON.parse(
+            dataBuf.slice(jsonStart, jsonEnd).toString('utf8'),
+          ) as any[];
+          if (
+            parsedFiles.length > 0 &&
+            typeof parsedFiles[0] === 'object' &&
+            (parsedFiles[0].name || parsedFiles[0].path)
+          ) {
+            const objs = parsedFiles.map((p) => ({
+              name: p.name ?? p.path,
+              size: typeof p.size === 'number' ? p.size : 0,
+            }));
+            return objs.sort((a, b) => a.name.localeCompare(b.name));
+          }
+          const files: string[] = parsedFiles as string[];
+          return files.sort();
+        }
+      }
+    }
+
     const ihdr = chunks.find((c: any) => c.name === 'IHDR');
     const idatChunks = chunks.filter((c: any) => c.name === 'IDAT');
 
@@ -124,23 +173,7 @@ export async function listFilesInPng(
               }
 
               const names = parsedFiles as string[];
-              if (opts.includeSizes) {
-                getFileSizesFromPng(pngBuf)
-                  .then((sizes) => {
-                    if (sizes) {
-                      resolve(
-                        names
-                          .map((f) => ({ name: f, size: sizes[f] ?? 0 }))
-                          .sort((a, b) => a.name.localeCompare(b.name)),
-                      );
-                    } else {
-                      resolve(names.sort());
-                    }
-                  })
-                  .catch(() => resolve(names.sort()));
-              } else {
-                resolve(names.sort());
-              }
+              resolve(names.sort());
             } catch (e) {
               resolved = true;
               inflate.destroy();
@@ -238,14 +271,6 @@ export async function listFilesInPng(
                       return objs.sort((a, b) => a.name.localeCompare(b.name));
                     }
                     const files: string[] = parsedFiles as string[];
-                    if (opts.includeSizes) {
-                      const sizes = await getFileSizesFromPng(pngBuf);
-                      if (sizes) {
-                        return files
-                          .map((f) => ({ name: f, size: sizes[f] ?? 0 }))
-                          .sort((a, b) => a.name.localeCompare(b.name));
-                      }
-                    }
                     return files.sort();
                   }
                 }
@@ -322,14 +347,6 @@ export async function listFilesInPng(
                       return objs.sort((a, b) => a.name.localeCompare(b.name));
                     }
                     const files: string[] = parsedFiles as string[];
-                    if (opts.includeSizes) {
-                      const sizes = await getFileSizesFromPng(reconstructed);
-                      if (sizes) {
-                        return files
-                          .map((f) => ({ name: f, size: sizes[f] ?? 0 }))
-                          .sort((a, b) => a.name.localeCompare(b.name));
-                      }
-                    }
                     return files.sort();
                   }
                 }
@@ -418,14 +435,6 @@ export async function listFilesInPng(
         return objs.sort((a, b) => a.name.localeCompare(b.name));
       }
       const files: string[] = parsedFiles as string[];
-      if (opts.includeSizes) {
-        const sizes = await getFileSizesFromPng(pngBuf);
-        if (sizes) {
-          return files
-            .map((f) => ({ name: f, size: sizes[f] ?? 0 }))
-            .sort((a, b) => a.name.localeCompare(b.name));
-        }
-      }
       return files.sort();
     }
 

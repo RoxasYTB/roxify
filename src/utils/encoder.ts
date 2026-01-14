@@ -1,6 +1,6 @@
 import { createCipheriv, pbkdf2Sync, randomBytes } from 'crypto';
 import * as zlib from 'zlib';
-import { unpackBuffer } from '../pack.js';
+import { unpackBuffer } from '../pack';
 import {
   COMPRESSION_MARKERS,
   ENC_AES,
@@ -12,12 +12,12 @@ import {
   PIXEL_MAGIC,
   PIXEL_MAGIC_BLOCK,
   PNG_HEADER,
-} from './constants.js';
-import { crc32 } from './crc.js';
-import { colorsToBytes } from './helpers.js';
-import { native } from './native.js';
-import { EncodeOptions } from './types.js';
-import { parallelZstdCompress } from './zstd.js';
+} from './constants';
+import { crc32 } from './crc';
+import { colorsToBytes } from './helpers';
+import { native } from './native';
+import { EncodeOptions } from './types';
+import { parallelZstdCompress } from './zstd';
 /**
  * Encode a buffer or array of buffers into a PNG image (ROX format).
  *
@@ -168,6 +168,59 @@ export async function encodeBinaryToPng(
   const payloadTotalLen = payload.reduce((a, b) => a + b.length, 0);
   if (opts.onProgress)
     opts.onProgress({ phase: 'meta_prep_done', loaded: payloadTotalLen });
+
+  if (
+    typeof native.nativeEncodePngWithNameAndFilelist === 'function' &&
+    opts.includeFileList &&
+    opts.fileList
+  ) {
+    const fileName = opts.name || undefined;
+    let sizeMap: Record<string, number> | null = null;
+    if (!Array.isArray(input)) {
+      try {
+        const unpack = unpackBuffer(input as Buffer);
+        if (unpack) {
+          sizeMap = {};
+          for (const ef of unpack.files) sizeMap[ef.path] = ef.buf.length;
+        }
+      } catch (e) {}
+    }
+
+    const normalized = opts.fileList.map((f: any) => {
+      if (typeof f === 'string')
+        return { name: f, size: sizeMap && sizeMap[f] ? sizeMap[f] : 0 };
+      if (f && typeof f === 'object') {
+        if (f.name) return { name: f.name, size: f.size ?? 0 };
+        if (f.path) return { name: f.path, size: f.size ?? 0 };
+      }
+      return { name: String(f), size: 0 };
+    });
+    const fileListJson = JSON.stringify(normalized);
+
+    const flatPayload = Buffer.concat(payload);
+
+    if (opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
+      const result = native.nativeEncodePngWithEncryptionNameAndFilelist(
+        flatPayload,
+        compressionLevel,
+        opts.passphrase,
+        opts.encrypt,
+        fileName,
+        fileListJson,
+      );
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      return Buffer.from(result);
+    } else {
+      const result = native.nativeEncodePngWithNameAndFilelist(
+        flatPayload,
+        compressionLevel,
+        fileName,
+        fileListJson,
+      );
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      return Buffer.from(result);
+    }
+  }
 
   const metaParts: Buffer[] = [];
   const includeName =

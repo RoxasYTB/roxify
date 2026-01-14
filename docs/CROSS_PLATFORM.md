@@ -92,15 +92,9 @@ cross build --release --lib --target x86_64-pc-windows-gnu
 
 ### Distribution
 
-Le module npm inclut tous les binaires pré-compilés :
+Le package npm inclut uniquement `libroxify_native.node` (le binaire natif pour la plateforme courante, renommé en `.node`). Les builds précompilés pour chaque plateforme peuvent être fournis séparément comme artifacts de release (GitHub Actions) mais ne sont pas inclus dans le package npm.
 
-- `libroxify_native.node` (copie pour la plateforme courante)
-- `libroxify_native-x86_64-unknown-linux-gnu.so`
-- `libroxify_native-x86_64-apple-darwin.dylib`
-- `libroxify_native-aarch64-apple-darwin.dylib`
-- `libroxify_native-x86_64-pc-windows-msvc.dll`
-
-Le module détecte automatiquement la plateforme au runtime et charge le bon binaire.
+Le module détecte automatiquement la plateforme au runtime et charge le binaire concerné (via `libroxify_native.node`).
 
 ### Détection Automatique
 

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { unpackBuffer } from '../pack.js';
+import { unpackBuffer } from '../pack';
 import {
   CHUNK_TYPE,
   MAGIC,
@@ -12,17 +12,17 @@ import {
   PIXEL_MAGIC,
   PIXEL_MAGIC_BLOCK,
   PNG_HEADER,
-} from './constants.js';
+} from './constants';
 import {
   DataFormatError,
   IncorrectPassphraseError,
   PassphraseRequiredError,
-} from './errors.js';
-import { colorsToBytes, deltaDecode, tryDecryptIfNeeded } from './helpers.js';
-import { native } from './native.js';
-import { cropAndReconstitute } from './reconstitution.js';
-import { DecodeOptions, DecodeResult } from './types.js';
-import { parallelZstdDecompress, tryZstdDecompress } from './zstd.js';
+} from './errors';
+import { colorsToBytes, deltaDecode, tryDecryptIfNeeded } from './helpers';
+import { native } from './native';
+import { cropAndReconstitute } from './reconstitution';
+import { DecodeOptions, DecodeResult } from './types';
+import { parallelZstdDecompress, tryZstdDecompress } from './zstd';
 
 async function tryDecompress(
   payload: Buffer,

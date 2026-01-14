@@ -99,3 +99,41 @@ pub fn get_png_metadata(png_data: &[u8]) -> Result<(u32, u32, u8, u8), String> {
 
     Ok((width, height, bit_depth, color_type))
 }
+
+/// Extract the raw payload bytes embedded in a ROX PNG (the compressed/encrypted pack).
+/// This re-uses the reconstitution cropping logic to ensure the payload area is found.
+pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    // Use the reconstitution logic to get a cropped PNG containing the payload pixels
+    let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
+    // Load image to raw RGB
+    let img = image::load_from_memory(&reconst).map_err(|e| format!("image load error: {}", e))?;
+    let rgb = img.to_rgb8();
+    let raw = rgb.into_raw(); // 3 bytes per pixel
+
+    let magic = b"PXL1";
+    // find magic
+    let mut pos_opt: Option<usize> = None;
+    for i in 0..(raw.len().saturating_sub(magic.len())) {
+        if &raw[i..i + magic.len()] == magic {
+            pos_opt = Some(i);
+            break;
+        }
+    }
+    let pos = pos_opt.ok_or("PIXEL_MAGIC not found")?;
+    let mut idx = pos + magic.len();
+    if idx + 2 > raw.len() { return Err("Truncated header".to_string()); }
+    let _version = raw[idx]; idx += 1;
+    let name_len = raw[idx] as usize; idx += 1;
+    if idx + name_len > raw.len() { return Err("Truncated name".to_string()); }
+    idx += name_len; // skip name
+    if idx + 4 > raw.len() { return Err("Truncated payload length".to_string()); }
+    let payload_len = ((raw[idx] as u32) << 24)
+        | ((raw[idx+1] as u32) << 16)
+        | ((raw[idx+2] as u32) << 8)
+        | (raw[idx+3] as u32);
+    idx += 4;
+    let end = idx + (payload_len as usize);
+    if end > raw.len() { return Err("Truncated payload".to_string()); }
+    let payload = raw[idx..end].to_vec();
+    Ok(payload)
+}

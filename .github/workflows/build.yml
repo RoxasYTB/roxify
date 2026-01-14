@@ -50,17 +50,17 @@ jobs:
       - name: Copy binary (Unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p artifacts
-          cp target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }} artifacts/libroxify_native-${{ matrix.target }}.${{ matrix.ext }}
+          mkdir -p artifacts/${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node
 
       - name: Copy binary (Windows)
         if: runner.os == 'Windows'
         run: |
-          New-Item -ItemType Directory -Force -Path artifacts
-          Copy-Item target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }} artifacts/libroxify_native-${{ matrix.target }}.${{ matrix.ext }}
+          New-Item -ItemType Directory -Force -Path artifacts\${{ matrix.target }}
+          Copy-Item target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }} artifacts\${{ matrix.target }}\libroxify_native.node
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
-          path: artifacts/*
+          path: artifacts/**

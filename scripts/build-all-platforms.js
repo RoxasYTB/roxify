@@ -26,8 +26,10 @@ for (const { name, target, ext } of targets) {
     });
 
     const sourcePath = `target/${target}/release/libroxify_native.${ext}`;
-    const destPath = `libroxify_native-${target}.${ext}`;
+    const destDir = `artifacts/${target}`;
+    const destPath = `${destDir}/libroxify_native.node`;
 
+    execSync(`mkdir -p ${destDir}`);
     execSync(`cp ${sourcePath} ${destPath}`);
     console.log(`✓ ${name} built: ${destPath}\n`);
   } catch (error) {

@@ -16,6 +16,6 @@ test-native.cjs
 test/
 *.png
 *.tgz
-test-* 
+test-*
 # Ignore platform-specific native artifacts
 libroxify_native-*

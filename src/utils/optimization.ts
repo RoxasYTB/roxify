@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as zlib from 'zlib';
-import { PNG_HEADER, PNG_HEADER_HEX } from './constants.js';
+import { PNG_HEADER, PNG_HEADER_HEX } from './constants';
 
 export async function optimizePngBuffer(
   pngBuf: Buffer,

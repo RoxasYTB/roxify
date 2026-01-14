@@ -198,6 +198,44 @@ pub fn native_encode_png_raw(buffer: Buffer, compression_level: i32) -> Result<V
         .map_err(|e| Error::from_reason(e.to_string()))
 }
 
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_png_with_name_and_filelist(
+    buffer: Buffer,
+    compression_level: i32,
+    name: Option<String>,
+    file_list_json: Option<String>,
+) -> Result<Vec<u8>> {
+    encoder::encode_to_png_with_name_and_filelist(
+        &buffer,
+        compression_level,
+        name.as_deref(),
+        file_list_json.as_deref(),
+    )
+    .map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_png_with_encryption_name_and_filelist(
+    buffer: Buffer,
+    compression_level: i32,
+    passphrase: Option<String>,
+    encrypt_type: Option<String>,
+    name: Option<String>,
+    file_list_json: Option<String>,
+) -> Result<Vec<u8>> {
+    encoder::encode_to_png_with_encryption_name_and_filelist(
+        &buffer,
+        compression_level,
+        passphrase.as_deref(),
+        encrypt_type.as_deref(),
+        name.as_deref(),
+        file_list_json.as_deref(),
+    )
+    .map_err(|e| Error::from_reason(e.to_string()))
+}
+
 #[napi(object)]
 pub struct PngChunkData {
     pub name: String,

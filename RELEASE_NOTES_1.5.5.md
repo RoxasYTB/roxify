@@ -9,7 +9,7 @@
 ## Changes
 
 - Updated `src/utils/native.ts` to support multiple Windows build targets
-- Package now includes pre-built Windows native module (`libroxify_native-x86_64-pc-windows-gnu.node`)
+- Package now includes pre-built Windows native module (`libroxify_native.node`)
 
 ## Compatibility
 

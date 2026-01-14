@@ -1,7 +1,7 @@
 import { createDecipheriv, pbkdf2Sync } from 'crypto';
-import { ENC_AES, ENC_NONE, ENC_XOR } from './constants.js';
-import { IncorrectPassphraseError, PassphraseRequiredError } from './errors.js';
-import { native } from './native.js';
+import { ENC_AES, ENC_NONE, ENC_XOR } from './constants';
+import { IncorrectPassphraseError, PassphraseRequiredError } from './errors';
+import { native } from './native';
 
 let nativeDeltaEncode: ((data: Buffer) => Uint8Array) | null = null;
 let nativeDeltaDecode: ((data: Buffer) => Uint8Array) | null = null;

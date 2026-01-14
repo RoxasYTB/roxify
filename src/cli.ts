@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import {
@@ -11,15 +17,37 @@ import {
   IncorrectPassphraseError,
   listFilesInPng,
   PassphraseRequiredError,
-} from './index.js';
-import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
-import * as cliProgress from './stub-progress.js';
+} from './index';
+import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack';
+import * as cliProgress from './stub-progress';
 import {
   encodeWithRustCLI,
   isRustBinaryAvailable,
-} from './utils/rust-cli-wrapper.js';
+} from './utils/rust-cli-wrapper';
 
 const VERSION = '1.4.0';
+
+function getDirectorySize(dirPath: string): number {
+  let totalSize = 0;
+  try {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        totalSize += getDirectorySize(fullPath);
+      } else if (entry.isFile()) {
+        try {
+          totalSize += statSync(fullPath).size;
+        } catch (e) {
+          // ignore files that can't be read
+        }
+      }
+    }
+  } catch (e) {
+    // ignore directories that can't be read
+  }
+  return totalSize;
+}
 
 async function readLargeFile(filePath: string): Promise<Buffer> {
   const st = statSync(filePath);
@@ -230,7 +258,11 @@ async function encodeCommand(args: string[]) {
     });
 
     if (anyDir) {
-      const { index } = await packPathsGenerator(inputPaths, undefined, () => {});
+      const { index } = await packPathsGenerator(
+        inputPaths,
+        undefined,
+        () => {},
+      );
       if (!index || index.length === 0) {
         console.log(' ');
         console.error('Error: No files found in specified input paths.');
@@ -292,11 +324,7 @@ async function encodeCommand(args: string[]) {
         inputPaths.length === 1 &&
         fstatSync(resolvedInputs[0]).isDirectory()
       ) {
-        const { execSync } = await import('child_process');
-        const sizeOutput = execSync(`du -sb "${resolvedInputs[0]}"`, {
-          encoding: 'utf-8',
-        });
-        inputSize = parseInt(sizeOutput.split(/\s+/)[0]);
+        inputSize = getDirectorySize(resolvedInputs[0]);
       } else {
         inputSize = fstatSync(resolvedInputs[0]).size;
       }
@@ -755,6 +783,35 @@ async function listCommand(args: string[]) {
   }
 
   const resolvedInput = resolve(inputPath);
+
+  if (isRustBinaryAvailable()) {
+    try {
+      const { findRustBinary } = await import('./utils/rust-cli-wrapper');
+      const cliPath = findRustBinary();
+
+      if (cliPath) {
+        const { execSync } = await import('child_process');
+        const output = execSync(`"${cliPath}" list "${resolvedInput}"`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'inherit'],
+        });
+
+        const fileList = JSON.parse(output.trim());
+
+        console.log(`Files in ${resolvedInput}:`);
+        for (const file of fileList) {
+          if (typeof file === 'string') {
+            console.log(`  ${file}`);
+          } else {
+            console.log(`  ${file.name} (${file.size} bytes)`);
+          }
+        }
+        return;
+      }
+    } catch (err: any) {
+      // Fallback to TypeScript
+    }
+  }
 
   try {
     const inputBuffer = readFileSync(resolvedInput);

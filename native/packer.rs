@@ -138,7 +138,60 @@ pub fn pack_path_with_metadata(path: &Path) -> Result<PackResult> {
             data: result,
             file_list_json: Some(serde_json::to_string(&file_list)?),
         })
+
     } else {
         Err(anyhow::anyhow!("Path is neither file nor directory"))
     }
+}
+
+/// Unpack a pack-format buffer into the given directory. If `files_opt` is Some(list)
+/// only the specified filenames will be written. Returns vector of written relative paths.
+pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[String]>) -> Result<Vec<String>> {
+    use std::io::Cursor;
+    use std::convert::TryInto;
+    let mut written = Vec::new();
+    let mut pos = 0usize;
+
+    if buf.len() < 8 { return Err(anyhow::anyhow!("Buffer too small")); }
+    let magic = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+    if magic != 0x524f5850u32 { return Err(anyhow::anyhow!("Invalid pack magic")); }
+    pos += 4;
+    let file_count = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap()) as usize; pos += 4;
+
+    let files_filter: Option<std::collections::HashSet<String>> = files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+
+    for _ in 0..file_count {
+        if pos + 2 > buf.len() { return Err(anyhow::anyhow!("Truncated pack (name len)")); }
+        let name_len = u16::from_be_bytes(buf[pos..pos+2].try_into().unwrap()) as usize; pos += 2;
+        if pos + name_len > buf.len() { return Err(anyhow::anyhow!("Truncated pack (name)")); }
+        let name = String::from_utf8_lossy(&buf[pos..pos+name_len]).to_string(); pos += name_len;
+        if pos + 8 > buf.len() { return Err(anyhow::anyhow!("Truncated pack (size)")); }
+        let size = u64::from_be_bytes(buf[pos..pos+8].try_into().unwrap()) as usize; pos += 8;
+        if pos + size > buf.len() { return Err(anyhow::anyhow!("Truncated pack (content)")); }
+        let content = &buf[pos..pos+size]; pos += size;
+
+        let should_write = match &files_filter {
+            Some(set) => set.contains(&name),
+            None => true,
+        };
+
+        if should_write {
+            // sanitize path components to avoid path traversal
+            let p = Path::new(&name);
+            let mut safe = std::path::PathBuf::new();
+            for comp in p.components() {
+                if let std::path::Component::Normal(osstr) = comp {
+                    safe.push(osstr);
+                }
+            }
+            let dest = out_dir.join(&safe);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+            }
+            std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+            written.push(safe.to_string_lossy().to_string());
+        }
+    }
+
+    Ok(written)
 }

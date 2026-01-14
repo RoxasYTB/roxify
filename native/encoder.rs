@@ -193,7 +193,7 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
 
     let idat_data = create_raw_deflate(&scanlines);
 
-    build_png(width, height, &idat_data)
+    build_png(width, height, &idat_data, file_list)
 }
 
 fn build_meta_pixel(payload: &[u8]) -> Result<Vec<u8>> {
@@ -232,8 +232,8 @@ fn build_meta_pixel_with_name_and_filelist(payload: &[u8], name: Option<&str>, f
     Ok(result)
 }
 
-fn build_png(width: usize, height: usize, idat_data: &[u8]) -> Result<Vec<u8>> {
-    let mut png = Vec::with_capacity(8 + 25 + 12 + idat_data.len() + 12);
+fn build_png(width: usize, height: usize, idat_data: &[u8], file_list: Option<&str>) -> Result<Vec<u8>> {
+    let mut png = Vec::with_capacity(8 + 25 + 12 + idat_data.len() + 12 + 256);
 
     png.extend_from_slice(PNG_HEADER);
 
@@ -248,6 +248,11 @@ fn build_png(width: usize, height: usize, idat_data: &[u8]) -> Result<Vec<u8>> {
 
     write_chunk(&mut png, b"IHDR", &ihdr_data)?;
     write_chunk(&mut png, b"IDAT", idat_data)?;
+
+    if let Some(file_list_json) = file_list {
+        write_chunk(&mut png, b"rXFL", file_list_json.as_bytes())?;
+    }
+
     write_chunk(&mut png, b"IEND", &[])?;
 
     Ok(png)
@@ -368,6 +373,60 @@ fn calculate_shannon_entropy(data: &[u8]) -> f64 {
     }
 
     entropy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::png_utils;
+
+    #[test]
+    fn test_rXFL_chunk_present_when_file_list_provided() {
+        let sample_data = b"hello world".to_vec();
+        let file_list_json = Some("[{\"name\": \"a.txt\", \"size\": 11}]" as &str);
+        let png = encode_to_png_with_encryption_name_and_filelist_internal(&sample_data, 3, None, None, None, file_list_json)
+            .expect("encode should succeed");
+
+        let chunks = png_utils::extract_png_chunks(&png).expect("extract chunks");
+        let found = chunks.iter().any(|c| c.name == "rXFL");
+        assert!(found, "rXFL chunk must be present when file_list is provided");
+
+        let rxfl_chunk = chunks.into_iter().find(|c| c.name == "rXFL").expect("rXFL present");
+        let s = String::from_utf8_lossy(&rxfl_chunk.data);
+        assert!(s.contains("a.txt"), "rXFL chunk should contain the file name");
+    }
+
+    #[test]
+    fn test_extract_payload_and_partial_unpack() {
+        use std::fs;
+        let base = std::env::temp_dir().join(format!("rox_test_{}", rand::random::<u32>()));
+        let dir = base.join("data");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("a.txt"), b"hello").unwrap();
+        fs::write(dir.join("sub").join("b.txt"), b"world").unwrap();
+
+        let pack_result = crate::packer::pack_path_with_metadata(&dir).expect("pack path");
+        let png = encode_to_png_with_encryption_name_and_filelist_internal(&pack_result.data, 3, None, None, None, pack_result.file_list_json.as_deref())
+            .expect("encode should succeed");
+
+        let payload = crate::png_utils::extract_payload_from_png(&png).expect("extract payload");
+        assert!(payload.len() > 1);
+        assert_eq!(payload[0], 0x00u8);
+
+        let compressed = payload[1..].to_vec();
+        let mut decompressed = crate::core::zstd_decompress_bytes(&compressed).expect("decompress");
+        if decompressed.starts_with(b"ROX1") {
+            decompressed = decompressed[4..].to_vec();
+        }
+
+        let out_dir = base.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+
+        let written = crate::packer::unpack_buffer_to_dir(&decompressed, &out_dir, Some(&["sub/b.txt".to_string()])).expect("unpack");
+        assert_eq!(written.len(), 1);
+        let got = fs::read_to_string(out_dir.join("sub").join("b.txt")).unwrap();
+        assert_eq!(got, "world");
+    }
 }
 
 fn detect_repetition_patterns(data: &[u8]) -> f64 {

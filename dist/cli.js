@@ -1,21 +1,80 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { open } from 'fs/promises';
-import { basename, dirname, join, resolve } from 'path';
-import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInPng, IncorrectPassphraseError, listFilesInPng, PassphraseRequiredError, } from './index.js';
-import { packPathsGenerator, unpackBuffer } from './pack.js';
-import * as cliProgress from './stub-progress.js';
-import { encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+const fs_1 = require("fs");
+const promises_1 = require("fs/promises");
+const path_1 = require("path");
+const index_1 = require("./index");
+const pack_1 = require("./pack");
+const cliProgress = __importStar(require("./stub-progress"));
+const rust_cli_wrapper_1 = require("./utils/rust-cli-wrapper");
 const VERSION = '1.4.0';
+function getDirectorySize(dirPath) {
+    let totalSize = 0;
+    try {
+        const entries = (0, fs_1.readdirSync)(dirPath, { withFileTypes: true });
+        for (const entry of entries) {
+            const fullPath = (0, path_1.join)(dirPath, entry.name);
+            if (entry.isDirectory()) {
+                totalSize += getDirectorySize(fullPath);
+            }
+            else if (entry.isFile()) {
+                try {
+                    totalSize += (0, fs_1.statSync)(fullPath).size;
+                }
+                catch (e) {
+                    // ignore files that can't be read
+                }
+            }
+        }
+    }
+    catch (e) {
+        // ignore directories that can't be read
+    }
+    return totalSize;
+}
 async function readLargeFile(filePath) {
-    const st = statSync(filePath);
+    const st = (0, fs_1.statSync)(filePath);
     if (st.size <= 2 * 1024 * 1024 * 1024) {
-        return readFileSync(filePath);
+        return (0, fs_1.readFileSync)(filePath);
     }
     const chunkSize = 64 * 1024 * 1024;
     const chunks = [];
     let position = 0;
-    const fd = await open(filePath, 'r');
+    const fd = await (0, promises_1.open)(filePath, 'r');
     try {
         while (position < st.size) {
             const currentChunkSize = Math.min(chunkSize, st.size - position);
@@ -180,9 +239,9 @@ async function encodeCommand(args) {
         // ENOENT: fallback sur racine
         safeCwd = '/';
     }
-    const resolvedInputs = inputPaths.map((p) => resolve(safeCwd, p));
-    let outputName = inputPaths.length === 1 ? basename(firstInput) : 'archive';
-    if (inputPaths.length === 1 && !statSync(resolvedInputs[0]).isDirectory()) {
+    const resolvedInputs = inputPaths.map((p) => (0, path_1.resolve)(safeCwd, p));
+    let outputName = inputPaths.length === 1 ? (0, path_1.basename)(firstInput) : 'archive';
+    if (inputPaths.length === 1 && !(0, fs_1.statSync)(resolvedInputs[0]).isDirectory()) {
         outputName = outputName.replace(/(\.[^.]+)?$/, '.png');
     }
     else {
@@ -190,23 +249,23 @@ async function encodeCommand(args) {
     }
     let resolvedOutput;
     try {
-        resolvedOutput = resolve(safeCwd, parsed.output || outputPath || outputName);
+        resolvedOutput = (0, path_1.resolve)(safeCwd, parsed.output || outputPath || outputName);
     }
     catch (e) {
-        resolvedOutput = join('/', parsed.output || outputPath || outputName);
+        resolvedOutput = (0, path_1.join)('/', parsed.output || outputPath || outputName);
     }
     // Check for empty directories *before* attempting native Rust encoder.
     try {
         const anyDir = inputPaths.some((p) => {
             try {
-                return statSync(resolve(safeCwd, p)).isDirectory();
+                return (0, fs_1.statSync)((0, path_1.resolve)(safeCwd, p)).isDirectory();
             }
             catch (e) {
                 return false;
             }
         });
         if (anyDir) {
-            const { index } = await packPathsGenerator(inputPaths, undefined, () => { });
+            const { index } = await (0, pack_1.packPathsGenerator)(inputPaths, undefined, () => { });
             if (!index || index.length === 0) {
                 console.log(' ');
                 console.error('Error: No files found in specified input paths.');
@@ -217,7 +276,7 @@ async function encodeCommand(args) {
     catch (e) {
         // ignore errors from the quick pre-check and proceed to try Rust encoding
     }
-    if (isRustBinaryAvailable() && !parsed.forceTs) {
+    if ((0, rust_cli_wrapper_1.isRustBinaryAvailable)() && !parsed.forceTs) {
         try {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
             const startTime = Date.now();
@@ -233,8 +292,8 @@ async function encodeCommand(args) {
                 });
             }, 500);
             const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
-            const fileName = basename(inputPaths[0]);
-            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 12, parsed.passphrase, encryptType, fileName);
+            const fileName = (0, path_1.basename)(inputPaths[0]);
+            await (0, rust_cli_wrapper_1.encodeWithRustCLI)(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 12, parsed.passphrase, encryptType, fileName);
             clearInterval(progressInterval);
             const encodeTime = Date.now() - startTime;
             encodeBar.update(100, {
@@ -242,15 +301,11 @@ async function encodeCommand(args) {
                 elapsed: String(Math.floor(encodeTime / 1000)),
             });
             encodeBar.stop();
-            const { statSync: fstatSync } = await import('fs');
+            const { statSync: fstatSync } = await Promise.resolve().then(() => __importStar(require('fs')));
             let inputSize = 0;
             if (inputPaths.length === 1 &&
                 fstatSync(resolvedInputs[0]).isDirectory()) {
-                const { execSync } = await import('child_process');
-                const sizeOutput = execSync(`du -sb "${resolvedInputs[0]}"`, {
-                    encoding: 'utf-8',
-                });
-                inputSize = parseInt(sizeOutput.split(/\s+/)[0]);
+                inputSize = getDirectorySize(resolvedInputs[0]);
             }
             else {
                 inputSize = fstatSync(resolvedInputs[0]).size;
@@ -334,7 +389,7 @@ async function encodeCommand(args) {
         };
         if (inputPaths.length > 1) {
             currentEncodeStep = 'Reading files';
-            const { index, stream, totalSize } = await packPathsGenerator(inputPaths, undefined, onProgress);
+            const { index, stream, totalSize } = await (0, pack_1.packPathsGenerator)(inputPaths, undefined, onProgress);
             if (!index || index.length === 0) {
                 console.log(' ');
                 console.error('Error: No files found in specified input paths.');
@@ -351,10 +406,10 @@ async function encodeCommand(args) {
         }
         else {
             const resolvedInput = resolvedInputs[0];
-            const st = statSync(resolvedInput);
+            const st = (0, fs_1.statSync)(resolvedInput);
             if (st.isDirectory()) {
                 currentEncodeStep = 'Reading files';
-                const { index, stream, totalSize } = await packPathsGenerator([resolvedInput], dirname(resolvedInput), onProgress);
+                const { index, stream, totalSize } = await (0, pack_1.packPathsGenerator)([resolvedInput], (0, path_1.dirname)(resolvedInput), onProgress);
                 if (!index || index.length === 0) {
                     console.log(' ');
                     console.error(`Error: No files found in ${resolvedInput}`);
@@ -362,7 +417,7 @@ async function encodeCommand(args) {
                 }
                 inputData = stream;
                 inputSizeVal = totalSize;
-                displayName = parsed.outputName || basename(resolvedInput);
+                displayName = parsed.outputName || (0, path_1.basename)(resolvedInput);
                 options.includeFileList = true;
                 options.fileList = index.map((e) => ({
                     name: e.path,
@@ -372,9 +427,9 @@ async function encodeCommand(args) {
             else {
                 inputData = await readLargeFile(resolvedInput);
                 inputSizeVal = inputData.length;
-                displayName = basename(resolvedInput);
+                displayName = (0, path_1.basename)(resolvedInput);
                 options.includeFileList = true;
-                options.fileList = [{ name: basename(resolvedInput), size: st.size }];
+                options.fileList = [{ name: (0, path_1.basename)(resolvedInput), size: st.size }];
             }
         }
         options.name = displayName;
@@ -441,7 +496,7 @@ async function encodeCommand(args) {
         else {
             inputBuffer = inputData;
         }
-        const output = await encodeBinaryToPng(inputBuffer, options);
+        const output = await (0, index_1.encodeBinaryToPng)(inputBuffer, options);
         const encodeTime = Date.now() - startEncode;
         clearInterval(encodeHeartbeat);
         if (barStarted) {
@@ -451,7 +506,7 @@ async function encodeCommand(args) {
             });
             encodeBar.stop();
         }
-        writeFileSync(resolvedOutput, output);
+        (0, fs_1.writeFileSync)(resolvedOutput, output);
         const outputSize = (output.length / 1024 / 1024).toFixed(2);
         const inputSize = (inputSizeVal / 1024 / 1024).toFixed(2);
         const ratio = ((output.length / inputSizeVal) * 100).toFixed(1);
@@ -479,7 +534,7 @@ async function decodeCommand(args) {
         console.log('Usage: npx rox decode <input> [output] [options]');
         process.exit(1);
     }
-    const resolvedInput = resolve(inputPath);
+    const resolvedInput = (0, path_1.resolve)(inputPath);
     const resolvedOutput = parsed.output || outputPath || 'decoded.bin';
     try {
         const options = {};
@@ -487,7 +542,7 @@ async function decodeCommand(args) {
             options.passphrase = parsed.passphrase;
         }
         if (parsed.debug) {
-            options.debugDir = dirname(resolvedInput);
+            options.debugDir = (0, path_1.dirname)(resolvedInput);
         }
         if (parsed.files) {
             options.files = parsed.files;
@@ -542,7 +597,7 @@ async function decodeCommand(args) {
             }
         };
         const inputBuffer = await readLargeFile(resolvedInput);
-        const result = await decodePngToBinary(inputBuffer, options);
+        const result = await (0, index_1.decodePngToBinary)(inputBuffer, options);
         const decodeTime = Date.now() - startDecode;
         clearInterval(heartbeat);
         if (barStarted) {
@@ -561,10 +616,10 @@ async function decodeCommand(args) {
             extractBar.start(totalBytes, 0, { step: 'Writing files', elapsed: '0' });
             let written = 0;
             for (const file of result.files) {
-                const fullPath = join(baseDir, file.path);
-                const dir = dirname(fullPath);
-                mkdirSync(dir, { recursive: true });
-                writeFileSync(fullPath, file.buf);
+                const fullPath = (0, path_1.join)(baseDir, file.path);
+                const dir = (0, path_1.dirname)(fullPath);
+                (0, fs_1.mkdirSync)(dir, { recursive: true });
+                (0, fs_1.writeFileSync)(fullPath, file.buf);
                 written += file.buf.length;
                 extractBar.update(written, {
                     step: `Writing ${file.path}`,
@@ -577,18 +632,18 @@ async function decodeCommand(args) {
             });
             extractBar.stop();
             console.log(`\nSuccess!`);
-            console.log(`Unpacked ${result.files.length} files to directory : ${resolve(baseDir)}`);
+            console.log(`Unpacked ${result.files.length} files to directory : ${(0, path_1.resolve)(baseDir)}`);
             console.log(`Time: ${decodeTime}ms`);
         }
         else if (result.buf) {
-            const unpacked = unpackBuffer(result.buf);
+            const unpacked = (0, pack_1.unpackBuffer)(result.buf);
             if (unpacked) {
                 const baseDir = parsed.output || outputPath || '.';
                 for (const file of unpacked.files) {
-                    const fullPath = join(baseDir, file.path);
-                    const dir = dirname(fullPath);
-                    mkdirSync(dir, { recursive: true });
-                    writeFileSync(fullPath, file.buf);
+                    const fullPath = (0, path_1.join)(baseDir, file.path);
+                    const dir = (0, path_1.dirname)(fullPath);
+                    (0, fs_1.mkdirSync)(dir, { recursive: true });
+                    (0, fs_1.writeFileSync)(fullPath, file.buf);
                 }
                 console.log(`\nSuccess!`);
                 console.log(`Time: ${decodeTime}ms`);
@@ -599,7 +654,7 @@ async function decodeCommand(args) {
                 if (!parsed.output && !outputPath && result.meta?.name) {
                     finalOutput = result.meta.name;
                 }
-                writeFileSync(finalOutput, result.buf);
+                (0, fs_1.writeFileSync)(finalOutput, result.buf);
                 console.log(`\nSuccess!`);
                 if (result.meta?.name) {
                     console.log(`  Original name: ${result.meta.name}`);
@@ -617,17 +672,17 @@ async function decodeCommand(args) {
         console.log(' ');
     }
     catch (err) {
-        if (err instanceof PassphraseRequiredError ||
+        if (err instanceof index_1.PassphraseRequiredError ||
             (err.message && err.message.includes('passphrase') && !parsed.passphrase)) {
             console.log(' ');
             console.error('File appears to be encrypted. Provide a passphrase with -p');
         }
-        else if (err instanceof IncorrectPassphraseError ||
+        else if (err instanceof index_1.IncorrectPassphraseError ||
             (err.message && err.message.includes('Incorrect passphrase'))) {
             console.log(' ');
             console.error('Incorrect passphrase');
         }
-        else if (err instanceof DataFormatError ||
+        else if (err instanceof index_1.DataFormatError ||
             (err.message &&
                 (err.message.includes('decompression failed') ||
                     err.message.includes('missing ROX1') ||
@@ -655,10 +710,37 @@ async function listCommand(args) {
         console.log('Usage: npx rox list <input>');
         process.exit(1);
     }
-    const resolvedInput = resolve(inputPath);
+    const resolvedInput = (0, path_1.resolve)(inputPath);
+    if ((0, rust_cli_wrapper_1.isRustBinaryAvailable)()) {
+        try {
+            const { findRustBinary } = await Promise.resolve().then(() => __importStar(require('./utils/rust-cli-wrapper')));
+            const cliPath = findRustBinary();
+            if (cliPath) {
+                const { execSync } = await Promise.resolve().then(() => __importStar(require('child_process')));
+                const output = execSync(`"${cliPath}" list "${resolvedInput}"`, {
+                    encoding: 'utf-8',
+                    stdio: ['pipe', 'pipe', 'inherit'],
+                });
+                const fileList = JSON.parse(output.trim());
+                console.log(`Files in ${resolvedInput}:`);
+                for (const file of fileList) {
+                    if (typeof file === 'string') {
+                        console.log(`  ${file}`);
+                    }
+                    else {
+                        console.log(`  ${file.name} (${file.size} bytes)`);
+                    }
+                }
+                return;
+            }
+        }
+        catch (err) {
+            // Fallback to TypeScript
+        }
+    }
     try {
-        const inputBuffer = readFileSync(resolvedInput);
-        const fileList = await listFilesInPng(inputBuffer, {
+        const inputBuffer = (0, fs_1.readFileSync)(resolvedInput);
+        const fileList = await (0, index_1.listFilesInPng)(inputBuffer, {
             includeSizes: parsed.sizes !== false,
         });
         if (fileList) {
@@ -694,10 +776,10 @@ async function havePassphraseCommand(args) {
         console.log('Usage: npx rox havepassphrase <input>');
         process.exit(1);
     }
-    const resolvedInput = resolve(inputPath);
+    const resolvedInput = (0, path_1.resolve)(inputPath);
     try {
-        const inputBuffer = readFileSync(resolvedInput);
-        const has = await hasPassphraseInPng(inputBuffer);
+        const inputBuffer = (0, fs_1.readFileSync)(resolvedInput);
+        const has = await (0, index_1.hasPassphraseInPng)(inputBuffer);
         console.log(has ? 'Passphrase detected.' : 'No passphrase detected.');
     }
     catch (err) {

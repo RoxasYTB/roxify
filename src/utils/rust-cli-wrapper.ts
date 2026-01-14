@@ -1,124 +1,161 @@
-import { spawn } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 
 let moduleDir: string;
-try {
-  // CJS bundlers may provide __dirname; prefer it when available
-  if (typeof __dirname !== 'undefined') {
-    // @ts-ignore
-    moduleDir = __dirname;
-  } else {
-    // @ts-ignore - import.meta.url exists in ESM
-    const __filename = fileURLToPath(import.meta.url);
-    moduleDir = dirname(__filename);
-  }
-} catch {
+if (typeof __dirname !== 'undefined') {
+  moduleDir = __dirname;
+} else {
   moduleDir = process.cwd();
 }
 
 function findRustBinary(): string | null {
-  const candidates = [] as string[];
-
   const binNames =
     process.platform === 'win32'
-      ? ['roxify-cli.exe', 'roxify_cli.exe', 'roxify_native.exe']
-      : ['roxify-cli', 'roxify_cli', 'roxify_native'];
+      ? ['roxify_native.exe', 'roxify-cli.exe', 'roxify_cli.exe']
+      : ['roxify_native', 'roxify-cli', 'roxify_cli'];
 
   const baseDir = typeof moduleDir !== 'undefined' ? moduleDir : process.cwd();
 
-  // Possible locations relative to this file (works in repo and in packaged dist)
-  const relativeDirs = [
-    join(baseDir, '..', '..', 'target', 'release'),
-    join(baseDir, '..', '..', 'dist'),
-    join(baseDir, '..'),
-    join(baseDir, '..', '..'),
-    join(baseDir, '..', 'target', 'release'),
-  ];
+  // Check if running in pkg/snapshot environment
+  if ((process as any).pkg) {
+    // In pkg, check in snapshot root paths
+    const snapshotPaths = [
+      join(baseDir, '..', '..', 'target', 'release'),
+      join(baseDir, '..', 'target', 'release'),
+      join(baseDir, 'target', 'release'),
+    ];
 
-  for (const dir of relativeDirs) {
-    for (const name of binNames) {
-      candidates.push(join(dir, name));
-    }
-  }
-
-  // Walk up parents to find a workspace-level target/release (repo root may contain target)
-  try {
-    let cur = baseDir;
-    for (let i = 0; i < 8; i++) {
+    for (const basePath of snapshotPaths) {
       for (const name of binNames) {
-        candidates.push(
-          join(
-            cur,
-            '..',
-            '..',
-            '..',
-            '..',
-            '..',
-            '..',
-            '..',
-            'target',
-            'release',
-            name,
-          ),
-        );
-        candidates.push(
-          join(cur, '..', '..', '..', '..', '..', 'target', 'release', name),
-        );
-        candidates.push(join(cur, '..', '..', '..', 'target', 'release', name));
-        candidates.push(join(cur, '..', '..', 'target', 'release', name));
-        candidates.push(join(cur, '..', 'target', 'release', name));
-        candidates.push(join(cur, 'target', 'release', name));
+        const binPath = join(basePath, name);
+        if (existsSync(binPath)) {
+          return binPath;
+        }
       }
-      const parent = join(cur, '..');
-      if (parent === cur) break;
-      cur = parent;
     }
-  } catch (e) {}
 
-  // Common global paths (last resort)
-  if (process.platform !== 'win32') {
-    candidates.push('/usr/local/bin/roxify_native');
-    candidates.push('/usr/bin/roxify_native');
-  }
-
-  for (const p of candidates) {
+    // Additional: check possible installed location near the application executable (e.g. C:\Program Files\Pyxelze\tools\roxify)
     try {
-      if (existsSync(p)) {
-        // eslint-disable-next-line no-console
-        console.log(`Found Rust binary candidate: ${p}`);
-        return p;
+      const execDir = require('path').dirname(process.execPath || '');
+      if (execDir) {
+        const execCandidates = [
+          join(execDir, 'tools', 'roxify', 'dist'),
+          join(execDir, 'tools', 'roxify'),
+          join(execDir, '..', 'tools', 'roxify', 'dist'),
+          join(execDir, '..', 'tools', 'roxify'),
+          join(execDir, 'tools', 'roxify', 'roxify_native.exe'),
+        ];
+        for (const c of execCandidates) {
+          for (const name of binNames) {
+            const p = c.endsWith(name) ? c : join(c, name);
+            if (existsSync(p)) {
+              return p;
+            }
+          }
+        }
       }
-    } catch (e) {}
+    } catch (e) {
+      // ignore
+    }
   }
 
-  // Search in PATH for common binary names
+  // Try to resolve 'rox' command location (where/which) and look for native binary next to it
   try {
-    const which = process.platform === 'win32' ? 'where' : 'which';
-    const { execSync } = require('child_process');
-    for (const name of binNames) {
+    let paths: string[] = [];
+    if (process.platform === 'win32') {
       try {
-        const out = execSync(`${which} ${name}`, { encoding: 'utf-8' })
-          .split('\n')[0]
-          .trim();
-        if (out && existsSync(out)) {
-          // eslint-disable-next-line no-console
-          console.debug(`Found Rust binary in PATH: ${out}`);
-          return out;
+        const out = execSync('where rox', { encoding: 'utf-8' }).trim();
+        if (out)
+          paths = out
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+      } catch (e) {
+        // ignore
+      }
+    } else {
+      try {
+        const out = execSync('which rox', { encoding: 'utf-8' }).trim();
+        if (out) paths = [out.trim()];
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    for (const p of paths) {
+      try {
+        const d = dirname(p);
+        const candidates = [
+          d,
+          join(d, 'dist'),
+          join(d, '..', 'dist'),
+          join(d, '..'),
+        ];
+        for (const c of candidates) {
+          for (const name of binNames) {
+            const candidate = join(c, name);
+            if (existsSync(candidate)) {
+              return candidate;
+            }
+          }
         }
       } catch (e) {
         // ignore
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    // ignore
+  }
+
+  // Check immediate locations (for packaged CLI and dist folder)
+  for (const name of binNames) {
+    const local = join(baseDir, name);
+    if (existsSync(local)) {
+      return local;
+    }
+    const parentLocal = join(baseDir, '..', name);
+    if (existsSync(parentLocal)) {
+      return parentLocal;
+    }
+    // Check in parent's parent (dist/utils -> dist -> roxify_native.exe)
+    const parentParentLocal = join(baseDir, '..', '..', name);
+    if (existsSync(parentParentLocal)) {
+      return parentParentLocal;
+    }
+    // Check for node_modules structure (node_modules/roxify/dist/utils -> ../../../../roxify_native.exe)
+    const nodeModulesPath = join(baseDir, '..', '..', '..', '..', name);
+    if (existsSync(nodeModulesPath)) {
+      return nodeModulesPath;
+    }
+  }
+
+  // Check target/release (for development)
+  const targetRelease = join(baseDir, '..', '..', 'target', 'release');
+  for (const name of binNames) {
+    const targetPath = join(targetRelease, name);
+    if (existsSync(targetPath)) {
+      return targetPath;
+    }
+  }
 
   return null;
 }
 
+export { findRustBinary };
+
 export function isRustBinaryAvailable(): boolean {
   return findRustBinary() !== null;
 }
+
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
 
 export async function encodeWithRustCLI(
   inputPath: string,
@@ -131,84 +168,85 @@ export async function encodeWithRustCLI(
   const cliPath = findRustBinary();
 
   if (!cliPath) {
-    throw new Error('Rust CLI binary not found. Run: cargo build --release');
+    throw new Error('Rust CLI binary not found');
+  }
+
+  function extractToTemp(pathToRead: string): string {
+    const buf = readFileSync(pathToRead);
+    const tmp = mkdtempSync(join(tmpdir(), 'roxify-'));
+    const dest = join(tmp, pathToRead.replace(/.*[\\/]/, ''));
+    writeFileSync(dest, buf);
+    try {
+      chmodSync(dest, 0o755);
+    } catch (e) {
+      // ignore
+    }
+    return dest;
   }
 
   return new Promise((resolve, reject) => {
-    const baseArgs = ['encode', '--level', String(compressionLevel)];
+    const args = ['encode', '--level', String(compressionLevel)];
 
-    const addNameArgs = (arr: string[]) => {
-      if (name) {
-        arr.push('--name', name);
-      }
-    };
+    if (name) {
+      args.push('--name', name);
+    }
 
-    const addPassArgs = (arr: string[]) => {
-      if (passphrase) {
-        arr.push('--passphrase', passphrase);
-        arr.push('--encrypt', encryptType);
-      }
-    };
+    if (passphrase) {
+      args.push('--passphrase', passphrase);
+      args.push('--encrypt', encryptType);
+    }
 
-    const args = [...baseArgs];
-    addNameArgs(args);
-    addPassArgs(args);
     args.push(inputPath, outputPath);
 
-    const spawnAndWait = (argsToUse: string[]) => {
-      return new Promise<{ code: number | null; stderr: string }>(
-        (res, rej) => {
-          const proc = spawn(cliPath, argsToUse);
-          let stderr = '';
-          proc.stderr.on('data', (data) => {
-            stderr += data.toString();
-          });
-          proc.on('error', (err) => rej(err));
-          proc.on('close', (code) => res({ code, stderr }));
-        },
-      );
+    let triedExtract = false;
+    let tempExe: string | undefined;
+
+    const runSpawn = (exePath: string) => {
+      let proc;
+      try {
+        proc = spawn(exePath, args, { stdio: 'inherit' });
+      } catch (err: any) {
+        if (!triedExtract) {
+          triedExtract = true;
+          try {
+            tempExe = extractToTemp(cliPath);
+          } catch (ex) {
+            return reject(ex);
+          }
+          return runSpawn(tempExe);
+        }
+        return reject(err);
+      }
+
+      proc.on('error', (err: any) => {
+        if (!triedExtract) {
+          triedExtract = true;
+          try {
+            tempExe = extractToTemp(cliPath);
+          } catch (ex) {
+            return reject(ex);
+          }
+          return runSpawn(tempExe);
+        }
+        reject(err);
+      });
+
+      proc.on('close', (code) => {
+        if (tempExe) {
+          try {
+            unlinkSync(tempExe);
+          } catch (e) {
+            // ignore cleanup errors
+          }
+        }
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Rust encoder exited with status ${code}`));
+        }
+      });
     };
 
-    (async () => {
-      try {
-        const debugMsg = `Rust CLI: ${cliPath} ${args.join(' ')}`;
-        // eslint-disable-next-line no-console
-        console.log(debugMsg);
-        let result = await spawnAndWait(args);
-        if (result.code === 0) return resolve();
-
-        // If the error mentions an unexpected '--name' arg (older binary), retry without name
-        if (
-          name &&
-          result.stderr &&
-          (/unexpected argument.*--name/.test(result.stderr) ||
-            /unexpected argument .*'--name'/.test(result.stderr) ||
-            result.stderr.includes("'--name'"))
-        ) {
-          const argsNoName = [...baseArgs];
-          addPassArgs(argsNoName);
-          argsNoName.push(inputPath, outputPath);
-          // eslint-disable-next-line no-console
-          console.log('Rust CLI rejected --name; retrying without --name');
-          const retryDebug = `Retrying Rust CLI: ${cliPath} ${argsNoName.join(
-            ' ',
-          )}`;
-          // eslint-disable-next-line no-console
-          console.log(retryDebug);
-          result = await spawnAndWait(argsNoName);
-          // eslint-disable-next-line no-console
-          console.log(`Rust retry exited with code ${result.code}`);
-          if (result.code === 0) return resolve();
-        }
-
-        reject(
-          new Error(
-            `Rust CLI exited with code ${result.code}: ${result.stderr}`,
-          ),
-        );
-      } catch (err: any) {
-        reject(new Error(`Failed to spawn Rust CLI: ${err.message || err}`));
-      }
-    })();
+    runSpawn(cliPath);
   });
 }

@@ -1,6 +1,6 @@
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { native } from './native.js';
+import { native } from './native';
 
 /**
  * Reconstitute a PNG buffer by cropping and reconstructing the image.

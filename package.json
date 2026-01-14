@@ -1,8 +1,8 @@
 {
   "name": "roxify",
-  "version": "1.5.10",
-  "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
+  "version": "1.5.11",
   "type": "module",
+  "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -11,29 +11,42 @@
   },
   "files": [
     "dist",
-    "libroxify_native.node",
-    "libroxify_native-*.so",
-    "libroxify_native-*.dylib",
-    "libroxify_native-*.dll",
-    "libroxify_native-x86_64-pc-windows-gnu.node",
-    "libroxify_native-x86_64-pc-windows-msvc.node",
+    "roxify_native.node",
+    "roxify_native-x86_64-pc-windows-gnu.node",
+    "roxify_native-x86_64-unknown-linux-gnu.node",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
+    "prebuild:pkg": "node scripts/copy-cli-binary.js",
     "build:native": "cargo build --release --lib",
-    "build:native:linux": "cargo build --release --lib --target x86_64-unknown-linux-gnu && cp target/x86_64-unknown-linux-gnu/release/libroxify_native.so libroxify_native-x86_64-unknown-linux-gnu.so",
-    "build:native:macos-x64": "cargo build --release --lib --target x86_64-apple-darwin && cp target/x86_64-apple-darwin/release/libroxify_native.dylib libroxify_native-x86_64-apple-darwin.dylib",
-    "build:native:macos-arm": "cargo build --release --lib --target aarch64-apple-darwin && cp target/aarch64-apple-darwin/release/libroxify_native.dylib libroxify_native-aarch64-apple-darwin.dylib",
-    "build:native:windows": "cargo build --release --lib --target x86_64-pc-windows-msvc && cp target/x86_64-pc-windows-msvc/release/roxify_native.dll libroxify_native-x86_64-pc-windows-msvc.dll",
+    "build:native:linux": "cargo build --release --lib --target x86_64-unknown-linux-gnu",
+    "build:native:macos-x64": "cargo build --release --lib --target x86_64-apple-darwin",
+    "build:native:macos-arm": "cargo build --release --lib --target aarch64-apple-darwin",
+    "build:native:windows": "cargo build --release --lib --target x86_64-pc-windows-msvc",
     "build:cli": "cargo build --release --bin roxify_native && cp target/release/roxify_native dist/roxify-cli",
+    "build:cli:windows": "cargo build --release --bin roxify_native --target x86_64-pc-windows-gnu && node scripts/copy-cli-binary.js",
     "build:all": "npm run build:native && npm run build && npm run build:cli",
     "build:cross": "node scripts/build-all-platforms.js && npm run build && npm run build:cli",
+    "build:pkg": "npm run build && npx pkg . --target node18-win-x64 --output dist/rox.exe --compress Brotli --public",
     "postbuild:native": "node scripts/copy-native.js",
-    "prepublishOnly": "npm run build:cross",
+    "clean:targets": "node scripts/clean-artifacts.js",
+    "prepublishOnly": "npm run build && npm run build:native && npm run postbuild:native && npm run clean:targets",
     "test": "npm run build && node test/run-all-tests.js",
     "cli": "node dist/cli.js"
+  },
+  "pkg": {
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist",
+    "scripts": [
+      "dist/**/*.js"
+    ],
+    "assets": [
+      "dist/roxify_native.exe"
+    ]
   },
   "repository": {
     "type": "git",
@@ -53,9 +66,9 @@
   ],
   "author": "",
   "license": "MIT",
-  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "pkg": "^5.8.1",
     "typescript": "^5.6.0"
   },
   "engines": {

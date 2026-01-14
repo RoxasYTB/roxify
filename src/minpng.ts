@@ -1,5 +1,5 @@
 import { deflateSync } from 'zlib';
-import { native } from './utils/native.js';
+import { native } from './utils/native';
 
 let nativeZstdCompress: ((data: Buffer, level: number) => Uint8Array) | null =
   null;

@@ -1,34 +1,21 @@
 import { existsSync } from 'fs';
 import { createRequire } from 'module';
 import { arch, platform } from 'os';
-import { dirname, join, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { join, resolve } from 'path';
 
 function getNativeModule() {
   let moduleDir: string;
   let nativeRequire: NodeRequire;
 
   if (typeof __dirname !== 'undefined') {
-    // Mode CJS - variables globales disponibles
     moduleDir = __dirname;
-    // @ts-ignore
     nativeRequire = require;
   } else {
-    // Try ESM import.meta.url first (may throw in CJS/bundled contexts), otherwise fallback to CWD
+    moduleDir = process.cwd();
     try {
-      // @ts-ignore - import.meta.url exists in proper ESM contexts
-      const __filename = fileURLToPath(import.meta.url);
-      moduleDir = dirname(__filename);
-      nativeRequire = createRequire(import.meta.url);
+      nativeRequire = require;
     } catch {
-      // Fallback (bundled CJS without __dirname): use current working directory
-      moduleDir = process.cwd();
-      try {
-        // @ts-ignore
-        nativeRequire = require;
-      } catch {
-        nativeRequire = createRequire(process.cwd());
-      }
+      nativeRequire = createRequire(process.cwd() + '/package.json');
     }
   }
 
@@ -59,8 +46,12 @@ function getNativeModule() {
       throw new Error(`Unsupported platform: ${currentPlatform}`);
     }
 
-    const prebuiltPath = join(moduleDir, '../../libroxify_native.node');
-    const bundlePath = join(moduleDir, '../libroxify_native.node');
+    const prebuiltPath = join(moduleDir, '../../roxify_native.node');
+    const bundlePath = join(moduleDir, '../roxify_native.node');
+    const bundlePathWithTarget = join(
+      moduleDir,
+      `../roxify_native-${target}.node`,
+    );
     // compute repo root by walking up from moduleDir (fallback to process.cwd())
     // @ts-ignore
     console.debug('[native] moduleDir', moduleDir);
@@ -75,39 +66,41 @@ function getNativeModule() {
       root = parent;
     }
 
-    const localTargetRelease = resolve(
-      root,
-      `target/release/libroxify_native${
-        ext === 'node' ? '.node' : `-${target}.${ext}`
-      }`,
-    );
-    const localReleaseGeneric = resolve(
-      root,
-      'target/release/libroxify_native.so',
-    );
-    const nodeModulesBase = resolve(root, 'node_modules/roxify');
-    const nodeModulesTarget = resolve(
-      nodeModulesBase,
-      `libroxify_native-${target}.${ext}`,
-    );
-    const nodeModulesGeneric = resolve(
-      nodeModulesBase,
-      ext === 'node' ? 'libroxify_native.node' : `libroxify_native.${ext}`,
-    );
-    const bundleTarget = resolve(
+    // Prefer a single .node file across packaging and builds
+    const bundleNode = resolve(moduleDir, '../roxify_native.node');
+    const bundleNodeWithTarget = resolve(
       moduleDir,
-      `../libroxify_native-${target}.${ext}`,
+      `../roxify_native-${target}.node`,
     );
-    const bundleGeneric = resolve(moduleDir, bundlePath);
+    const repoNode = resolve(root, 'roxify_native.node');
+    const repoNodeWithTarget = resolve(root, `roxify_native-${target}.node`);
+    const targetNode = resolve(root, 'target/release/roxify_native.node');
+    const targetSo = resolve(root, 'target/release/roxify_native.so');
+    const nodeModulesNode = resolve(
+      root,
+      'node_modules/roxify/roxify_native.node',
+    );
+    const nodeModulesNodeWithTarget = resolve(
+      root,
+      `node_modules/roxify/roxify_native-${target}.node`,
+    );
+    const prebuiltNode = resolve(moduleDir, '../../roxify_native.node');
+    const prebuiltNodeWithTarget = resolve(
+      moduleDir,
+      `../../roxify_native-${target}.node`,
+    );
 
     const candidates = [
-      localTargetRelease,
-      localReleaseGeneric,
-      nodeModulesTarget,
-      nodeModulesGeneric,
-      bundleTarget,
-      bundleGeneric,
-      prebuiltPath,
+      bundleNodeWithTarget,
+      bundleNode,
+      repoNodeWithTarget,
+      repoNode,
+      targetNode,
+      targetSo,
+      nodeModulesNodeWithTarget,
+      nodeModulesNode,
+      prebuiltNodeWithTarget,
+      prebuiltNode,
     ];
 
     // use built-in fs.existsSync (static import to work in ESM and CJS)
