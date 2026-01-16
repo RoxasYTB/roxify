@@ -32,6 +32,8 @@ jobs:
         run: npm ci
 
       - name: Build native
+        env:
+          MACOSX_DEPLOYMENT_TARGET: 15.5
         run: npm run build:native
 
       - name: Build JS
