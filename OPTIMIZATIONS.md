@@ -1,4 +1,4 @@
-# Optimisations de Build et CI/CD
+# Optimisatio de Build et CI/CD
 
 ## Résultats
 

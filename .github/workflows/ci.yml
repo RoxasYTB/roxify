@@ -60,4 +60,3 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Quick cargo check
         run: cargo check -p roxify_native --no-default-features --all-targets --tests --examples
-
