@@ -44,6 +44,8 @@
     "release:github": "npm run release:prepare && node scripts/create-gh-release.cjs",
     "package:prepare": "npm run build && npm run build:native:targets && node scripts/pack-npm.cjs",
     "publish:npm": "npm run package:prepare && echo 'Run npm publish --access public'",
+    "release:flow": "node scripts/release-flow.cjs" ,
+    "release:flow:auto": "AUTO_PUBLISH=1 node scripts/release-flow.cjs"
     "prepublishOnly": "npm run build && npm run build:native && npm run postbuild:native && npm run clean:targets",
     "test": "npm run build && node ./test/run-all-tests.js",
     "cli": "node dist/cli.js"
