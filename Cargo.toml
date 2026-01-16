@@ -35,15 +35,20 @@ pbkdf2 = "0.12"
 rand = "0.8"
 sha2 = "0.10"
 
-wgpu = "0.19"
+wgpu = { version = "0.19", optional = true }
 memmap2 = "0.9"
 bytemuck = { version = "1.14", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "rt"] }
 parking_lot = "0.12"
-pollster = "0.3"
+pollster = { version = "0.3", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.51", features = ["Win32_Graphics_Direct3D12"] }
 
 [features]
+# default is intentionally empty so the crate compiles fast for local checks.
+# Enable 'gpu' to pull in the WGPU and pollster dependencies (heavy).
+# Example: `cargo build -p roxify_native --features gpu`
 default = []
+
+gpu = ["wgpu", "pollster"]

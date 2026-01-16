@@ -3,6 +3,7 @@ use napi_derive::napi;
 
 mod core;
 mod common;
+#[cfg(feature = "gpu")]
 mod gpu;
 mod rans;
 mod bwt;
@@ -18,7 +19,16 @@ mod progress;
 mod reconstitution;
 
 pub use core::*;
+#[cfg(feature = "gpu")]
 pub use gpu::*;
+#[cfg(not(feature = "gpu"))]
+mod gpu {
+    // Minimal stub to avoid pulling WGPU and related crates when GPU feature is disabled.
+    pub fn gpu_available() -> bool {
+        false
+    }
+}
+
 pub use rans::*;
 pub use bwt::*;
 pub use context_mixing::*;
