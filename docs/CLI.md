@@ -432,10 +432,10 @@ A: Yes, after initial npx download, it works offline.
 
 ## Support
 
-- 📖 [Full Documentation](https://github.com/RoxasYTB/RoxCompressor)
+- 📖 [Full Documentation](https://github.com/RoxasYTB/roxify)
 - 📘 [JavaScript SDK](./JAVASCRIPT_SDK.md)
-- 🐛 [Report Issues](https://github.com/RoxasYTB/RoxCompressor/issues)
-- 💬 [Discussions](https://github.com/RoxasYTB/RoxCompressor/discussions)
+- 🐛 [Report Issues](https://github.com/RoxasYTB/roxify/issues)
+- 💬 [Discussions](https://github.com/RoxasYTB/roxify/discussions)
 
 ---
 

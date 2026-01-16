@@ -17,13 +17,13 @@ import {
   IncorrectPassphraseError,
   listFilesInPng,
   PassphraseRequiredError,
-} from './index';
-import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack';
-import * as cliProgress from './stub-progress';
+} from './index.js';
+import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
+import * as cliProgress from './stub-progress.js';
 import {
   encodeWithRustCLI,
   isRustBinaryAvailable,
-} from './utils/rust-cli-wrapper';
+} from './utils/rust-cli-wrapper.js';
 
 const VERSION = '1.4.0';
 
@@ -786,7 +786,7 @@ async function listCommand(args: string[]) {
 
   if (isRustBinaryAvailable()) {
     try {
-      const { findRustBinary } = await import('./utils/rust-cli-wrapper');
+      const { findRustBinary } = await import('./utils/rust-cli-wrapper.js');
       const cliPath = findRustBinary();
 
       if (cliPath) {

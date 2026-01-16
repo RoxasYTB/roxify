@@ -632,6 +632,6 @@ MIT © RoxCompressor
 
 ## Support
 
-- 📖 [Full Documentation](https://github.com/RoxasYTB/RoxCompressor)
-- 🐛 [Report Issues](https://github.com/RoxasYTB/RoxCompressor/issues)
-- 💬 [Discussions](https://github.com/RoxasYTB/RoxCompressor/discussions)
+- 📖 [Full Documentation](https://github.com/RoxasYTB/roxify)
+- 🐛 [Report Issues](https://github.com/RoxasYTB/roxify/issues)
+- 💬 [Discussions](https://github.com/RoxasYTB/roxify/discussions)

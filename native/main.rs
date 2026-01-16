@@ -210,72 +210,45 @@ fn main() -> anyhow::Result<()> {
 
                 // detect PNG
                 let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
-                let pack_bytes: Vec<u8> = if is_png {
-                    // extract payload from PNG
+
+                // Build a streaming reader that yields RAW pack bytes (no leading ROX1 magic).
+                // If payload is zstd-compressed, wrap a zstd::stream::Decoder around the compressed bytes.
+                // If payload is already raw pack (starting with ROX1), use a Cursor over the raw bytes (stripped of ROX1).
+                use std::io::Cursor;
+                let mut reader: Box<dyn std::io::Read> = if is_png {
                     let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
                     if payload.is_empty() { return Err(anyhow::anyhow!("Empty payload")); }
-                    // payload format: [enc_flag?]... encoder may prefix ENC_NONE (0x00)
-                    // Support only ENC_NONE (0x00) for now
                     let first = payload[0];
                     if first == 0x00u8 {
                         let compressed = payload[1..].to_vec();
-
-                        // Try zstd decompress, with helpful diagnostics and fallback.
-                        match crate::core::zstd_decompress_bytes(&compressed) {
-                            Ok(mut out) => {
-                                if out.starts_with(b"ROX1") {
-                                    out = out[4..].to_vec();
-                                }
-                                out
-                            }
-                            Err(e) => {
-                                // Detect common cases to provide clearer errors or fallbacks
-                                let zstd_magic = [0x28u8, 0xB5, 0x2F, 0xFD];
-                                let starts_zstd = compressed.len() >= 4 && &compressed[0..4] == &zstd_magic;
-                                let first_bytes: String = compressed.iter().take(16).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("");
-
-                                // If the payload already looks like an uncompressed pack (ROX1), accept it
-                                if compressed.starts_with(b"ROX1") {
-                                    eprintln!("⚠️ zstd decompress failed ({}), but payload starts with ROX1: falling back to raw pack", e);
-                                    // Strip magic now (packer expects raw pack without leading ROX1)
-                                    let mut out = compressed[4..].to_vec();
-                                    out
-                                } else {
-                                    let msg = format!("zstd decompress error: {}. compressed_len={} starts_zstd={} first16=0x{}", e, compressed.len(), starts_zstd, first_bytes);
-                                    return Err(anyhow::anyhow!(msg));
-                                }
-                            }
+                        if compressed.starts_with(b"ROX1") {
+                            // already raw pack with magic; strip magic
+                            Box::new(Cursor::new(compressed[4..].to_vec()))
+                        } else {
+                            // compressed zstd stream -> decoder will produce RAW pack bytes
+                            let dec = zstd::stream::Decoder::new(Cursor::new(compressed)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                            Box::new(dec)
                         }
                     } else {
                         return Err(anyhow::anyhow!("Encrypted payloads are not supported by native --files option"));
                     }
                 } else {
-                    // not a PNG: try zstd decompress, else treat as raw pack
-                    match crate::core::zstd_decompress_bytes(&buf) {
-                        Ok(mut x) => {
-                            if x.starts_with(b"ROX1") {
-                                x = x[4..].to_vec();
-                            }
-                            x
-                        },
-                        Err(e) => {
-                            // Provide diagnostics and fallback if the buffer already looks like a pack
-                            if buf.starts_with(b"ROX1") {
-                                eprintln!("⚠️ zstd decompress failed ({}), but input already starts with ROX1: using raw pack", e);
-                                buf[4..].to_vec()
-                            } else {
-                                let first_bytes: String = buf.iter().take(16).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("");
-                                let msg = format!("zstd decompress error: {}. input_len={} first16=0x{}", e, buf.len(), first_bytes);
-                                return Err(anyhow::anyhow!(msg));
-                            }
-                        }
+                    // not a PNG: check if buf already looks like raw pack
+                    if buf.starts_with(b"ROX1") {
+                        Box::new(Cursor::new(buf[4..].to_vec()))
+                    } else {
+                        // assume zstd-compressed stream
+                        let dec = zstd::stream::Decoder::new(Cursor::new(buf)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                        Box::new(dec)
                     }
                 };
 
                 let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
                 std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
-                let written = packer::unpack_buffer_to_dir(&pack_bytes, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
+
+                // Stream and unpack; reader already yields RAW pack bytes (decoder or cursor as appropriate)
+                let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
                 println!("Unpacked {} files", written.len());
             } else {
                 // old behaviour: decompress all to a single raw file

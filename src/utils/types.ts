@@ -1,4 +1,4 @@
-import { PackedFile } from '../pack';
+import { PackedFile } from '../pack.js';
 
 export interface EncodeOptions {
   compression?: 'zstd';

@@ -1,4 +1,4 @@
-import { native } from './utils/native';
+import { native } from './utils/native.js';
 
 let check_gpu_status: any;
 let entropy_estimate: any;

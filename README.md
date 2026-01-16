@@ -40,8 +40,8 @@ These results demonstrate Roxify's strength for packaging large codebases and ma
 
 ## Documentation
 
-- 📘 **[CLI Documentation](./CLI.md)** - Complete command-line usage guide
-- 📗 **[JavaScript SDK](./JAVASCRIPT_SDK.md)** - Programmatic API reference with examples
+- 📘 **[CLI Documentation](./docs/CLI.md)** - Complete command-line usage guide
+- 📗 **[JavaScript SDK](./docs/JAVASCRIPT_SDK.md)** - Programmatic API reference with examples
 - 📙 **[Quick Start](#quick-start)** - Get started in 2 minutes
 
 ## Installation
@@ -389,3 +389,9 @@ Contributions welcome! Please open an issue or PR on GitHub.
 - [GitHub Repository](https://github.com/RoxasYTB/roxify)
 - [npm Package](https://www.npmjs.com/package/roxify)
 - [Report Issues](https://github.com/RoxasYTB/roxify/issues)
+
+
+## CI / Multi-platform builds
+
+This project runs continuous integration on Linux, Windows and macOS via GitHub Actions. Native modules are built on each platform and attached to the workflow (and release) as artifacts. On releases we also publish platform artifacts to GitHub Releases. For npm publishing, set the `NPM_TOKEN` secret in your repository settings to allow automated publishes on release.
+

@@ -1,5 +1,5 @@
 import * as zlib from 'zlib';
-import { unpackBuffer } from '../pack';
+import { unpackBuffer } from '../pack.js';
 import {
   CHUNK_TYPE,
   ENC_AES,
@@ -7,11 +7,11 @@ import {
   MAGIC,
   MARKER_COLORS,
   PIXEL_MAGIC,
-} from './constants';
-import { decodePngToBinary } from './decoder';
-import { PassphraseRequiredError } from './errors';
-import { native } from './native';
-import { cropAndReconstitute } from './reconstitution';
+} from './constants.js';
+import { decodePngToBinary } from './decoder.js';
+import { PassphraseRequiredError } from './errors.js';
+import { native } from './native.js';
+import { cropAndReconstitute } from './reconstitution.js';
 
 /**
  * List files stored inside a ROX PNG without fully extracting it.

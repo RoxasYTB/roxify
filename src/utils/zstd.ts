@@ -1,4 +1,4 @@
-import { native } from './native';
+import { native } from './native.js';
 
 let nativeZstdCompress: ((data: Buffer, level: number) => Uint8Array) | null =
   null;

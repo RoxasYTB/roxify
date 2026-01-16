@@ -1,6 +1,6 @@
 import { createCipheriv, pbkdf2Sync, randomBytes } from 'crypto';
 import * as zlib from 'zlib';
-import { unpackBuffer } from '../pack';
+import { unpackBuffer } from '../pack.js';
 import {
   COMPRESSION_MARKERS,
   ENC_AES,
@@ -12,12 +12,12 @@ import {
   PIXEL_MAGIC,
   PIXEL_MAGIC_BLOCK,
   PNG_HEADER,
-} from './constants';
-import { crc32 } from './crc';
-import { colorsToBytes } from './helpers';
-import { native } from './native';
-import { EncodeOptions } from './types';
-import { parallelZstdCompress } from './zstd';
+} from './constants.js';
+import { crc32 } from './crc.js';
+import { colorsToBytes } from './helpers.js';
+import { native } from './native.js';
+import { EncodeOptions } from './types.js';
+import { parallelZstdCompress } from './zstd.js';
 /**
  * Encode a buffer or array of buffers into a PNG image (ROX format).
  *

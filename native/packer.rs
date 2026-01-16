@@ -168,7 +168,6 @@ pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[Stri
         if pos + 8 > buf.len() { return Err(anyhow::anyhow!("Truncated pack (size)")); }
         let size = u64::from_be_bytes(buf[pos..pos+8].try_into().unwrap()) as usize; pos += 8;
         if pos + size > buf.len() { return Err(anyhow::anyhow!("Truncated pack (content)")); }
-        let content = &buf[pos..pos+size]; pos += size;
 
         let should_write = match &files_filter {
             Some(set) => set.contains(&name),
@@ -176,6 +175,7 @@ pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[Stri
         };
 
         if should_write {
+            let content = &buf[pos..pos+size];
             // sanitize path components to avoid path traversal
             let p = Path::new(&name);
             let mut safe = std::path::PathBuf::new();
@@ -191,7 +191,238 @@ pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[Stri
             std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
             written.push(safe.to_string_lossy().to_string());
         }
+
+        pos += size;
     }
 
     Ok(written)
 }
+
+/// Unpack from a streaming reader (zstd streaming decoder for example).
+/// This function reads decompressed bytes incrementally and parses pack entries
+/// sequentially. If `files_opt` is Some(list) it will stop as soon as all
+/// requested files have been written (to avoid decompressing remainder).
+pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, files_opt: Option<&[String]>) -> Result<Vec<String>> {
+    use std::io::Read;
+    let mut written = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut pos: usize = 0;
+    let mut temp = [0u8; 64 * 1024];
+    let files_filter: Option<std::collections::HashSet<String>> = files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+    let mut requested = files_filter.as_ref().map(|s| s.len()).unwrap_or(usize::MAX);
+
+    // Header parsed flag (we expect a global ROXP header at stream start)
+    let mut header_parsed = false;
+    let debug = std::env::var("ROX_DEBUG").is_ok();
+    if debug { eprintln!("[rox debug] unpack_stream_to_dir called (out_dir={:?})", out_dir); }
+
+    // Read loop
+    loop {
+        // Try to parse as much as possible from buf
+        loop {
+            // If header not yet parsed, we need at least 8 bytes for magic+count
+            if !header_parsed {
+                if pos + 8 > buf.len() { break; }
+                if debug {
+                    eprintln!("[rox debug] buf.len={} pos={} first16={:?}", buf.len(), pos, &buf[0..std::cmp::min(16, buf.len())]);
+                    eprintln!("[rox debug] after first debug");
+                }
+                if debug { eprintln!("[rox debug] before reading magic_header"); }
+                let magic_header = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap());
+                if debug { eprintln!("[rox debug] magic_header=0x{:08x}", magic_header); }
+                if magic_header == 0x524f5850u32 {
+                    // standard pack header: skip magic + file_count
+                    pos += 4;
+                    // we can read file_count if needed, but streaming doesn't require it strictly
+                    let _file_count = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap()) as usize;
+                    pos += 4;
+                    header_parsed = true;
+                    if debug { eprintln!("[rox debug] header parsed, file_count={}", _file_count); }
+                } else if magic_header == 0x524f5831u32 {
+                    // Found ROX1 outer magic: skip it and continue parsing (next bytes might be ROXP)
+                    if debug { eprintln!("[rox debug] found ROX1 outer magic, skipping 4 bytes"); }
+                    pos += 4;
+                    continue; // re-evaluate header parsing from new pos
+                } else {
+                    // If not ROXP/ROX1, maybe it's a ROXI index or something else; handle below
+                }
+            }
+
+            // Need at least 8 bytes to determine ROXI index header or name_len
+            if pos + 8 > buf.len() { break; }
+            let magic = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap());
+            if magic == 0x524f5849u32 {
+                // ROXI indexed format: ensure we have full index header
+                if pos + 8 > buf.len() { break; }
+                let index_len = u32::from_be_bytes(buf[pos+4..pos+8].try_into().unwrap()) as usize;
+                if pos + 8 + index_len > buf.len() { break; }
+                // Skip the index header
+                pos += 8 + index_len;
+            }
+
+            // Now at start of entries, parse as many entries as present
+            // Ensure we have at least name_len
+            if pos + 2 > buf.len() { break; }
+            let name_len = u16::from_be_bytes(buf[pos..pos+2].try_into().unwrap()) as usize;
+            if pos + 2 + name_len + 8 > buf.len() { break; }
+            let name = String::from_utf8_lossy(&buf[pos+2..pos+2+name_len]).to_string();
+            let size = u64::from_be_bytes(buf[pos+2+name_len..pos+2+name_len+8].try_into().unwrap()) as usize;
+            if pos + 2 + name_len + 8 + size > buf.len() { break; }
+
+            let content_start = pos + 2 + name_len + 8;
+            let content_end = content_start + size;
+            let content = &buf[content_start..content_end];
+
+            // sanitize path
+            let p = Path::new(&name);
+            let mut safe = std::path::PathBuf::new();
+            for comp in p.components() {
+                if let std::path::Component::Normal(osstr) = comp {
+                    safe.push(osstr);
+                }
+            }
+            let dest = out_dir.join(&safe);
+
+            if files_filter.is_none() || files_filter.as_ref().map_or(false, |s| s.contains(&name)) {
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+                }
+                std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+                written.push(safe.to_string_lossy().to_string());
+                if let Some(set) = files_filter.as_ref() {
+                    requested = requested.saturating_sub(1);
+                    if requested == 0 { return Ok(written); }
+                }
+            }
+
+            pos = content_end; // advance
+            // Remove processed prefix to keep buf small
+            if pos > 0 {
+                buf.drain(0..pos);
+                pos = 0;
+            }
+        }
+
+        // Try reading more decompressed bytes
+        match reader.read(&mut temp) {
+            Ok(0) => break, // EOF
+            Ok(n) => buf.extend_from_slice(&temp[..n]),
+            Err(e) => return Err(anyhow::anyhow!("Stream read error: {}", e)),
+        }
+    }
+
+    Ok(written)
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use std::io::{Write, Read};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn test_unpack_stream_to_dir() -> Result<()> {
+        // build a simple pack with two files
+        let mut parts: Vec<u8> = Vec::new();
+        parts.extend_from_slice(&0x524f5850u32.to_be_bytes()); // magic ROXP
+        parts.extend_from_slice(&(2u32.to_be_bytes())); // 2 files
+
+        let name1 = b"file1.txt";
+        parts.extend_from_slice(&(name1.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name1);
+        let content1 = b"hello world";
+        parts.extend_from_slice(&(content1.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content1);
+
+        let name2 = b"file2.txt";
+        parts.extend_from_slice(&(name2.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name2);
+        let content2 = b"goodbye";
+        parts.extend_from_slice(&(content2.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content2);
+
+        // compress
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 0).map_err(|e| anyhow::anyhow!(e))?;
+        encoder.write_all(&parts).map_err(|e| anyhow::anyhow!(e))?;
+        let compressed = encoder.finish().map_err(|e| anyhow::anyhow!(e))?;
+
+        let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(compressed.clone())).map_err(|e| anyhow::anyhow!(e))?;
+
+        // quick verification: fully decompress and check equality with original parts
+        let mut all = Vec::new();
+        dec.read_to_end(&mut all).map_err(|e| anyhow::anyhow!(e))?;
+        assert_eq!(all.len(), parts.len());
+        assert_eq!(&all[..], &parts[..]);
+
+        // now streaming test using a fresh decoder
+        let mut dec2 = zstd::stream::Decoder::new(std::io::Cursor::new(compressed)).map_err(|e| anyhow::anyhow!(e))?;
+
+        // create a temp dir using system temp
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let tmpdir = std::env::temp_dir().join(format!("rox_unpack_test_{}", ms));
+        let _ = std::fs::create_dir_all(&tmpdir);
+
+        let out = unpack_stream_to_dir(&mut dec2, &tmpdir, None)?;
+
+        // Should have written both files
+        assert_eq!(out.len(), 2);
+        assert!(tmpdir.join("file1.txt").exists());
+        assert!(tmpdir.join("file2.txt").exists());
+        // cleanup
+        let _ = std::fs::remove_file(tmpdir.join("file1.txt"));
+        let _ = std::fs::remove_file(tmpdir.join("file2.txt"));
+        let _ = std::fs::remove_dir(&tmpdir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_unpack_stream_from_png_payload() -> Result<()> {
+        // build a simple pack with two files (same as other test)
+        let mut parts: Vec<u8> = Vec::new();
+        parts.extend_from_slice(&0x524f5850u32.to_be_bytes()); // magic ROXP
+        parts.extend_from_slice(&(2u32.to_be_bytes())); // 2 files
+
+        let name1 = b"file1.txt";
+        parts.extend_from_slice(&(name1.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name1);
+        let content1 = b"hello world";
+        parts.extend_from_slice(&(content1.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content1);
+
+        let name2 = b"file2.txt";
+        parts.extend_from_slice(&(name2.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name2);
+        let content2 = b"goodbye";
+        parts.extend_from_slice(&(content2.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content2);
+
+        // Use encoder to wrap as a PNG payload
+        let png = crate::encoder::encode_to_png_with_name_and_filelist(&parts, 0, None, None)?;
+        // extract payload like the CLI would do
+        let payload = crate::png_utils::extract_payload_from_png(&png).map_err(|e| anyhow::anyhow!(e))?;
+        assert!(!payload.is_empty());
+        // payload[0] == 0x00 for unencrypted
+        let first = payload[0];
+        assert_eq!(first, 0x00u8);
+        let compressed = payload[1..].to_vec();
+        let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(compressed)).map_err(|e| anyhow::anyhow!(e))?;
+
+        // create a temp dir using system temp
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let tmpdir = std::env::temp_dir().join(format!("rox_unpack_png_test_{}", ms));
+        let _ = std::fs::create_dir_all(&tmpdir);
+
+        let out = unpack_stream_to_dir(&mut dec, &tmpdir, None)?;
+
+        assert_eq!(out.len(), 2);
+        assert!(tmpdir.join("file1.txt").exists());
+        assert!(tmpdir.join("file2.txt").exists());
+
+        // cleanup
+        let _ = std::fs::remove_file(tmpdir.join("file1.txt"));
+        let _ = std::fs::remove_file(tmpdir.join("file2.txt"));
+        let _ = std::fs::remove_dir(&tmpdir);
+        Ok(())
+    }
+}
+
