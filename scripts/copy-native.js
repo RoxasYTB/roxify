@@ -36,22 +36,42 @@ if (!target || !ext || !libName) {
   process.exit(1);
 }
 
-const sourceFile = join(
-  rootDir,
-  'target',
-  target,
-  'release',
-  `${libName}.${ext}`,
-);
+const profiles = ['release', 'fastdev'];
+const possibleBases = [libName, libName.replace(/^lib/, '')];
 const destFile = join(rootDir, 'roxify_native.node');
 const destFileWithTarget = join(rootDir, `roxify_native-${target}.node`);
 
-if (existsSync(sourceFile)) {
-  copyFileSync(sourceFile, destFile);
-  copyFileSync(sourceFile, destFileWithTarget);
-  console.log(`✓ Copied ${sourceFile} → ${destFile}`);
-  console.log(`✓ Copied ${sourceFile} → ${destFileWithTarget}`);
-} else {
-  console.warn(`⚠ Source file not found: ${sourceFile}`);
-  console.log('Build the native module first with: npm run build:native');
+let found = false;
+for (const profile of profiles) {
+  for (const base of possibleBases) {
+    const candidates = [
+      join(rootDir, 'target', profile, `${base}.${ext}`),
+      join(rootDir, 'target', target, profile, `${base}.${ext}`),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        copyFileSync(candidate, destFile);
+        copyFileSync(candidate, destFileWithTarget);
+        console.log(`✓ Copied ${candidate} → ${destFile}`);
+        console.log(`✓ Copied ${candidate} → ${destFileWithTarget}`);
+        found = true;
+        break;
+      }
+    }
+    if (found) break;
+  }
+  if (found) break;
+}
+
+if (!found) {
+  console.warn(
+    `⚠ Source file not found for any profile (${profiles.join(
+      ', ',
+    )}): target/${target}/{${profiles.join(',')}}/*.{${possibleBases.join(
+      ',',
+    )}}.${ext}`,
+  );
+  console.log(
+    'Build the native module first with: npm run build:native or npm run build:native:quick-release',
+  );
 }

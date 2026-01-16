@@ -18,5 +18,7 @@ test/
 *.png
 *.tgz
 test-*
+# Integration test output directory
+output-tests/
 # Ignore platform-specific native artifacts
 libroxify_native-*
