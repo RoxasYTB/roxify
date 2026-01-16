@@ -90,14 +90,16 @@ jobs:
           default: true
 
       - name: Install sccache (optional speedup)
+        if: runner.os != 'Windows'
         run: |
-          if [[ "${{ runner.os }}" == "macos-latest" ]]; then
+          if [ "${{ runner.os }}" = "macOS" ]; then
             brew install sccache || true
           else
             cargo install sccache --version 0.4.9 || true
           fi || true
 
       - name: Setup sccache
+        if: runner.os != 'Windows'
         run: |
           which sccache || true
           echo "RUSTC_WRAPPER=$(which sccache || true)" >> $GITHUB_ENV
