@@ -19,7 +19,7 @@ function runSilent(cmd) {
 const pkg = JSON.parse(
   readFileSync(join(process.cwd(), 'package.json'), 'utf8'),
 );
-const targetVersion = process.argv[2] || process.env.VERSION || `1.6.0`;
+const targetVersion = process.argv[2] || process.env.VERSION || `1.6.1`;
 const autoPublish = process.env.AUTO_PUBLISH === '1';
 
 console.log(`Preparing release ${targetVersion}`);
