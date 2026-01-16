@@ -3,11 +3,13 @@
 ## Résultats
 
 ### Taille des binaires
+
 - **Avant**: 16 MB
 - **Après**: 3.3 MB
 - **Réduction**: 80% 🚀
 
 ### Vitesse de CI
+
 - Tests Matrix supprimée (3 OS → 1 OS Ubuntu uniquement)
 - Utilisation de `Swatinem/rust-cache@v2` (cache intelligent)
 - Suppression de sccache (complexité inutile)
@@ -34,18 +36,21 @@ strip = true
 ## Workflows Optimisés
 
 ### CI (.github/workflows/ci.yml)
+
 - **Avant**: Matrix 3 OS × tests
 - **Après**: Ubuntu uniquement, tests rapides
 - Actions modernes: `dtolnay/rust-toolchain` + `Swatinem/rust-cache`
 - Cache npm automatique
 
 ### Release (.github/workflows/release.yml)
+
 - Build parallèle par target (4 targets)
 - Strip automatique des binaires Unix
 - Cache Rust par target
 - workflow_dispatch pour releases manuelles
 
 ### Build (.github/workflows/build.yml)
+
 - Simplifié et optimisé
 - Retention artifacts: 7 jours
 - Strip systématique
@@ -67,6 +72,7 @@ strip target/release/libroxify_native.so  # Manuel si nécessaire
 ## Impact sur npm publish
 
 Les binaires publiés seront maintenant:
+
 - **80% plus petits**
 - Téléchargement plus rapide pour les utilisateurs
 - Moins de bande passante npm
