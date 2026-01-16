@@ -18,7 +18,7 @@ jobs:
       FAST_RELEASE: '1'
       MAX_JOBS: '2'
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - os: ubuntu-latest
