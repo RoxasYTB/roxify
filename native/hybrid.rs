@@ -1,11 +1,10 @@
 use anyhow::Result;
 use rayon::prelude::*;
-use crate::bwt::{bwt_encode, BwtResult};
-use crate::context_mixing::{analyze_entropy, ContextMixer};
+use crate::bwt::bwt_encode;
+use crate::context_mixing::analyze_entropy;
 use crate::rans::{build_symbols_from_frequencies, RansEncoder};
 use crate::pool::BufferPool;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 const BLOCK_SIZE: usize = 16 * 1024 * 1024;
 

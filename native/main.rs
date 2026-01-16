@@ -61,6 +61,8 @@ enum Commands {
         output: Option<PathBuf>,
         #[arg(long)]
         files: Option<String>,
+        #[arg(short, long)]
+        passphrase: Option<String>,
     },
     Crc32 {
         input: PathBuf,
@@ -190,7 +192,7 @@ fn main() -> anyhow::Result<()> {
             let dest = output.unwrap_or_else(|| PathBuf::from("out.zst"));
             write_all(&dest, &out)?;
         }
-        Commands::Decompress { input, output, files } => {
+        Commands::Decompress { input, output, files, passphrase } => {
             let buf = read_all(&input)?;
             // If files parameter is specified, extract only those files from a PNG/pack
             if let Some(files_str) = files {
@@ -211,36 +213,46 @@ fn main() -> anyhow::Result<()> {
                 // detect PNG
                 let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
 
-                // Build a streaming reader that yields RAW pack bytes (no leading ROX1 magic).
-                // If payload is zstd-compressed, wrap a zstd::stream::Decoder around the compressed bytes.
-                // If payload is already raw pack (starting with ROX1), use a Cursor over the raw bytes (stripped of ROX1).
+                // normalize payload bytes (strip encryption flags or decrypt when needed)
                 use std::io::Cursor;
-                let mut reader: Box<dyn std::io::Read> = if is_png {
+                let normalized: Vec<u8> = if is_png {
                     let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
                     if payload.is_empty() { return Err(anyhow::anyhow!("Empty payload")); }
-                    let first = payload[0];
-                    if first == 0x00u8 {
-                        let compressed = payload[1..].to_vec();
-                        if compressed.starts_with(b"ROX1") {
-                            // already raw pack with magic; strip magic
-                            Box::new(Cursor::new(compressed[4..].to_vec()))
-                        } else {
-                            // compressed zstd stream -> decoder will produce RAW pack bytes
-                            let dec = zstd::stream::Decoder::new(Cursor::new(compressed)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-                            Box::new(dec)
-                        }
+                    if payload[0] == 0x00u8 {
+                        payload[1..].to_vec()
                     } else {
-                        return Err(anyhow::anyhow!("Encrypted payloads are not supported by native --files option"));
+                        // encrypted payload -> try to decrypt using provided passphrase
+                        let pass = passphrase.as_ref().map(|s: &String| s.as_str());
+                        match crate::crypto::try_decrypt(&payload, pass) {
+                            Ok(v) => v,
+                            Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
+                        }
                     }
                 } else {
-                    // not a PNG: check if buf already looks like raw pack
-                    if buf.starts_with(b"ROX1") {
-                        Box::new(Cursor::new(buf[4..].to_vec()))
+                    // not a PNG: buffer may be encrypted as well
+                    if buf[0] == 0x00u8 {
+                        buf[1..].to_vec()
+                    } else if buf.starts_with(b"ROX1") {
+                        buf[4..].to_vec()
+                    } else if buf[0] == 0x01u8 || buf[0] == 0x02u8 {
+                        let pass = passphrase.as_ref().map(|s: &String| s.as_str());
+                        match crate::crypto::try_decrypt(&buf, pass) {
+                            Ok(v) => v,
+                            Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
+                        }
                     } else {
-                        // assume zstd-compressed stream
-                        let dec = zstd::stream::Decoder::new(Cursor::new(buf)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-                        Box::new(dec)
+                        // assume zstd-compressed stream: we'll decode below
+                        buf.to_vec()
                     }
+                };
+
+                // Build a streaming reader that yields RAW pack bytes (no leading ROX1 magic).
+                // If payload is zstd-compressed, wrap a zstd::stream::Decoder around the compressed bytes.
+                let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
+                    Box::new(Cursor::new(normalized[4..].to_vec()))
+                } else {
+                    let dec = zstd::stream::Decoder::new(Cursor::new(normalized)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                    Box::new(dec)
                 };
 
                 let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
@@ -275,7 +287,20 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     } else {
-                        return Err(anyhow::anyhow!("Encrypted payloads are not supported by native decompress"));
+                        // Try to decrypt payload using passphrase (if provided) and treat decrypted bytes as compressed/raw pack
+                        let pass = passphrase.as_ref().map(|s| s.as_str());
+                        match crate::crypto::try_decrypt(&payload, pass) {
+                            Ok(v) => {
+                                if v.starts_with(b"ROX1") {
+                                    // decrypted raw pack with magic; strip magic and return raw
+                                    v[4..].to_vec()
+                                } else {
+                                    // decrypted compressed bytes
+                                    v
+                                }
+                            }
+                            Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
+                        }
                     }
                 } else {
                     match crate::core::zstd_decompress_bytes(&buf) {

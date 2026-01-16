@@ -107,7 +107,7 @@ fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::r
     use std::io::Write;
 
     if buf.is_empty() {
-        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1)
+        let encoder = zstd::stream::Encoder::new(Vec::new(), 1)
             .map_err(|e| format!("zstd encoder init error: {}", e))?;
         return encoder.finish().map_err(|e| format!("zstd finish error: {}", e));
     }

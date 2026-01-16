@@ -1,4 +1,4 @@
-use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
+use image::{GenericImageView, Rgba, RgbaImage};
 use std::cmp::{max, min};
 
 pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {

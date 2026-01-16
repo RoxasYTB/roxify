@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::ops::Range;
 
 const RANS_L: u32 = 1 << 31;
 const RANS_M: u32 = 1 << 16;

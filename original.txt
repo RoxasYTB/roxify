@@ -1,1 +1,0 @@
-Reconstruction parfaite avec gradient et position aléatoire!

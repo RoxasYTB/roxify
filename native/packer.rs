@@ -147,7 +147,7 @@ pub fn pack_path_with_metadata(path: &Path) -> Result<PackResult> {
 /// Unpack a pack-format buffer into the given directory. If `files_opt` is Some(list)
 /// only the specified filenames will be written. Returns vector of written relative paths.
 pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[String]>) -> Result<Vec<String>> {
-    use std::io::Cursor;
+    
     use std::convert::TryInto;
     let mut written = Vec::new();
     let mut pos = 0usize;
@@ -289,7 +289,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, fi
                 }
                 std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
                 written.push(safe.to_string_lossy().to_string());
-                if let Some(set) = files_filter.as_ref() {
+                if let Some(_set) = files_filter.as_ref() {
                     requested = requested.saturating_sub(1);
                     if requested == 0 { return Ok(written); }
                 }
