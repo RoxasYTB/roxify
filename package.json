@@ -40,6 +40,10 @@
     "build:pkg": "npm run build && npx pkg . --target node18-win-x64 --output dist/rox.exe --compress Brotli --public",
     "postbuild:native": "node scripts/copy-native.js",
     "clean:targets": "node scripts/clean-artifacts.js",
+    "release:prepare": "npm run build && npm run build:native:targets && node scripts/prepare-release.cjs",
+    "release:github": "npm run release:prepare && node scripts/create-gh-release.cjs",
+    "package:prepare": "npm run build && npm run build:native:targets && node scripts/pack-npm.cjs",
+    "publish:npm": "npm run package:prepare && echo 'Run npm publish --access public'",
     "prepublishOnly": "npm run build && npm run build:native && npm run postbuild:native && npm run clean:targets",
     "test": "npm run build && node ./test/run-all-tests.js",
     "cli": "node dist/cli.js"
