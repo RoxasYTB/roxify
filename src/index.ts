@@ -9,6 +9,7 @@ export * from './utils/optimization.js';
 export * from './utils/reconstitution.js';
 export * from './utils/types.js';
 export * from './utils/zstd.js';
+export { native } from './utils/native.js';
+export { encodeWithRustCLI, isRustBinaryAvailable } from './utils/rust-cli-wrapper.js';
 
-export { decodeMinPng, encodeMinPng } from './minpng.js';
 export { packPaths, packPathsToParts, unpackBuffer } from './pack.js';
