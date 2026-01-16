@@ -1,5 +1,6 @@
 src/
 test/
+output-tests/
 native/
 target/
 Cargo.toml
