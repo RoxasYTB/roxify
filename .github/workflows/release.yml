@@ -3,89 +3,75 @@ name: Release
 on:
   release:
     types: [created]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   build-and-upload:
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [18.x]
-        rust: [stable]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache target
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          default: true
+          targets: ${{ matrix.target }}
 
-      - name: Install sccache (optional speedup)
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          shared-key: 'release'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Build native (optimized)
+        run: cargo build -p roxify_native --release --lib --target ${{ matrix.target }}
+
+      - name: Strip binary (Unix)
         if: runner.os != 'Windows'
+        run: strip target/${{ matrix.target }}/release/libroxify_native.* || true
+
+      - run: npm run build
+
+      - name: Prepare artifacts
+        shell: bash
         run: |
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            brew install sccache || true
+          mkdir -p release
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/roxify_native.dll release/roxify_native-${{ matrix.target }}.node
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/${{ matrix.target }}/release/libroxify_native.dylib release/roxify_native-${{ matrix.target }}.node
           else
-            cargo install sccache --version 0.4.9 || true
-          fi || true
+            cp target/${{ matrix.target }}/release/libroxify_native.so release/roxify_native-${{ matrix.target }}.node
+          fi
+          ls -lh release/
 
-      - name: Setup sccache
-        if: runner.os != 'Windows'
-        run: |
-          which sccache || true
-          echo "RUSTC_WRAPPER=$(which sccache || true)" >> $GITHUB_ENV
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Set macOS RUSTFLAGS
-        if: runner.os == 'macos-latest'
-        run: echo "RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
-
-      - name: Build native
-        env:
-          MACOSX_DEPLOYMENT_TARGET: 15.5
-        run: cargo build -p roxify_native --release --features gpu
-
-      - name: Build JS
-        run: npm run build
-
-      - name: Prepare artifact path
-        run: |
-          mkdir -p release-artifacts
-          cp *.node release-artifacts/  || true
-          cp roxify_native-* release-artifacts/ || true
-          cp target/**/release/*.node release-artifacts/ || true
-          ls -la release-artifacts || true
-
-      - name: Upload release artifacts
-        uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: release-artifacts/*
+          files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

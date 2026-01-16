@@ -52,3 +52,16 @@ windows = { version = "0.51", features = ["Win32_Graphics_Direct3D12"] }
 default = []
 
 gpu = ["wgpu", "pollster"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release-size]
+inherits = "release"
+opt-level = "z"
+lto = true
+strip = true

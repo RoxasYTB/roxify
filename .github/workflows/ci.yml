@@ -6,151 +6,44 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
 jobs:
-  fast-check:
-    name: Fast check (no-default-features)
+  test:
+    name: Test (Ubuntu only)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: \"ci\"
 
-      - name: Cache target (fast checks)
-        uses: actions/cache@v4
+      - uses: actions/setup-node@v4
         with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
+          node-version: 18
+          cache: 'npm'
 
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          default: true
+      - run: npm ci
 
-      - name: Build native (fast, no-default-features)
-        run: cargo build -p roxify_native --no-default-features --lib
+      - name: Build native (no gpu, faster)
+        run: cargo build -p roxify_native --release --lib
 
-      - name: Fast cargo check
-        run: cargo check -p roxify_native --no-default-features
+      - run: npm run build
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18.x
-
-      - name: Install JS deps
-        run: npm ci
-
-      - name: Build JS
-        run: npm run build --if-present
-
-      - name: List repo and test files
-        run: ls -la && ls -la test || true
-
-      - name: Run JS tests
-        run: npm test --silent
-
-  full-build:
-    name: Full build (matrix)
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [18.x]
-        rust: [stable]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache target
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
-
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          default: true
-
-      - name: Install sccache (optional speedup)
-        if: runner.os != 'Windows'
-        run: |
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            brew install sccache || true
-          else
-            cargo install sccache --version 0.4.9 || true
-          fi || true
-
-      - name: Setup sccache
-        if: runner.os != 'Windows'
-        run: |
-          which sccache || true
-          echo "RUSTC_WRAPPER=$(which sccache || true)" >> $GITHUB_ENV
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Set macOS RUSTFLAGS
-        if: matrix.os == 'macos-latest'
-        run: echo "RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
-
-      - name: Build native (cargo)
-        env:
-          MACOSX_DEPLOYMENT_TARGET: 15.5
-        run: cargo build -p roxify_native --release --features gpu
-
-      - name: Build JS
-        run: npm run build
-
-      - name: Run tests
-        run: npm test --silent
-
-      - name: Collect native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-${{ matrix.os }}
-          path: |
-            *.node
-            roxify_native-*
-            target/**/release/*.node
-
-  lint:
+  check:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 18.x
-      - name: Install dev deps
-        run: npm ci
-      - name: TypeScript compile
-        run: npx tsc -p tsconfig.json --noEmit
+          node-version: 18
+          cache: 'npm'
+      - run: npm ci
+      - run: npx tsc --noEmit

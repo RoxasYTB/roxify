@@ -6,9 +6,16 @@ on:
       - 'v*'
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
 jobs:
   build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -24,43 +31,44 @@ jobs:
             target: x86_64-pc-windows-msvc
             ext: dll
 
-    runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: '20'
+          key: ${{ matrix.target }}
 
-      - name: Install dependencies
-        run: npm install
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
 
-      - name: Build native library
+      - run: npm ci
+
+      - name: Build (stripped)
         run: cargo build --release --lib --target ${{ matrix.target }}
 
-      - name: Copy binary (Unix)
+      - name: Strip binary
         if: runner.os != 'Windows'
+        run: strip target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }} || true
+
+      - name: Prepare artifacts
+        shell: bash
         run: |
           mkdir -p artifacts/${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node
+          else
+            cp target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node
+          fi
+          ls -lh artifacts/${{ matrix.target }}/
 
-      - name: Copy binary (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts\${{ matrix.target }}
-          Copy-Item target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }} artifacts\${{ matrix.target }}\libroxify_native.node
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
           path: artifacts/**
+          retention-days: 7
