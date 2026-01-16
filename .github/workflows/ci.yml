@@ -7,7 +7,55 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  fast-check:
+    name: Fast check (no-default-features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target (fast checks)
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          default: true
+
+      - name: Fast cargo check
+        run: cargo check -p roxify_native --no-default-features
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.x
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Build JS
+        run: npm run build --if-present
+
+      - name: Run JS tests
+        run: npm test --silent
+
+  full-build:
+    name: Full build (matrix)
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -17,10 +65,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
         with:
-          node-version: ${{ matrix.node }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -29,13 +89,31 @@ jobs:
           toolchain: ${{ matrix.rust }}
           default: true
 
+      - name: Install sccache (optional speedup)
+        run: |
+          if [[ "${{ runner.os }}" == "macos-latest" ]]; then
+            brew install sccache || true
+          else
+            cargo install sccache --version 0.4.9 || true
+          fi || true
+
+      - name: Setup sccache
+        run: |
+          which sccache || true
+          echo "RUSTC_WRAPPER=$(which sccache || true)" >> $GITHUB_ENV
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Build native (cargo) and copy
+      - name: Build native (cargo)
         env:
           MACOSX_DEPLOYMENT_TARGET: 15.5
-        run: npm run build:native
+        run: cargo build -p roxify_native --release --features gpu
 
       - name: Build JS
         run: npm run build
