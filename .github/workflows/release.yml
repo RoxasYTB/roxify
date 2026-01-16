@@ -16,6 +16,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -28,13 +45,28 @@ jobs:
           toolchain: ${{ matrix.rust }}
           default: true
 
+      - name: Install sccache (optional speedup)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            brew install sccache || true
+          else
+            cargo install sccache --version 0.4.9 || true
+          fi || true
+
+      - name: Setup sccache
+        if: runner.os != 'Windows'
+        run: |
+          which sccache || true
+          echo "RUSTC_WRAPPER=$(which sccache || true)" >> $GITHUB_ENV
+
       - name: Install dependencies
         run: npm ci
 
       - name: Build native
         env:
           MACOSX_DEPLOYMENT_TARGET: 15.5
-        run: npm run build:native
+        run: cargo build -p roxify_native --release --features gpu
 
       - name: Build JS
         run: npm run build
@@ -44,6 +76,7 @@ jobs:
           mkdir -p release-artifacts
           cp *.node release-artifacts/  || true
           cp roxify_native-* release-artifacts/ || true
+          cp target/**/release/*.node release-artifacts/ || true
           ls -la release-artifacts || true
 
       - name: Upload release artifacts
