@@ -34,8 +34,10 @@ if (argVersion && argVersion !== pkg.version) {
   run('git push origin --follow-tags');
 }
 
-if (!process.env.NPM_TOKEN) {
-  console.error('NPM_TOKEN not set in environment. Aborting publish.');
+// Prefer NPM_TOKEN, but allow an existing npm login session (npm whoami)
+const npmWhoami = runSilent('npm whoami');
+if (!process.env.NPM_TOKEN && !npmWhoami) {
+  console.error('Not authenticated with npm (NPM_TOKEN missing and npm whoami empty). Aborting publish.');
   process.exit(1);
 }
 
@@ -53,9 +55,11 @@ run('npm run package:prepare');
 
 // 3) Configure npm auth and publish
 console.log('\n==> Publishing to npm registry');
-run(
-  `npm config set //registry.npmjs.org/:_authToken="${process.env.NPM_TOKEN}"`,
-);
+if (process.env.NPM_TOKEN) {
+  run(`npm config set //registry.npmjs.org/:_authToken="${process.env.NPM_TOKEN}"`);
+} else {
+  console.log('Using existing npm login session');
+}
 run('npm publish --access public');
 
 console.log('\nPublish complete.');

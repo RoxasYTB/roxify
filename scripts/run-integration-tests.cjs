@@ -1,20 +1,37 @@
 #!/usr/bin/env node
 const { execSync } = require('child_process');
-const { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = require('fs');
+const {
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  rmSync,
+} = require('fs');
 const { join } = require('path');
 
-function run(cmd) {
+function run(cmd, opts = {}) {
   console.log('> ' + cmd);
-  return execSync(cmd, { stdio: 'inherit' });
+  const options = Object.assign({ stdio: 'inherit', timeout: 30000 }, opts);
+  return execSync(cmd, options);
 }
 
 function runSilent(cmd) {
-  try { return execSync(cmd, { encoding: 'utf8' }).trim(); } catch (e) { return null; }
+  try {
+    return execSync(cmd, { encoding: 'utf8', timeout: 30000 }).trim();
+  } catch (e) {
+    return null;
+  }
 }
 
 const OUT = join(process.cwd(), 'output-tests');
 if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
+
+// helper to write test files (create early so sanity check can use them)
+const sampleTxt = join(OUT, 'hello.txt');
+writeFileSync(sampleTxt, 'hello world');
+const sampleBin = join(OUT, 'data.bin');
+writeFileSync(sampleBin, Buffer.from([0, 1, 2, 3, 4, 5]));
 
 console.log('Build JS...');
 run('npm run build');
@@ -28,14 +45,38 @@ try {
   run('npm run build:native:quick-release');
 }
 
+// Also build the CLI binary (roxify_native) so encodeWithRustCLI uses the latest CLI
+console.log('Build CLI binary (roxify_native)');
+try {
+  // prefer fast profile if FAST_RELEASE set
+  if (process.env.FAST_RELEASE === '1')
+    run('cargo build --profile fastdev --bin roxify_native');
+  else run('cargo build --release --bin roxify_native');
+} catch (e) {
+  console.warn('Building CLI binary failed:', e.message || e);
+}
+
 console.log('Copy native to root for test');
 run('node scripts/copy-native.js');
 
-// helper to write test files
-const sampleTxt = join(OUT, 'hello.txt');
-writeFileSync(sampleTxt, 'hello world');
-const sampleBin = join(OUT, 'data.bin');
-writeFileSync(sampleBin, Buffer.from([0,1,2,3,4,5]));
+// Quick sanity: test CLI binary directly if present
+try {
+  const binPath = 'target/release/roxify_native';
+  if (process.platform === 'win32') {
+    // windows binary
+  }
+  if (require('fs').existsSync(binPath)) {
+    console.log('Sanity check: running native CLI directly');
+    // Run with a simple encode (no --name to avoid older-CLI incompatibilities)
+    const input = sampleTxt;
+    const out = join(OUT, 'native-cli-check.png');
+    run(`target/release/roxify_native encode --level 3 ${input} ${out}`);
+  }
+} catch (e) {
+  console.warn('Native CLI sanity check failed:', e.message || e);
+}
+
+// helper files were created earlier above (sampleTxt, sampleBin)
 
 const cli = 'node dist/cli.js';
 
@@ -60,7 +101,8 @@ try {
   const encodedDir = join(OUT, 'dir.png');
   run(`${cli} encode ${dir} ${encodedDir}`);
   const listOut = exec('node dist/cli.js list ' + encodedDir);
-  if (!listOut.includes('a.txt') || !listOut.includes('b.txt')) throw new Error('List missing files');
+  if (!listOut.includes('a.txt') || !listOut.includes('b.txt'))
+    throw new Error('List missing files');
   results.push('test2:ok');
 
   // Test 3: passphrase encryption
@@ -85,7 +127,8 @@ try {
   // Test 4: havepassphrase
   console.log('\nTest 4: havepassphrase');
   const have = runSilent(`${cli} havepassphrase ${enc}`) || '';
-  if (!have.toLowerCase().includes('passphrase')) throw new Error('havepassphrase failed');
+  if (!have.toLowerCase().includes('passphrase'))
+    throw new Error('havepassphrase failed');
   results.push('test4:ok');
 
   // Test 5: Node API encode/decode
@@ -101,15 +144,31 @@ try {
   run(nodePfScript);
   results.push('test6:ok');
 
-  writeFileSync(join(OUT, 'results.json'), JSON.stringify({ ok: true, results }, null, 2));
-  console.log('\nAll integration tests passed. Results in output-tests/results.json');
+  writeFileSync(
+    join(OUT, 'results.json'),
+    JSON.stringify({ ok: true, results }, null, 2),
+  );
+  console.log(
+    '\nAll integration tests passed. Results in output-tests/results.json',
+  );
   process.exit(0);
 } catch (e) {
   console.error('\nIntegration test failed:', e.message || e);
-  writeFileSync(join(OUT, 'results.json'), JSON.stringify({ ok: false, error: e.message || String(e), results }, null, 2));
+  writeFileSync(
+    join(OUT, 'results.json'),
+    JSON.stringify(
+      { ok: false, error: e.message || String(e), results },
+      null,
+      2,
+    ),
+  );
   process.exit(1);
 }
 
 function exec(cmd) {
-  try { return execSync(cmd, { encoding: 'utf8' }); } catch (e) { return (e.stdout || '') + (e.stderr || ''); }
+  try {
+    return execSync(cmd, { encoding: 'utf8' });
+  } catch (e) {
+    return (e.stdout || '') + (e.stderr || '');
+  }
 }

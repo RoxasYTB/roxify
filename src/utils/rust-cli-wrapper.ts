@@ -187,8 +187,19 @@ export async function encodeWithRustCLI(
   return new Promise((resolve, reject) => {
     const args = ['encode', '--level', String(compressionLevel)];
 
+    // Probe whether the CLI supports the --name flag (older CLIs may not)
+    let supportsName = false;
     if (name) {
-      args.push('--name', name);
+      try {
+        const helpOut = execSync(`"${cliPath}" --help`, { encoding: 'utf8', timeout: 2000 });
+        if (helpOut && helpOut.includes('--name')) supportsName = true;
+      } catch (e) {
+        // if help fails (non-executable .node), be conservative and don't pass --name
+        supportsName = false;
+      }
+      if (supportsName) {
+        args.push('--name', name);
+      }
     }
 
     if (passphrase) {

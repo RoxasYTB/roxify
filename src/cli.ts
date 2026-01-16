@@ -273,7 +273,16 @@ async function encodeCommand(args: string[]) {
     // ignore errors from the quick pre-check and proceed to try Rust encoding
   }
 
-  if (isRustBinaryAvailable() && !parsed.forceTs) {
+  // Skip native Rust encoder for directories because current Rust CLI does not embed the file list
+  // (TypeScript encoder handles directories and file lists reliably).
+  let anyInputDir = false;
+  try {
+    anyInputDir = resolvedInputs.some((p: string) => statSync(p).isDirectory());
+  } catch (e) {
+    anyInputDir = false;
+  }
+
+  if (isRustBinaryAvailable() && !parsed.forceTs && !anyInputDir) {
     try {
       console.log(
         `Encoding to ${resolvedOutput} (Using native Rust encoder)\n`,
@@ -791,22 +800,33 @@ async function listCommand(args: string[]) {
 
       if (cliPath) {
         const { execSync } = await import('child_process');
-        const output = execSync(`"${cliPath}" list "${resolvedInput}"`, {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'inherit'],
-        });
-
-        const fileList = JSON.parse(output.trim());
-
-        console.log(`Files in ${resolvedInput}:`);
-        for (const file of fileList) {
-          if (typeof file === 'string') {
-            console.log(`  ${file}`);
-          } else {
-            console.log(`  ${file.name} (${file.size} bytes)`);
+        try {
+          // Check if the CLI actually supports 'list'
+          const help = execSync(`"${cliPath}" --help`, { encoding: 'utf-8' });
+          if (!help.includes('list')) {
+            throw new Error('native CLI does not support list');
           }
+
+          const output = execSync(`"${cliPath}" list "${resolvedInput}"`, {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'inherit'],
+            timeout: 30000,
+          });
+
+          const fileList = JSON.parse(output.trim());
+
+          console.log(`Files in ${resolvedInput}:`);
+          for (const file of fileList) {
+            if (typeof file === 'string') {
+              console.log(`  ${file}`);
+            } else {
+              console.log(`  ${file.name} (${file.size} bytes)`);
+            }
+          }
+          return;
+        } catch (e) {
+          // Fallback to TypeScript implementation below
         }
-        return;
       }
     } catch (err: any) {
       // Fallback to TypeScript
