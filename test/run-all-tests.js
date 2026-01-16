@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execSync } from 'child_process';
+import { resolve } from 'path';
 
 const tests = [
   'test/test-simple-screenshot.js',
@@ -15,7 +16,8 @@ for (const test of tests) {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`Running: ${test}`);
     console.log('='.repeat(60));
-    execSync(`node ${test}`, { stdio: 'inherit' });
+    const testPath = resolve(process.cwd(), test);
+    execSync(`node ${testPath}`, { stdio: 'inherit' });
     passed++;
   } catch (err) {
     console.error(`\n✗ FAILED: ${test}`);

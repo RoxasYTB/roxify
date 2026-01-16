@@ -37,6 +37,9 @@ jobs:
           toolchain: stable
           default: true
 
+      - name: Build native (dev)
+        run: cargo build -p roxify_native --release --lib
+
       - name: Fast cargo check
         run: cargo check -p roxify_native --no-default-features
 

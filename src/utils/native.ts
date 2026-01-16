@@ -47,10 +47,16 @@ function getNativeModule() {
     }
 
     const prebuiltPath = join(moduleDir, '../../roxify_native.node');
+    const prebuiltLibPath = join(moduleDir, '../../libroxify_native.node');
     const bundlePath = join(moduleDir, '../roxify_native.node');
+    const bundleLibPath = join(moduleDir, '../libroxify_native.node');
     const bundlePathWithTarget = join(
       moduleDir,
       `../roxify_native-${target}.node`,
+    );
+    const bundleLibPathWithTarget = join(
+      moduleDir,
+      `../libroxify_native-${target}.node`,
     );
     // compute repo root by walking up from moduleDir (fallback to process.cwd())
     // @ts-ignore
@@ -68,14 +74,25 @@ function getNativeModule() {
 
     // Prefer a single .node file across packaging and builds
     const bundleNode = resolve(moduleDir, '../roxify_native.node');
+    const bundleLibNode = resolve(moduleDir, '../libroxify_native.node');
     const bundleNodeWithTarget = resolve(
       moduleDir,
       `../roxify_native-${target}.node`,
     );
+    const bundleLibNodeWithTarget = resolve(
+      moduleDir,
+      `../libroxify_native-${target}.node`,
+    );
     const repoNode = resolve(root, 'roxify_native.node');
+    const repoLibNode = resolve(root, 'libroxify_native.node');
     const repoNodeWithTarget = resolve(root, `roxify_native-${target}.node`);
+    const repoLibNodeWithTarget = resolve(
+      root,
+      `libroxify_native-${target}.node`,
+    );
     const targetNode = resolve(root, 'target/release/roxify_native.node');
     const targetSo = resolve(root, 'target/release/roxify_native.so');
+    const targetLibSo = resolve(root, 'target/release/libroxify_native.so');
     const nodeModulesNode = resolve(
       root,
       'node_modules/roxify/roxify_native.node',
@@ -85,21 +102,33 @@ function getNativeModule() {
       `node_modules/roxify/roxify_native-${target}.node`,
     );
     const prebuiltNode = resolve(moduleDir, '../../roxify_native.node');
+    const prebuiltLibNode = resolve(moduleDir, '../../libroxify_native.node');
     const prebuiltNodeWithTarget = resolve(
       moduleDir,
       `../../roxify_native-${target}.node`,
     );
+    const prebuiltLibNodeWithTarget = resolve(
+      moduleDir,
+      `../../libroxify_native-${target}.node`,
+    );
 
     const candidates = [
+      bundleLibNodeWithTarget,
       bundleNodeWithTarget,
+      bundleLibNode,
       bundleNode,
+      repoLibNodeWithTarget,
       repoNodeWithTarget,
+      repoLibNode,
       repoNode,
       targetNode,
+      targetLibSo,
       targetSo,
       nodeModulesNodeWithTarget,
       nodeModulesNode,
+      prebuiltLibNodeWithTarget,
       prebuiltNodeWithTarget,
+      prebuiltLibNode,
       prebuiltNode,
     ];
 
