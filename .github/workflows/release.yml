@@ -13,6 +13,10 @@ jobs:
   build-and-upload:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    env:
+      USE_SYSTEM_ZSTD: '1'
+      FAST_RELEASE: '1'
+      MAX_JOBS: '2'
     strategy:
       fail-fast: false
       matrix:
@@ -47,12 +51,28 @@ jobs:
 
       - run: npm ci
 
-      - name: Build native (optimized, fast)
-        run: cargo build -p roxify_native --release --lib --no-default-features --target ${{ matrix.target }}
+      - name: Install libzstd (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -e
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            brew install zstd pkg-config || true
+          else
+            sudo apt-get update && sudo apt-get install -y libzstd-dev pkg-config || true
+          fi
+
+      - name: Install zstd on Windows (choco)
+        if: runner.os == 'Windows'
+        run: choco install zstd -y || true
+
+      - name: Build native (fast profile)
+        run: cargo build -p roxify_native --profile fastdev --lib --no-default-features --target ${{ matrix.target }} $([[ -n "${{ env.MAX_JOBS }}" ]] && echo "-j ${{ env.MAX_JOBS }}" || true)
 
       - name: Strip binary (Unix)
         if: runner.os != 'Windows'
-        run: strip target/${{ matrix.target }}/release/libroxify_native.* || true
+        run: |
+          if [ "${FAST_RELEASE:-0}" = "1" ]; then pd="fastdev"; else pd="release"; fi
+          strip target/${{ matrix.target }}/${pd}/libroxify_native.* || true
 
       - run: npm run build
 
@@ -60,12 +80,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
+          if [ "${FAST_RELEASE:-0}" = "1" ]; then pd="fastdev"; else pd="release"; fi
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/${{ matrix.target }}/release/roxify_native.dll release/roxify_native-${{ matrix.target }}.node
+            cp target/${{ matrix.target }}/${pd}/roxify_native.dll release/roxify_native-${{ matrix.target }}.node || true
           elif [ "${{ runner.os }}" = "macOS" ]; then
-            cp target/${{ matrix.target }}/release/libroxify_native.dylib release/roxify_native-${{ matrix.target }}.node
+            cp target/${{ matrix.target }}/${pd}/libroxify_native.dylib release/roxify_native-${{ matrix.target }}.node || true
           else
-            cp target/${{ matrix.target }}/release/libroxify_native.so release/roxify_native-${{ matrix.target }}.node
+            cp target/${{ matrix.target }}/${pd}/libroxify_native.so release/roxify_native-${{ matrix.target }}.node || true
           fi
           ls -lh release/
 

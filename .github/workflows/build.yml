@@ -31,6 +31,10 @@ jobs:
             target: x86_64-pc-windows-msvc
             ext: dll
 
+    env:
+      USE_SYSTEM_ZSTD: '1'
+      FAST_RELEASE: '1'
+      MAX_JOBS: '2'
     steps:
       - uses: actions/checkout@v4
 
@@ -49,21 +53,38 @@ jobs:
 
       - run: npm ci
 
-      - name: Build (stripped, fast)
-        run: cargo build --release --lib --no-default-features --target ${{ matrix.target }}
+      - name: Install libzstd (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -e
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            brew install zstd pkg-config || true
+          else
+            sudo apt-get update && sudo apt-get install -y libzstd-dev pkg-config || true
+          fi
+
+      - name: Install zstd on Windows (choco)
+        if: runner.os == 'Windows'
+        run: choco install zstd -y || true
+
+      - name: Build (fast profile)
+        run: cargo build --profile fastdev --lib --no-default-features --target ${{ matrix.target }} $([[ -n "${{ env.MAX_JOBS }}" ]] && echo "-j ${{ env.MAX_JOBS }}" || true)
 
       - name: Strip binary
         if: runner.os != 'Windows'
-        run: strip target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }} || true
+        run: |
+          if [ "${FAST_RELEASE:-0}" = "1" ]; then pd="fastdev"; else pd="release"; fi
+          strip target/${{ matrix.target }}/${pd}/libroxify_native.${{ matrix.ext }} || true
 
       - name: Prepare artifacts
         shell: bash
         run: |
           mkdir -p artifacts/${{ matrix.target }}
+          if [ "${FAST_RELEASE:-0}" = "1" ]; then pd="fastdev"; else pd="release"; fi
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node
+            cp target/${{ matrix.target }}/${pd}/roxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node || true
           else
-            cp target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node
+            cp target/${{ matrix.target }}/${pd}/libroxify_native.${{ matrix.ext }} artifacts/${{ matrix.target }}/libroxify_native.node || true
           fi
           ls -lh artifacts/${{ matrix.target }}/
 

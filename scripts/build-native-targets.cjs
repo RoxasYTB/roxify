@@ -70,7 +70,8 @@ for (const t of targets) {
     }`;
 
     // Choose profile: FAST_RELEASE uses the fastdev profile for minimal CPU and faster compile
-    const profile = process.env.FAST_RELEASE === '1' ? '--profile fastdev' : '--release';
+    const profile =
+      process.env.FAST_RELEASE === '1' ? '--profile fastdev' : '--release';
 
     // Allow limiting job count to reduce machine load: set MAX_JOBS env var (e.g. MAX_JOBS=1)
     const jobs = process.env.MAX_JOBS ? ` -j ${process.env.MAX_JOBS}` : '';
