@@ -14,6 +14,10 @@ const platformMap = {
   win32: 'x86_64-pc-windows-gnu',
 };
 
+const platformAltMap = {
+  win32: 'x86_64-pc-windows-msvc',
+};
+
 const extMap = {
   linux: 'so',
   darwin: 'dylib',
@@ -28,6 +32,7 @@ const libNameMap = {
 
 const currentPlatform = platform();
 const target = platformMap[currentPlatform];
+const targetAlt = platformAltMap[currentPlatform];
 const ext = extMap[currentPlatform];
 const libName = libNameMap[currentPlatform];
 
@@ -47,6 +52,9 @@ for (const profile of profiles) {
     const candidates = [
       join(rootDir, 'target', profile, `${base}.${ext}`),
       join(rootDir, 'target', target, profile, `${base}.${ext}`),
+      ...(targetAlt
+        ? [join(rootDir, 'target', targetAlt, profile, `${base}.${ext}`)]
+        : []),
     ];
     for (const candidate of candidates) {
       if (existsSync(candidate)) {

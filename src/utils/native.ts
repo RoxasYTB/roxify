@@ -109,25 +109,55 @@ function getNativeModule() {
       `../../libroxify_native-${target}.node`,
     );
 
-    const candidates = [
-      bundleLibNodeWithTarget,
-      bundleNodeWithTarget,
+    // Support multiple possible OS triples (e.g. windows-gnu and windows-msvc)
+    const targets = targetAlt ? [target, targetAlt] : [target];
+
+    const candidates: string[] = [];
+
+    for (const t of targets) {
+      const bundleNodeWithT = resolve(moduleDir, `../roxify_native-${t}.node`);
+      const bundleLibNodeWithT = resolve(
+        moduleDir,
+        `../libroxify_native-${t}.node`,
+      );
+      const repoNodeWithT = resolve(root, `roxify_native-${t}.node`);
+      const repoLibNodeWithT = resolve(root, `libroxify_native-${t}.node`);
+      const nodeModulesNodeWithT = resolve(
+        root,
+        `node_modules/roxify/roxify_native-${t}.node`,
+      );
+      const prebuiltNodeWithT = resolve(
+        moduleDir,
+        `../../roxify_native-${t}.node`,
+      );
+      const prebuiltLibNodeWithT = resolve(
+        moduleDir,
+        `../../libroxify_native-${t}.node`,
+      );
+
+      candidates.push(
+        bundleLibNodeWithT,
+        bundleNodeWithT,
+        repoLibNodeWithT,
+        repoNodeWithT,
+        nodeModulesNodeWithT,
+        prebuiltLibNodeWithT,
+        prebuiltNodeWithT,
+      );
+    }
+
+    candidates.push(
       bundleLibNode,
       bundleNode,
-      repoLibNodeWithTarget,
-      repoNodeWithTarget,
       repoLibNode,
       repoNode,
       targetNode,
       targetLibSo,
       targetSo,
-      nodeModulesNodeWithTarget,
       nodeModulesNode,
-      prebuiltLibNodeWithTarget,
-      prebuiltNodeWithTarget,
       prebuiltLibNode,
       prebuiltNode,
-    ];
+    );
 
     for (const c of candidates) {
       try {
