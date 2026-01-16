@@ -102,6 +102,12 @@ for (const t of targets) {
 }
 
 if (failed) {
+  if (process.env.IGNORE_TARGET_FAILURES === '1') {
+    console.warn('\nOne or more targets failed, but IGNORE_TARGET_FAILURES=1 so continuing.');
+    console.log('\nArtifacts prepared in target/ (some targets missing).');
+    process.exit(0);
+  }
+
   console.error('\nOne or more targets failed.');
   process.exit(2);
 }
