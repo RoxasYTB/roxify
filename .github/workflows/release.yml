@@ -25,10 +25,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
@@ -51,20 +47,15 @@ jobs:
 
       - run: npm ci
 
-      - name: Install libzstd (Linux / macOS)
-        if: runner.os != 'Windows'
+      - name: Install libzstd (Linux)
+        if: runner.os == 'Linux'
         run: |
           set -e
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            brew install zstd pkg-config || true
-          else
-            sudo apt-get update && sudo apt-get install -y libzstd-dev pkg-config || true
-          fi
+          sudo apt-get update && sudo apt-get install -y libzstd-dev pkg-config || true
 
-      - name: Set macOS linker flags for Node native modules
-        if: runner.os == 'macOS'
-        run: |
-          echo "RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
+      - name: Install zstd on Windows (choco)
+        if: runner.os == 'Windows'
+        run: choco install zstd -y || true
 
       - name: Install zstd on Windows (choco)
         if: runner.os == 'Windows'
