@@ -1,7 +1,8 @@
 import { existsSync } from 'fs';
 import { createRequire } from 'module';
 import { arch, platform } from 'os';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
 function getNativeModule() {
   let moduleDir: string;
@@ -11,11 +12,12 @@ function getNativeModule() {
     moduleDir = __dirname;
     nativeRequire = require;
   } else {
-    moduleDir = process.cwd();
+    // ESM: derive module directory from this file's URL and create a require based on it
+    moduleDir = dirname(fileURLToPath(import.meta.url));
     try {
       nativeRequire = require;
     } catch {
-      nativeRequire = createRequire(process.cwd() + '/package.json');
+      nativeRequire = createRequire(import.meta.url);
     }
   }
 

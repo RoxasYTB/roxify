@@ -25,7 +25,7 @@ import {
   isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
-const VERSION = '1.6.1';
+const VERSION = '1.6.2';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
