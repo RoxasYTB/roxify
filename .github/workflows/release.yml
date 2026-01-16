@@ -47,8 +47,8 @@ jobs:
 
       - run: npm ci
 
-      - name: Build native (optimized)
-        run: cargo build -p roxify_native --release --lib --target ${{ matrix.target }}
+      - name: Build native (optimized, fast)
+        run: cargo build -p roxify_native --release --lib --no-default-features --target ${{ matrix.target }}
 
       - name: Strip binary (Unix)
         if: runner.os != 'Windows'

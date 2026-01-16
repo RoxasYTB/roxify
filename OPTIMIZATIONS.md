@@ -58,8 +58,12 @@ strip = true
 ## Commandes locales
 
 ```bash
-# Build optimisé
-cargo build --release --lib
+# Build optimisé (fast - no optional features)
+cargo build --release --lib --no-default-features
+
+# Build all three targets (script):
+# BUILD_FEATURES=full npm run build:native:targets
+npm run build:native:targets
 
 # Build ultra-léger
 cargo build --profile release-size --lib
@@ -68,6 +72,10 @@ cargo build --profile release-size --lib
 du -sh target/release/libroxify_native.*
 strip target/release/libroxify_native.so  # Manuel si nécessaire
 ```
+
+**Notes:**
+- By default CI and release builds now use `--no-default-features` (faster, smaller build graph).
+- Enable features when you need them: `cargo build --release --features gpu` or set `BUILD_FEATURES` env for the `build:native:targets` script.
 
 ## Impact sur npm publish
 

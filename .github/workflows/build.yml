@@ -49,8 +49,8 @@ jobs:
 
       - run: npm ci
 
-      - name: Build (stripped)
-        run: cargo build --release --lib --target ${{ matrix.target }}
+      - name: Build (stripped, fast)
+        run: cargo build --release --lib --no-default-features --target ${{ matrix.target }}
 
       - name: Strip binary
         if: runner.os != 'Windows'

@@ -27,8 +27,8 @@ anyhow = "1.0"
 png = "0.18.0"
 flate2 = "1.1.5"
 miniz_oxide = "0.8.9"
-image = "0.25"
-indicatif = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# indicatif removed from default deps to reduce heavy build graph
 walkdir = "2.5.0"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
@@ -38,7 +38,8 @@ sha2 = "0.10"
 wgpu = { version = "0.19", optional = true }
 memmap2 = "0.9"
 bytemuck = { version = "1.14", features = ["derive"] }
-tokio = { version = "1", features = ["sync", "rt"] }
+# tokio is optional now; enable via the 'async' feature
+tokio = { version = "1", features = ["sync", "rt"], optional = true }
 parking_lot = "0.12"
 pollster = { version = "0.3", optional = true }
 
@@ -48,10 +49,13 @@ windows = { version = "0.51", features = ["Win32_Graphics_Direct3D12"] }
 [features]
 # default is intentionally empty so the crate compiles fast for local checks.
 # Enable 'gpu' to pull in the WGPU and pollster dependencies (heavy).
+# Enable 'async' to include tokio runtime (optional).
 # Example: `cargo build -p roxify_native --features gpu`
 default = []
 
 gpu = ["wgpu", "pollster"]
+async = ["tokio"]
+full = ["gpu", "async"]
 
 [profile.release]
 opt-level = 3

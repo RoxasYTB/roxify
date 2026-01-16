@@ -44,7 +44,9 @@ let failed = false;
 for (const t of targets) {
   console.log(`\n=== Building ${t.name} (${t.triple}) ===`);
   try {
-    run(`cargo build --release --lib --target ${t.triple}`);
+    // fast build (no default features) to reduce compile graph. Use BUILD_FEATURES env to enable features when needed
+    const features = process.env.BUILD_FEATURES ? ` --features ${process.env.BUILD_FEATURES}` : '';
+    run(`cargo build --release --lib --no-default-features${features} --target ${t.triple}`);
   } catch (e) {
     console.error(`Failed to build target ${t.triple}:`, e.message || e);
     failed = true;
