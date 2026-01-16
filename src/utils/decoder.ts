@@ -886,7 +886,6 @@ export async function decodePngToBinary(
                 ')',
             );
 
-          // Fallback: try reconstituting the image and re-extracting the pixels
           try {
             if (process.env.ROX_DEBUG)
               console.log(
@@ -901,7 +900,6 @@ export async function decodePngToBinary(
             let logicalWidth2 = raw2.width;
             let logicalHeight2 = raw2.height;
 
-            // find startIdx2 (linear)
             let startIdx2 = -1;
             const totalPixels2 = (logicalData2.length / 3) | 0;
             for (let i2 = 0; i2 <= totalPixels2 - MARKER_START.length; i2++) {
@@ -923,7 +921,6 @@ export async function decodePngToBinary(
             }
 
             if (startIdx2 === -1) {
-              // try 2D scan
               let found2D2 = false;
               for (let y = 0; y < logicalHeight2 && !found2D2; y++) {
                 for (
@@ -944,7 +941,6 @@ export async function decodePngToBinary(
                     }
                   }
                   if (match) {
-                    // compute rectangle
                     let endX = x + MARKER_START.length - 1;
                     let endY = y;
                     for (let scanY = y; scanY < logicalHeight2; scanY++) {
@@ -1014,7 +1010,6 @@ export async function decodePngToBinary(
                 );
             }
 
-            // compute endStartPixel2
             const curTotalPixels2 = (logicalData2.length / 3) | 0;
             const lastLineStart2 = (logicalHeight2 - 1) * logicalWidth2;
             const endMarkerStartCol2 = logicalWidth2 - MARKER_END.length;
@@ -1068,7 +1063,6 @@ export async function decodePngToBinary(
               pixelBytes2[dstOffset + 2] = logicalData2[srcOffset + 2];
             }
 
-            // try decompressing fallback payload
             const foundPX = pixelBytes2.indexOf(PIXEL_MAGIC);
             if (process.env.ROX_DEBUG)
               console.log('DEBUG: PIXEL_MAGIC index in fallback:', foundPX);
@@ -1123,7 +1117,6 @@ export async function decodePngToBinary(
               'Screenshot mode zstd decompression failed: ' + errMsg,
             );
           } catch (e2) {
-            // If fallback fails, rethrow original error
             throw new DataFormatError(
               `Screenshot mode zstd decompression failed: ` + errMsg,
             );

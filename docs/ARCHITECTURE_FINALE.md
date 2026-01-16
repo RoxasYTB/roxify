@@ -50,20 +50,18 @@ pollster = "0.3"           # Async runtime blocker
 
 **Responsabilité**: Abstraction GPU cross-platform avec détection runtime
 
-```rust
+````rust
 pub struct GpuContext {
     inner: Arc<RwLock<Option<GpuDevice>>>,
 }
 
 impl GpuContext {
-    pub async fn new() -> Self // Initialisation async non-bloquante
-    pub fn is_available() -> bool
+    pub async fn new() -> Self     pub fn is_available() -> bool
     pub fn create_buffer_init(...) -> Buffer
     pub async fn create_compute_pipeline(...) -> ComputePipeline
 }
 
-pub fn gpu_available() -> bool // Détection sincrone (utilisée à l'init)
-```
+pub fn gpu_available() -> bool ```
 
 **Spécificités**:
 
@@ -80,18 +78,14 @@ Algortihme classique de compression, parallélisé:
 
 ```rust
 pub fn bwt_encode(data: &[u8]) -> Result<BwtResult> {
-    // Tri de toutes les rotations via Rayon (parallèle)
-    // Retour: (data transformée, primary_index)
-}
+        }
 
 pub fn bwt_decode(data: &[u8], primary_index: u32) -> Result<Vec<u8>> {
-    // Reconstruction O(n) via vecteur next[]
-}
+    }
 
 pub fn bwt_encode_streaming(block_size: usize, data: &[u8]) -> Result<Vec<...>> {
-    // Pipeline: 8 Mo blocks indépendants
-}
-```
+    }
+````
 
 **Avantages**:
 
@@ -111,8 +105,7 @@ pub struct ContextMixer {
 }
 
 pub fn analyze_entropy(data: &[u8]) -> f32 {
-    // Shannon entropy: -Σ p_i * log2(p_i)
-}
+    }
 ```
 
 **Capacités**:
@@ -139,8 +132,7 @@ impl RansEncoder {
 }
 
 pub fn build_symbols_from_frequencies(freqs: &[u32]) -> Vec<Symbol> {
-    // Construction automatique de la table de symboles
-}
+    }
 ```
 
 **Caractéristiques**:
@@ -209,8 +201,7 @@ Compressed Output
 pub struct HybridCompressor {
     pool: Arc<BufferPool>,
     enable_gpu: bool,
-    block_size: usize,  // 8 Mo
-}
+    block_size: usize,  }
 
 impl HybridCompressor {
     pub fn compress(&self, data: &[u8]) -> Result<(Vec<u8>, CompressionStats)>
@@ -234,25 +225,20 @@ pub struct CompressionStats {
 ### Exports Node.js
 
 ```typescript
-// GPU & Diagnostic
 check_gpu_status(): GpuStatus
 entropy_estimate(buffer: Buffer): number
 
-// Compression Hybride
 hybrid_compress(buffer: Buffer): Buffer
 hybrid_decompress(buffer: Buffer): Buffer
 get_compression_stats(buffer: Buffer): CompressionReport
 
-// Transforms Utilitaires
 bwt_transform(buffer: Buffer): Buffer
 native_delta_encode(buffer: Buffer): Buffer
 native_delta_decode(buffer: Buffer): Buffer
 
-// Legacy (Zstd)
 native_zstd_compress(buffer: Buffer, level: i32): Buffer
 native_zstd_decompress(buffer: Buffer): Buffer
 
-// Scan & Hash
 scan_pixels(buffer, channels, markers): ScanResult
 native_crc32(buffer): number
 native_adler32(buffer): number
@@ -263,8 +249,7 @@ native_adler32(buffer): number
 ```rust
 #[napi(object)]
 pub struct CompressionReport {
-    pub original_size: f64,      // u64 → f64 (limite NAPI)
-    pub compressed_size: f64,
+    pub original_size: f64,          pub compressed_size: f64,
     pub ratio: f64,
     pub entropy_bits: f64,
     pub blocks_count: u32,
@@ -308,15 +293,12 @@ import { HybridCompressor } from './hybrid-compression';
 const compressor = new HybridCompressor();
 const data = fs.readFileSync('large-file.bin');
 
-// Vérifier GPU
 if (compressor.isGpuAvailable()) {
   console.log('Utilisation GPU');
 }
 
-// Compresser
 const compressed = await compressor.compress(data);
 
-// Analyser
 const stats = compressor.getStats(data);
 console.log(`Compression: ${(stats.ratio * 100).toFixed(2)}%`);
 ```
@@ -324,14 +306,12 @@ console.log(`Compression: ${(stats.ratio * 100).toFixed(2)}%`);
 ### Traitement Streaming
 
 ```typescript
-// Découper en chunks de 8MB (bloc du pipeline)
 const chunkSize = 8 * 1024 * 1024;
 const chunks = [];
 for (let i = 0; i < data.length; i += chunkSize) {
   chunks.push(data.slice(i, i + chunkSize));
 }
 
-// Compresser parallèlement (Rayon + Tokio)
 const compressed = await Promise.all(
   chunks.map((chunk) => compressor.compress(chunk)),
 );
@@ -373,16 +353,13 @@ fn test_entropy() {
 const { hybrid_compress, entropy_estimate } = require('./index');
 
 const buffer = Buffer.alloc(1024 * 1024);
-crypto.randomFillSync(buffer); // Random data → entropy ≈ 8
-
+crypto.randomFillSync(buffer);
 const entropy = entropy_estimate(buffer);
-console.log(`Entropy (random): ${entropy.toFixed(2)}`); // ≈ 7.99
-
+console.log(`Entropy (random): ${entropy.toFixed(2)}`);
 const compressed = hybrid_compress(buffer);
 console.log(
   `Ratio random: ${((compressed.length / buffer.length) * 100).toFixed(0)}%`,
 );
-// Random ne compresse pas bien → ~99%
 ```
 
 ---

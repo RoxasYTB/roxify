@@ -44,23 +44,18 @@ let failed = false;
 for (const t of targets) {
   console.log(`\n=== Building ${t.name} (${t.triple}) ===`);
   try {
-    // fast build options
     const features = process.env.BUILD_FEATURES
       ? ` --features ${process.env.BUILD_FEATURES}`
       : '';
 
-    // If USE_SYSTEM_ZSTD=1, prefer using system libzstd via pkg-config (saves time and avoids compiling C)
     const useSystemZstd =
       process.env.USE_SYSTEM_ZSTD === '1' ? 'ZSTD_SYS_USE_PKG_CONFIG=1 ' : '';
 
-    // If FAST_RELEASE=1, set RUSTFLAGS to a faster build configuration (more codegen units, lower opt-level, disable LTO)
     let rustflags = process.env.RUSTFLAGS || '';
     if (process.env.FAST_RELEASE === '1') {
-      // parallelize codegen, reduce optimizations for faster compile
       rustflags = `${rustflags} -C codegen-units=4 -C opt-level=2`.trim();
     }
 
-    // Support optional sccache wrapper if RUSTC_WRAPPER env is set (e.g., sccache)
     const rustcWrapper = process.env.RUSTC_WRAPPER
       ? `RUSTC_WRAPPER=${process.env.RUSTC_WRAPPER} `
       : '';
@@ -69,14 +64,11 @@ for (const t of targets) {
       rustflags ? `RUSTFLAGS='${rustflags}' ` : ''
     }`;
 
-    // Choose profile: FAST_RELEASE uses the fastdev profile for minimal CPU and faster compile
     const profile =
       process.env.FAST_RELEASE === '1' ? '--profile fastdev' : '--release';
 
-    // Allow limiting job count to reduce machine load: set MAX_JOBS env var (e.g. MAX_JOBS=1)
     const jobs = process.env.MAX_JOBS ? ` -j ${process.env.MAX_JOBS}` : '';
 
-    // Optionally lower priority for low-CPU builds
     const priorityPrefix = process.env.LOW_CPU === '1' ? 'nice -n 10 ' : '';
 
     const cmd = `${priorityPrefix}${envPrefix}cargo build ${profile} --lib --no-default-features${features} --target ${t.triple}${jobs}`;

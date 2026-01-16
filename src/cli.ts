@@ -38,14 +38,10 @@ function getDirectorySize(dirPath: string): number {
       } else if (entry.isFile()) {
         try {
           totalSize += statSync(fullPath).size;
-        } catch (e) {
-          // ignore files that can't be read
-        }
+        } catch (e) {}
       }
     }
-  } catch (e) {
-    // ignore directories that can't be read
-  }
+  } catch (e) {}
   return totalSize;
 }
 
@@ -227,7 +223,6 @@ async function encodeCommand(args: string[]) {
   try {
     safeCwd = process.cwd();
   } catch (e) {
-    // ENOENT: fallback sur racine
     safeCwd = '/';
   }
   const resolvedInputs = inputPaths.map((p: string) => resolve(safeCwd, p));
@@ -247,7 +242,6 @@ async function encodeCommand(args: string[]) {
     resolvedOutput = join('/', parsed.output || outputPath || outputName);
   }
 
-  // Check for empty directories *before* attempting native Rust encoder.
   try {
     const anyDir = inputPaths.some((p: string) => {
       try {
@@ -269,12 +263,8 @@ async function encodeCommand(args: string[]) {
         process.exit(1);
       }
     }
-  } catch (e) {
-    // ignore errors from the quick pre-check and proceed to try Rust encoding
-  }
+  } catch (e) {}
 
-  // Skip native Rust encoder for directories because current Rust CLI does not embed the file list
-  // (TypeScript encoder handles directories and file lists reliably).
   let anyInputDir = false;
   try {
     anyInputDir = resolvedInputs.some((p: string) => statSync(p).isDirectory());
@@ -801,7 +791,6 @@ async function listCommand(args: string[]) {
       if (cliPath) {
         const { execSync } = await import('child_process');
         try {
-          // Check if the CLI actually supports 'list'
           const help = execSync(`"${cliPath}" --help`, { encoding: 'utf-8' });
           if (!help.includes('list')) {
             throw new Error('native CLI does not support list');
@@ -824,13 +813,9 @@ async function listCommand(args: string[]) {
             }
           }
           return;
-        } catch (e) {
-          // Fallback to TypeScript implementation below
-        }
+        } catch (e) {}
       }
-    } catch (err: any) {
-      // Fallback to TypeScript
-    }
+    } catch (err: any) {}
   }
 
   try {

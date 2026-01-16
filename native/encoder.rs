@@ -430,18 +430,13 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let data = b"hello world".to_vec();
-        // build PNG with AES encryption
-        let png = encode_to_png_with_encryption_name_and_filelist(&data, 3, Some("password"), Some("aes"), None, None)
+                let png = encode_to_png_with_encryption_name_and_filelist(&data, 3, Some("password"), Some("aes"), None, None)
             .expect("encode should succeed");
-        // extract payload (encrypted)
-        let payload = crate::png_utils::extract_payload_from_png(&png).expect("extract");
-        // decrypt payload
-        let decrypted = crate::crypto::try_decrypt(&payload, Some("password")).expect("decrypt");
-        // decompress
-        let mut decompressed = crate::core::zstd_decompress_bytes(&decrypted).expect("decompress");
+                let payload = crate::png_utils::extract_payload_from_png(&png).expect("extract");
+                let decrypted = crate::crypto::try_decrypt(&payload, Some("password")).expect("decrypt");
+                let mut decompressed = crate::core::zstd_decompress_bytes(&decrypted).expect("decompress");
         if decompressed.starts_with(b"ROX1") { decompressed = decompressed[4..].to_vec(); }
-        // should contain original data
-        assert_eq!(decompressed, data);
+                assert_eq!(decompressed, data);
     }
 }
 

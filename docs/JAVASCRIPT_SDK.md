@@ -37,7 +37,6 @@ Or use directly in browser (ESM):
 import { encodeBinaryToPng, decodePngToBinary } from 'roxify';
 import { readFileSync, writeFileSync } from 'fs';
 
-// Encode
 const data = readFileSync('input.zip');
 const png = await encodeBinaryToPng(data, {
   mode: 'screenshot',
@@ -45,7 +44,6 @@ const png = await encodeBinaryToPng(data, {
 });
 writeFileSync('output.png', png);
 
-// Decode
 const encoded = readFileSync('output.png');
 const result = await decodePngToBinary(encoded);
 writeFileSync(result.meta.name, result.buf);
@@ -55,7 +53,6 @@ console.log('Decoded:', result.meta.name);
 ### Browser
 
 ```javascript
-// Encode file from file input
 const file = document.getElementById('fileInput').files[0];
 const arrayBuffer = await file.arrayBuffer();
 const buffer = Buffer.from(arrayBuffer);
@@ -65,7 +62,6 @@ const png = await encodeBinaryToPng(buffer, {
   name: file.name,
 });
 
-// Download result
 const blob = new Blob([png], { type: 'image/png' });
 const url = URL.createObjectURL(blob);
 const a = document.createElement('a');
@@ -262,7 +258,6 @@ console.log('Ratio:', ((png.length / input.length) * 100).toFixed(1) + '%');
 ### 2. With AES-256-GCM Encryption
 
 ```javascript
-// Encode with encryption
 const encrypted = await encodeBinaryToPng(data, {
   mode: 'screenshot',
   passphrase: 'my-secure-password',
@@ -270,7 +265,6 @@ const encrypted = await encodeBinaryToPng(data, {
   name: 'secret.zip',
 });
 
-// Decode with passphrase
 const result = await decodePngToBinary(encrypted, {
   passphrase: 'my-secure-password',
 });
@@ -279,27 +273,21 @@ const result = await decodePngToBinary(encrypted, {
 ### 3. Fast Compression for Large Files
 
 ```javascript
-// For files > 10 MB, use quality 0
 const largePng = await encodeBinaryToPng(largeFile, {
   mode: 'screenshot',
-  brQuality: 0, // Fastest compression
+  brQuality: 0,
   name: 'large-video.mp4',
 });
-
-// Encoding time: ~500-1000ms for 10 MB
 ```
 
 ### 4. Best Compression for Small Files
 
 ```javascript
-// For files < 1 MB, use quality 11
 const smallPng = await encodeBinaryToPng(smallFile, {
   mode: 'compact',
-  brQuality: 11, // Best compression
+  brQuality: 11,
   name: 'config.json',
 });
-
-// Smallest possible output
 ```
 
 ### 5. No Compression (Maximum Speed)
@@ -310,8 +298,6 @@ const fastPng = await encodeBinaryToPng(data, {
   compression: 'none',
   name: 'raw-data.bin',
 });
-
-// Fastest encoding, but larger output
 ```
 
 ### 6. Batch Processing Multiple Files
@@ -340,7 +326,6 @@ for (const file of files) {
 import { createReadStream, createWriteStream } from 'fs';
 import { encodeBinaryToPng } from 'roxify';
 
-// Read file in chunks
 const chunks = [];
 const stream = createReadStream('large-file.bin');
 
@@ -402,15 +387,12 @@ if (original.equals(decoded.buf)) {
 ### 10. Auto-Detect Best Encryption
 
 ```javascript
-// Let the library choose best encryption (smallest result)
 const png = await encodeBinaryToPng(data, {
   mode: 'screenshot',
   passphrase: 'password',
-  encrypt: 'auto', // Tries none, xor, aes
+  encrypt: 'auto',
   name: 'data.bin',
 });
-
-// The library will pick the encryption method that produces the smallest PNG
 ```
 
 ## Performance Guide
@@ -450,7 +432,7 @@ Quality 11: ~25000ms → 720 KB
 const png = await encodeBinaryToPng(data, {
   mode: 'compact',
   brQuality: 0,
-  compression: 'none', // Disable if speed > size
+  compression: 'none',
 });
 ```
 
@@ -469,7 +451,7 @@ const png = await encodeBinaryToPng(data, {
 ```javascript
 const png = await encodeBinaryToPng(largeData, {
   mode: 'screenshot',
-  brQuality: 0, // Critical for performance
+  brQuality: 0,
 });
 ```
 
@@ -522,7 +504,6 @@ async function safeEncode(data, options) {
   } catch (err) {
     console.error('Encoding failed:', err.message);
 
-    // Fallback: try without compression
     console.log('Retrying without compression...');
     return await encodeBinaryToPng(data, {
       ...options,
@@ -567,7 +548,6 @@ const result: DecodeResult = await decodePngToBinary(png, {
   passphrase: 'secret',
 });
 
-// Type-safe metadata access
 if (result.meta?.name) {
   console.log('Filename:', result.meta.name);
 }
@@ -580,7 +560,6 @@ if (result.meta?.name) {
 ```javascript
 import { encodeBinaryToPng, decodePngToBinary } from 'roxify';
 
-// File input handler
 document.getElementById('fileInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   const arrayBuffer = await file.arrayBuffer();
@@ -591,7 +570,6 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
     name: file.name,
   });
 
-  // Download result
   const blob = new Blob([png], { type: 'image/png' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

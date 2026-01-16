@@ -58,8 +58,6 @@ function getNativeModule() {
       moduleDir,
       `../libroxify_native-${target}.node`,
     );
-    // compute repo root by walking up from moduleDir (fallback to process.cwd())
-    // @ts-ignore
     console.debug('[native] moduleDir', moduleDir);
     let root = moduleDir && moduleDir !== '.' ? moduleDir : process.cwd();
     while (
@@ -72,7 +70,6 @@ function getNativeModule() {
       root = parent;
     }
 
-    // Prefer a single .node file across packaging and builds
     const bundleNode = resolve(moduleDir, '../roxify_native.node');
     const bundleLibNode = resolve(moduleDir, '../libroxify_native.node');
     const bundleNodeWithTarget = resolve(
@@ -132,30 +129,21 @@ function getNativeModule() {
       prebuiltNode,
     ];
 
-    // use built-in fs.existsSync (static import to work in ESM and CJS)
     for (const c of candidates) {
       try {
         if (!existsSync(c)) continue;
-        // If it's a .so (native build) but Node expects .node extension, create a .node symlink
         if (c.endsWith('.so')) {
           const nodeAlias = c.replace(/\.so$/, '.node');
           try {
             if (!existsSync(nodeAlias)) {
-              // copy the .so to a .node so Node treats it as a native addon
-              // @ts-ignore
               require('fs').copyFileSync(c, nodeAlias);
             }
-            // debug
-            // @ts-ignore
             console.debug('[native] using node alias', nodeAlias);
             return nodeAlias;
           } catch (e) {
-            // fallback to original .so (might fail to load via require)
             return c;
           }
         }
-        // debug
-        // @ts-ignore
         console.debug('[native] using path', c);
         return c;
       } catch {}

@@ -15,7 +15,6 @@ const tag = process.env.TAG || `v${pkg.version}`;
 const title = process.env.TITLE || `${tag}`;
 const notes = process.env.NOTES || '';
 
-// Ensure tag exists and pushed
 try {
   run(`git rev-parse --verify ${tag}`);
   console.log(`Tag ${tag} exists locally`);
@@ -25,7 +24,6 @@ try {
   run(`git push origin ${tag}`);
 }
 
-// Ensure gh CLI is available
 try {
   run('gh --version');
 } catch (e) {
@@ -35,7 +33,6 @@ try {
   process.exit(1);
 }
 
-// Create release
 let releaseCmd = `gh release create ${tag} release/* --title "${title}"`;
 if (notes) releaseCmd += ` --notes "${notes}"`;
 run(releaseCmd);

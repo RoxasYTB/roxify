@@ -8,7 +8,6 @@ Exemples minimaux pour tester rapidement les API publiques de `roxify` (copier/c
 import { encodeBinaryToPng, decodePngToBinary } from 'roxify';
 import fs from 'fs';
 
-// Encodage d'un buffer en PNG (mode screenshot)
 async function encode() {
   const buf = Buffer.from('hello world', 'utf8');
   const png = await encodeBinaryToPng(buf, {
@@ -21,7 +20,6 @@ async function encode() {
   console.log('Saved out.png');
 }
 
-// Décodage depuis un PNG
 async function decode() {
   const png = fs.readFileSync('out.png');
   const res = await decodePngToBinary(png);
@@ -29,7 +27,6 @@ async function decode() {
   console.log('content:', res.buf.toString('utf8'));
 }
 
-// Test rapide
 (async () => {
   await encode();
   await decode();
@@ -71,7 +68,6 @@ import { cropAndReconstitute } from 'roxify';
 import fs from 'fs';
 
 const png = fs.readFileSync('composite.png');
-// Renvoie un PNG ré-assemblé contenant la grille logique extraite
 const reconPng = await cropAndReconstitute(png, /* debugDir? */ undefined);
 fs.writeFileSync('reconstructed.png', reconPng);
 ```

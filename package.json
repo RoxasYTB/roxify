@@ -48,7 +48,7 @@
     "release:flow:auto": "AUTO_PUBLISH=1 node scripts/release-flow.cjs",
     "publish": "node scripts/publish.cjs",
     "prepublishOnly": "npm run build && npm run build:native && npm run postbuild:native && npm run clean:targets",
-    "test": "npm run build && node ./test/run-all-tests.js",
+    "test": "npm run build && node ./test/run-all-tests.cjs",
     "test:integration": "node scripts/run-integration-tests.cjs",
     "cli": "node dist/cli.js"
   },

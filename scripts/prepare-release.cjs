@@ -11,14 +11,11 @@ function run(cmd) {
   execSync(cmd, { stdio: 'inherit' });
 }
 
-// Build JS (tsc)
 run('npm run build');
 
-// Build native targets (fast by default if FAST_RELEASE=1)
 const targetsScript = 'node scripts/build-native-targets.cjs';
 run(targetsScript);
 
-// Copy built artifacts into release/
 mkdirSync(releaseDir, { recursive: true });
 
 const targets = [

@@ -22,8 +22,7 @@ import type {
  *   outputFormat: 'png',
  * });
  *
- * // write to disk using fs.writeFileSync('out.png', png)
- * ```
+ *  * ```
  */
 export function encodeBinaryToPng(
   input: Buffer | Buffer[],

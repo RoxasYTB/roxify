@@ -88,8 +88,25 @@ jobs:
           fi
           ls -lh artifacts/${{ matrix.target }}/
 
+      - name: Run smoke tests (encode/decode/list + Node API)
+        shell: bash
+        env:
+          SKIP_JS_BUILD: '1'
+          SKIP_NATIVE_BUILD: '1'
+        run: |
+          echo "Running smoke tests on $RUNNER_OS / ${{ matrix.target }}"
+          npm run build
+          node scripts/copy-native.js
+          node scripts/run-integration-tests.cjs || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
           path: artifacts/**
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results-${{ matrix.target }}
+          path: output-tests/**
           retention-days: 7

@@ -9,16 +9,12 @@ function run(cmd) {
   execSync(cmd, { stdio: 'inherit' });
 }
 
-// Determine profile
 const profile = process.env.FAST_RELEASE === '1' ? 'fastdev' : 'release';
 
-// Build js
 run('npm run build');
 
-// Ensure native targets are built
 run('node scripts/build-native-targets.cjs');
 
-// Copy artifacts into root for packaging
 const targets = [
   { triple: 'x86_64-unknown-linux-gnu', ext: 'so', name: 'libroxify_native' },
   { triple: 'x86_64-apple-darwin', ext: 'dylib', name: 'libroxify_native' },
@@ -40,7 +36,6 @@ for (const t of targets) {
   copied.push(dest);
 }
 
-// Also ensure libroxify_native.node exists for common consumption (copy linux if present)
 const maybeLinux = join(
   root,
   'target',
@@ -53,10 +48,8 @@ if (existsSync(maybeLinux)) {
   copied.push(join(root, 'libroxify_native.node'));
 }
 
-// Pack
 run('npm pack');
 
-// Cleanup copied artifacts
 for (const f of copied) {
   try {
     unlinkSync(f);

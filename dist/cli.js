@@ -20,15 +20,11 @@ function getDirectorySize(dirPath) {
                 try {
                     totalSize += statSync(fullPath).size;
                 }
-                catch (e) {
-                    // ignore files that can't be read
-                }
+                catch (e) { }
             }
         }
     }
-    catch (e) {
-        // ignore directories that can't be read
-    }
+    catch (e) { }
     return totalSize;
 }
 async function readLargeFile(filePath) {
@@ -201,7 +197,6 @@ async function encodeCommand(args) {
         safeCwd = process.cwd();
     }
     catch (e) {
-        // ENOENT: fallback sur racine
         safeCwd = '/';
     }
     const resolvedInputs = inputPaths.map((p) => resolve(safeCwd, p));
@@ -219,7 +214,6 @@ async function encodeCommand(args) {
     catch (e) {
         resolvedOutput = join('/', parsed.output || outputPath || outputName);
     }
-    // Check for empty directories *before* attempting native Rust encoder.
     try {
         const anyDir = inputPaths.some((p) => {
             try {
@@ -238,10 +232,15 @@ async function encodeCommand(args) {
             }
         }
     }
-    catch (e) {
-        // ignore errors from the quick pre-check and proceed to try Rust encoding
+    catch (e) { }
+    let anyInputDir = false;
+    try {
+        anyInputDir = resolvedInputs.some((p) => statSync(p).isDirectory());
     }
-    if (isRustBinaryAvailable() && !parsed.forceTs) {
+    catch (e) {
+        anyInputDir = false;
+    }
+    if (isRustBinaryAvailable() && !parsed.forceTs && !anyInputDir) {
         try {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
             const startTime = Date.now();
@@ -682,26 +681,32 @@ async function listCommand(args) {
             const cliPath = findRustBinary();
             if (cliPath) {
                 const { execSync } = await import('child_process');
-                const output = execSync(`"${cliPath}" list "${resolvedInput}"`, {
-                    encoding: 'utf-8',
-                    stdio: ['pipe', 'pipe', 'inherit'],
-                });
-                const fileList = JSON.parse(output.trim());
-                console.log(`Files in ${resolvedInput}:`);
-                for (const file of fileList) {
-                    if (typeof file === 'string') {
-                        console.log(`  ${file}`);
+                try {
+                    const help = execSync(`"${cliPath}" --help`, { encoding: 'utf-8' });
+                    if (!help.includes('list')) {
+                        throw new Error('native CLI does not support list');
                     }
-                    else {
-                        console.log(`  ${file.name} (${file.size} bytes)`);
+                    const output = execSync(`"${cliPath}" list "${resolvedInput}"`, {
+                        encoding: 'utf-8',
+                        stdio: ['pipe', 'pipe', 'inherit'],
+                        timeout: 30000,
+                    });
+                    const fileList = JSON.parse(output.trim());
+                    console.log(`Files in ${resolvedInput}:`);
+                    for (const file of fileList) {
+                        if (typeof file === 'string') {
+                            console.log(`  ${file}`);
+                        }
+                        else {
+                            console.log(`  ${file.name} (${file.size} bytes)`);
+                        }
                     }
+                    return;
                 }
-                return;
+                catch (e) { }
             }
         }
-        catch (err) {
-            // Fallback to TypeScript
-        }
+        catch (err) { }
     }
     try {
         const inputBuffer = readFileSync(resolvedInput);

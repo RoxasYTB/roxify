@@ -194,10 +194,8 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Decompress { input, output, files, passphrase } => {
             let buf = read_all(&input)?;
-            // If files parameter is specified, extract only those files from a PNG/pack
-            if let Some(files_str) = files {
-                // parse file list: JSON array or comma-separated
-                let file_list: Option<Vec<String>> = if files_str.trim_start().starts_with('[') {
+                        if let Some(files_str) = files {
+                                let file_list: Option<Vec<String>> = if files_str.trim_start().starts_with('[') {
                     match serde_json::from_str::<Vec<String>>(&files_str) {
                         Ok(v) => Some(v),
                         Err(e) => {
@@ -210,27 +208,23 @@ fn main() -> anyhow::Result<()> {
                     Some(list)
                 };
 
-                // detect PNG
-                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+                                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
 
-                // normalize payload bytes (strip encryption flags or decrypt when needed)
-                use std::io::Cursor;
+                                use std::io::Cursor;
                 let normalized: Vec<u8> = if is_png {
                     let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
                     if payload.is_empty() { return Err(anyhow::anyhow!("Empty payload")); }
                     if payload[0] == 0x00u8 {
                         payload[1..].to_vec()
                     } else {
-                        // encrypted payload -> try to decrypt using provided passphrase
-                        let pass = passphrase.as_ref().map(|s: &String| s.as_str());
+                                                let pass = passphrase.as_ref().map(|s: &String| s.as_str());
                         match crate::crypto::try_decrypt(&payload, pass) {
                             Ok(v) => v,
                             Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
                         }
                     }
                 } else {
-                    // not a PNG: buffer may be encrypted as well
-                    if buf[0] == 0x00u8 {
+                                        if buf[0] == 0x00u8 {
                         buf[1..].to_vec()
                     } else if buf.starts_with(b"ROX1") {
                         buf[4..].to_vec()
@@ -241,14 +235,11 @@ fn main() -> anyhow::Result<()> {
                             Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
                         }
                     } else {
-                        // assume zstd-compressed stream: we'll decode below
-                        buf.to_vec()
+                                                buf.to_vec()
                     }
                 };
 
-                // Build a streaming reader that yields RAW pack bytes (no leading ROX1 magic).
-                // If payload is zstd-compressed, wrap a zstd::stream::Decoder around the compressed bytes.
-                let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
+                                                let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
                     Box::new(Cursor::new(normalized[4..].to_vec()))
                 } else {
                     let dec = zstd::stream::Decoder::new(Cursor::new(normalized)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
@@ -259,13 +250,10 @@ fn main() -> anyhow::Result<()> {
                 std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
 
-                // Stream and unpack; reader already yields RAW pack bytes (decoder or cursor as appropriate)
-                let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
+                                let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
                 println!("Unpacked {} files", written.len());
             } else {
-                // old behaviour: decompress all to a single raw file
-                // If input is a PNG, extract payload first (handles payload-in-pixels case)
-                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+                                                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
                 let out_bytes = if is_png {
                     let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
                     if payload.is_empty() { return Err(anyhow::anyhow!("Empty payload")); }
@@ -287,16 +275,13 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     } else {
-                        // Try to decrypt payload using passphrase (if provided) and treat decrypted bytes as compressed/raw pack
-                        let pass = passphrase.as_ref().map(|s| s.as_str());
+                                                let pass = passphrase.as_ref().map(|s| s.as_str());
                         match crate::crypto::try_decrypt(&payload, pass) {
                             Ok(v) => {
                                 if v.starts_with(b"ROX1") {
-                                    // decrypted raw pack with magic; strip magic and return raw
-                                    v[4..].to_vec()
+                                                                        v[4..].to_vec()
                                 } else {
-                                    // decrypted compressed bytes
-                                    v
+                                                                        v
                                 }
                             }
                             Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),

@@ -17,9 +17,7 @@ function findRustBinary(): string | null {
 
   const baseDir = typeof moduleDir !== 'undefined' ? moduleDir : process.cwd();
 
-  // Check if running in pkg/snapshot environment
   if ((process as any).pkg) {
-    // In pkg, check in snapshot root paths
     const snapshotPaths = [
       join(baseDir, '..', '..', 'target', 'release'),
       join(baseDir, '..', 'target', 'release'),
@@ -35,7 +33,6 @@ function findRustBinary(): string | null {
       }
     }
 
-    // Additional: check possible installed location near the application executable (e.g. C:\Program Files\Pyxelze\tools\roxify)
     try {
       const execDir = require('path').dirname(process.execPath || '');
       if (execDir) {
@@ -55,12 +52,9 @@ function findRustBinary(): string | null {
           }
         }
       }
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   }
 
-  // Try to resolve 'rox' command location (where/which) and look for native binary next to it
   try {
     let paths: string[] = [];
     if (process.platform === 'win32') {
@@ -71,16 +65,12 @@ function findRustBinary(): string | null {
             .split(/\r?\n/)
             .map((s) => s.trim())
             .filter(Boolean);
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
     } else {
       try {
         const out = execSync('which rox', { encoding: 'utf-8' }).trim();
         if (out) paths = [out.trim()];
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
     }
 
     for (const p of paths) {
@@ -100,15 +90,10 @@ function findRustBinary(): string | null {
             }
           }
         }
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
     }
-  } catch (e) {
-    // ignore
-  }
+  } catch (e) {}
 
-  // Check immediate locations (for packaged CLI and dist folder)
   for (const name of binNames) {
     const local = join(baseDir, name);
     if (existsSync(local)) {
@@ -118,19 +103,16 @@ function findRustBinary(): string | null {
     if (existsSync(parentLocal)) {
       return parentLocal;
     }
-    // Check in parent's parent (dist/utils -> dist -> roxify_native.exe)
     const parentParentLocal = join(baseDir, '..', '..', name);
     if (existsSync(parentParentLocal)) {
       return parentParentLocal;
     }
-    // Check for node_modules structure (node_modules/roxify/dist/utils -> ../../../../roxify_native.exe)
     const nodeModulesPath = join(baseDir, '..', '..', '..', '..', name);
     if (existsSync(nodeModulesPath)) {
       return nodeModulesPath;
     }
   }
 
-  // Check target/release (for development)
   const targetRelease = join(baseDir, '..', '..', 'target', 'release');
   for (const name of binNames) {
     const targetPath = join(targetRelease, name);
@@ -178,23 +160,22 @@ export async function encodeWithRustCLI(
     writeFileSync(dest, buf);
     try {
       chmodSync(dest, 0o755);
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
     return dest;
   }
 
   return new Promise((resolve, reject) => {
     const args = ['encode', '--level', String(compressionLevel)];
 
-    // Probe whether the CLI supports the --name flag (older CLIs may not)
     let supportsName = false;
     if (name) {
       try {
-        const helpOut = execSync(`"${cliPath}" --help`, { encoding: 'utf8', timeout: 2000 });
+        const helpOut = execSync(`"${cliPath}" --help`, {
+          encoding: 'utf8',
+          timeout: 2000,
+        });
         if (helpOut && helpOut.includes('--name')) supportsName = true;
       } catch (e) {
-        // if help fails (non-executable .node), be conservative and don't pass --name
         supportsName = false;
       }
       if (supportsName) {
@@ -246,9 +227,7 @@ export async function encodeWithRustCLI(
         if (tempExe) {
           try {
             unlinkSync(tempExe);
-          } catch (e) {
-            // ignore cleanup errors
-          }
+          } catch (e) {}
         }
         if (code === 0) {
           resolve();

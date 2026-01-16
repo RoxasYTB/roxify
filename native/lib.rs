@@ -23,8 +23,7 @@ pub use core::*;
 pub use gpu::*;
 #[cfg(not(feature = "gpu"))]
 mod gpu {
-    // Minimal stub to avoid pulling WGPU and related crates when GPU feature is disabled.
-    pub fn gpu_available() -> bool {
+        pub fn gpu_available() -> bool {
         false
     }
 }

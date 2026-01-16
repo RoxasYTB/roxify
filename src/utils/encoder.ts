@@ -36,8 +36,7 @@ import { parallelZstdCompress } from './zstd.js';
  *   outputFormat: 'png',
  * });
  *
- * // write to disk using fs.writeFileSync('out.png', png)
- * ```
+ *  * ```
  */
 export async function encodeBinaryToPng(
   input: Buffer | Buffer[],

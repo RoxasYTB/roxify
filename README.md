@@ -150,7 +150,6 @@ npm install roxify
 import { encodeBinaryToPng, decodePngToBinary } from 'roxify';
 import { readFileSync, writeFileSync } from 'fs';
 
-// Encode
 const input = readFileSync('input.zip');
 const png = await encodeBinaryToPng(input, {
   mode: 'screenshot',
@@ -158,7 +157,6 @@ const png = await encodeBinaryToPng(input, {
 });
 writeFileSync('output.png', png);
 
-// Decode
 const encoded = readFileSync('output.png');
 const result = await decodePngToBinary(encoded);
 writeFileSync(result.meta?.name || 'output.bin', result.buf);
@@ -167,7 +165,6 @@ writeFileSync(result.meta?.name || 'output.bin', result.buf);
 ### With Encryption
 
 ```typescript
-// Encode with AES-256-GCM
 const png = await encodeBinaryToPng(input, {
   mode: 'screenshot',
   passphrase: 'my-secret-password',
@@ -175,7 +172,6 @@ const png = await encodeBinaryToPng(input, {
   name: 'secret.zip',
 });
 
-// Decode with passphrase
 const result = await decodePngToBinary(encoded, {
   passphrase: 'my-secret-password',
 });
@@ -184,17 +180,15 @@ const result = await decodePngToBinary(encoded, {
 ### Fast Compression
 
 ```typescript
-// Optimize for speed (recommended for large files)
 const png = await encodeBinaryToPng(largeBuffer, {
   mode: 'screenshot',
-  brQuality: 0, // Fastest
+  brQuality: 0,
   name: 'large-file.bin',
 });
 
-// Optimize for size (recommended for small files)
 const png = await encodeBinaryToPng(smallBuffer, {
   mode: 'compact',
-  brQuality: 11, // Best compression
+  brQuality: 11,
   name: 'config.json',
 });
 ```
@@ -250,28 +244,20 @@ Encodes binary data into a PNG image.
 
 ```typescript
 interface EncodeOptions {
-  // Compression algorithm ('br' = Brotli, 'none' = no compression)
   compression?: 'br' | 'none';
 
-  // Passphrase for encryption
   passphrase?: string;
 
-  // Original filename to embed
   name?: string;
 
-  // Encoding mode
   mode?: 'compact' | 'chunk' | 'pixel' | 'screenshot';
 
-  // Encryption method
   encrypt?: 'auto' | 'aes' | 'xor' | 'none';
 
-  // Output format
   output?: 'auto' | 'png' | 'rox';
 
-  // Include filename in metadata (default: true)
   includeName?: boolean;
 
-  // Brotli quality 0-11 (default: 1)
   brQuality?: number;
 }
 ```
@@ -291,7 +277,6 @@ Decodes a PNG image back to binary data.
 
 ```typescript
 interface DecodeOptions {
-  // Passphrase for decryption
   passphrase?: string;
 }
 ```
@@ -300,12 +285,9 @@ interface DecodeOptions {
 
 ```typescript
 interface DecodeResult {
-  // Decoded binary data
   buf: Buffer;
 
-  // Extracted metadata
   meta?: {
-    // Original filename
     name?: string;
   };
 }
@@ -323,7 +305,7 @@ npx rox encode large.bin output.png -q 0
 ```typescript
 const png = await encodeBinaryToPng(largeFile, {
   mode: 'screenshot',
-  brQuality: 0, // 10-20x faster than default
+  brQuality: 0,
 });
 ```
 
@@ -337,7 +319,7 @@ npx rox encode small.json output.png -q 11 -m compact
 ```typescript
 const png = await encodeBinaryToPng(smallFile, {
   mode: 'compact',
-  brQuality: 11, // Best compression ratio
+  brQuality: 11,
 });
 ```
 

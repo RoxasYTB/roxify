@@ -27,36 +27,34 @@ if (!version) {
   process.exit(1);
 }
 
-// If requested and differs, bump npm version and push tag
 if (argVersion && argVersion !== pkg.version) {
   console.log(`Bumping version ${pkg.version} -> ${argVersion}`);
   run(`npm version ${argVersion} -m "chore(release): %s"`);
   run('git push origin --follow-tags');
 }
 
-// Prefer NPM_TOKEN, but allow an existing npm login session (npm whoami)
 const npmWhoami = runSilent('npm whoami');
 if (!process.env.NPM_TOKEN && !npmWhoami) {
-  console.error('Not authenticated with npm (NPM_TOKEN missing and npm whoami empty). Aborting publish.');
+  console.error(
+    'Not authenticated with npm (NPM_TOKEN missing and npm whoami empty). Aborting publish.',
+  );
   process.exit(1);
 }
 
-// Run integration tests before publishing
 console.log('\n==> Running integration tests (test:integration)');
 run('npm run test:integration');
 
-// 1) Prepare release artifacts & create GitHub release (uploads release/*)
 console.log('\n==> Preparing and creating GitHub release (release:github)');
 run('npm run release:github');
 
-// 2) Prepare npm package
 console.log('\n==> Preparing npm package');
 run('npm run package:prepare');
 
-// 3) Configure npm auth and publish
 console.log('\n==> Publishing to npm registry');
 if (process.env.NPM_TOKEN) {
-  run(`npm config set //registry.npmjs.org/:_authToken="${process.env.NPM_TOKEN}"`);
+  run(
+    `npm config set //registry.npmjs.org/:_authToken="${process.env.NPM_TOKEN}"`,
+  );
 } else {
   console.log('Using existing npm login session');
 }
