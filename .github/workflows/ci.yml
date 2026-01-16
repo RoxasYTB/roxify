@@ -51,6 +51,9 @@ jobs:
       - name: Build JS
         run: npm run build --if-present
 
+      - name: List repo and test files
+        run: ls -la && ls -la test || true
+
       - name: Run JS tests
         run: npm test --silent
 
@@ -111,6 +114,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Set macOS RUSTFLAGS
+        if: matrix.os == 'macos-latest'
+        run: echo "RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
 
       - name: Build native (cargo)
         env:

@@ -63,6 +63,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set macOS RUSTFLAGS
+        if: runner.os == 'macos-latest'
+        run: echo "RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
+
       - name: Build native
         env:
           MACOSX_DEPLOYMENT_TARGET: 15.5
