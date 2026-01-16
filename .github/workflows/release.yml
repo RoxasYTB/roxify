@@ -66,6 +66,7 @@ jobs:
         run: choco install zstd -y || true
 
       - name: Build native (fast profile)
+        shell: bash
         run: cargo build -p roxify_native --profile fastdev --lib --no-default-features --target ${{ matrix.target }} $([[ -n "${{ env.MAX_JOBS }}" ]] && echo "-j ${{ env.MAX_JOBS }}" || true)
 
       - name: Strip binary (Unix)
