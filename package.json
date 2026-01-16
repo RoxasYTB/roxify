@@ -31,6 +31,7 @@
     "build:cli:windows": "cargo build --release --bin roxify_native --target x86_64-pc-windows-gnu && node scripts/copy-cli-binary.js",
     "build:all": "npm run build:native && npm run build && npm run build:cli",
     "build:cross": "node scripts/build-all-platforms.js && npm run build && npm run build:cli",
+    "build:native:targets": "node scripts/build-native-targets.cjs",
     "build:pkg": "npm run build && npx pkg . --target node18-win-x64 --output dist/rox.exe --compress Brotli --public",
     "postbuild:native": "node scripts/copy-native.js",
     "clean:targets": "node scripts/clean-artifacts.js",
