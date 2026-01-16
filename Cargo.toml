@@ -69,3 +69,16 @@ inherits = "release"
 opt-level = "z"
 lto = true
 strip = true
+
+[profile.fastdev]
+# Fast development profile for minimal user CPU and fast compilation.
+# Lower optimization and high codegen units to parallelize compilation work,
+# enable incremental to speed up subsequent incremental builds.
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+debug = false
+incremental = true
+panic = "abort"
+

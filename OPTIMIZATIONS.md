@@ -70,6 +70,10 @@ npm run build:native:targets
 
 # Quick release (faster, weaker optimizations):
 # FAST_RELEASE=1 npm run build:native:quick-release
+# Super fast (use system zstd, single job for lowest user CPU):
+# USE_SYSTEM_ZSTD=1 FAST_RELEASE=1 npm run build:native:super-fast
+# Low-CPU multi-target (nice + single job):
+# npm run build:native:low-cpu
 # Build ultra-léger
 cargo build --profile release-size --lib
 
