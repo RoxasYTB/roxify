@@ -15,3 +15,13 @@ npm install -g roxify@1.6.2
 Notes
 
 - This is a small patch release (bugfix). No CLI surface changes, only improved native loading in ESM scenarios.
+
+Local build note
+
+- On Linux hosts without cross-compilers (macOS/MSVC) the `npm run release:prepare` step may fail while building some targets. To prepare a release locally and keep available artifacts, run:
+
+```bash
+IGNORE_TARGET_FAILURES=1 npm run release:prepare
+```
+
+This will skip failing cross-target builds and copy available artifacts into `release/` for manual upload.
