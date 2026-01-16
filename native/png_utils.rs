@@ -99,9 +99,9 @@ pub fn get_png_metadata(png_data: &[u8]) -> Result<(u32, u32, u8, u8), String> {
     Ok((width, height, bit_depth, color_type))
 }
 
-//pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
-        let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
-        let img = image::load_from_memory(&reconst).map_err(|e| format!("image load error: {}", e))?;
+pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
+    let img = image::load_from_memory(&reconst).map_err(|e| format!("image load error: {}", e))?;
     let rgb = img.to_rgb8();
     let raw = rgb.into_raw();
     let magic = b"PXL1";
