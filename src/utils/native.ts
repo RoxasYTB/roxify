@@ -51,18 +51,32 @@ function getNativeModule() {
     console.debug('[native] moduleDir', moduleDir);
 
     const targets = targetAlt ? [target, targetAlt] : [target];
-    const candidates: string[] = [];
 
+    const candidates: string[] = [];
+    const pushIf = (...paths: string[]) => {
+      for (const p of paths) candidates.push(p);
+    };
+
+    // Try multiple locations relative to the compiled JS file (dist),
+    // package root and common 'dist' directories used by packaging tools.
     for (const t of targets) {
-      candidates.push(
+      pushIf(
         resolve(moduleDir, `../roxify_native-${t}.node`),
         resolve(moduleDir, `../libroxify_native-${t}.node`),
+        resolve(moduleDir, `../../roxify_native-${t}.node`),
+        resolve(moduleDir, `../../libroxify_native-${t}.node`),
+        resolve(moduleDir, `../dist/roxify_native-${t}.node`),
+        resolve(moduleDir, `../../dist/roxify_native-${t}.node`),
       );
     }
 
-    candidates.push(
+    pushIf(
       resolve(moduleDir, '../roxify_native.node'),
       resolve(moduleDir, '../libroxify_native.node'),
+      resolve(moduleDir, '../../roxify_native.node'),
+      resolve(moduleDir, '../../libroxify_native.node'),
+      resolve(moduleDir, '../dist/roxify_native.node'),
+      resolve(moduleDir, '../../dist/roxify_native.node'),
     );
 
     let root = moduleDir && moduleDir !== '.' ? moduleDir : process.cwd();
@@ -77,21 +91,35 @@ function getNativeModule() {
     }
 
     for (const t of targets) {
-      candidates.push(
+      pushIf(
         resolve(root, `roxify_native-${t}.node`),
         resolve(root, `libroxify_native-${t}.node`),
+        resolve(root, `dist/roxify_native-${t}.node`),
       );
     }
 
-    candidates.push(
+    pushIf(
+      resolve(root, 'roxify_native.node'),
+      resolve(root, 'libroxify_native.node'),
+      resolve(root, 'dist/roxify_native.node'),
       resolve(root, 'target/release/roxify_native.node'),
       resolve(root, 'target/release/libroxify_native.so'),
       resolve(root, 'target/release/roxify_native.so'),
       resolve(root, 'node_modules/roxify/roxify_native.node'),
     );
 
-    for (const c of candidates) {
+    // Remove duplicates while preserving order and give useful debug output
+    const uniqueCandidates = [...new Set(candidates)];
+    console.debug('[native] candidate paths', uniqueCandidates);
+
+    for (const c of uniqueCandidates) {
       try {
+        console.debug(
+          '[native] checking candidate',
+          c,
+          'exists?',
+          existsSync(c),
+        );
         if (!existsSync(c)) continue;
         if (c.endsWith('.so')) {
           const nodeAlias = c.replace(/\.so$/, '.node');
@@ -107,7 +135,9 @@ function getNativeModule() {
         }
         console.debug('[native] using path', c);
         return c;
-      } catch {}
+      } catch (e) {
+        console.debug('[native] error while checking candidate', c, e);
+      }
     }
 
     throw new Error(
