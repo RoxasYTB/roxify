@@ -80,8 +80,6 @@ jobs:
           if [ "${FAST_RELEASE:-0}" = "1" ]; then pd="fastdev"; else pd="release"; fi
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp target/${{ matrix.target }}/${pd}/roxify_native.dll release/roxify_native-${{ matrix.target }}.node || true
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            cp target/${{ matrix.target }}/${pd}/libroxify_native.dylib release/roxify_native-${{ matrix.target }}.node || true
           else
             cp target/${{ matrix.target }}/${pd}/libroxify_native.so release/roxify_native-${{ matrix.target }}.node || true
           fi

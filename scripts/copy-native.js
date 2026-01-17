@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { copyFileSync, existsSync, mkdirSync } from 'fs';
-import { arch, platform } from 'os';
+import { platform } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 

@@ -21,7 +21,7 @@ struct Cli {
 enum Commands {
     Encode {
         input: PathBuf,
-        output: PathBuf,
+        output: Option<PathBuf>,
         #[arg(short, long, default_value_t = 3)]
         level: i32,
         #[arg(short, long)]
@@ -61,6 +61,12 @@ enum Commands {
         output: Option<PathBuf>,
         #[arg(long)]
         files: Option<String>,
+        #[arg(short, long)]
+        passphrase: Option<String>,
+    },
+    Decode {
+        input: PathBuf,
+        output: Option<PathBuf>,
         #[arg(short, long)]
         passphrase: Option<String>,
     },
@@ -105,11 +111,17 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Encode { input, output, level, passphrase, encrypt, name } => {
+            use std::time::Instant;
+            let start_pack = Instant::now();
             let pack_result = packer::pack_path_with_metadata(&input)?;
+            let pack_time = start_pack.elapsed();
 
             let file_name = name.as_deref()
                 .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
+            let enc_type = if passphrase.is_some() { Some(encrypt.clone()) } else { None };
+
+            let start_encode = Instant::now();
             let png = if let Some(ref pass) = passphrase {
                 encoder::encode_to_png_with_encryption_name_and_filelist(
                     &pack_result.data,
@@ -127,8 +139,44 @@ fn main() -> anyhow::Result<()> {
                     pack_result.file_list_json.as_deref()
                 )?
             };
+            let encode_time = start_encode.elapsed();
 
-            write_all(&output, &png)?;
+            // Determine default output path if none provided
+            let out_path: PathBuf = match output.clone() {
+                Some(p) => p,
+                None => {
+                    // If input is a file, use same path with .png extension
+                    if input.is_file() {
+                        input.with_extension("png")
+                    } else if input.is_dir() {
+                        // For directories, create <dir>.png next to dir
+                        input.with_extension("png")
+                    } else {
+                        // Fallback: use file name or 'out.png'
+                        let stem = input.file_name().and_then(|n| n.to_str()).unwrap_or("out");
+                        PathBuf::from(format!("{}.png", stem))
+                    }
+                }
+            };
+
+            let start_write = Instant::now();
+            write_all(&out_path, &png)?;
+            let write_time = start_write.elapsed();
+
+            // Output a concise, pretty summary
+            println!("--- Encode summary ---");
+            println!("input: {:?}", input);
+            println!("output: {:?}", out_path);
+            println!("files_list: {}", if pack_result.file_list_json.is_some() { "embedded" } else { "none" });
+            println!("encrypt: {}", enc_type.clone().unwrap_or_else(|| "none".to_string()));
+            println!("original_size: {} bytes", pack_result.data.len());
+            println!("png_size: {} bytes", png.len());
+            if pack_result.data.len() > 0 {
+                println!("ratio: {:.2}%", 100.0 * (1.0 - (png.len() as f64 / pack_result.data.len() as f64)));
+            }
+            println!("pack_time_ms: {}", pack_time.as_millis());
+            println!("encode_time_ms: {}", encode_time.as_millis());
+            println!("write_time_ms: {}", write_time.as_millis());
 
             if pack_result.file_list_json.is_some() {
                 println!("(rXFL chunk embedded)");
@@ -246,13 +294,14 @@ fn main() -> anyhow::Result<()> {
                     Box::new(dec)
                 };
 
-                let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
+                let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("."));
                 std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
 
                                 let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
                 println!("Unpacked {} files", written.len());
-            } else {
+
+
                                                 let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
                 let out_bytes = if is_png {
                     let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
@@ -303,6 +352,147 @@ fn main() -> anyhow::Result<()> {
 
                 let dest = output.unwrap_or_else(|| PathBuf::from("out.raw"));
                 write_all(&dest, &out_bytes)?;
+            }
+        }
+        Commands::Decode { input, output, passphrase } => {
+            let buf = read_all(&input)?;
+            let chunks = png_utils::extract_png_chunks(&buf).map_err(|e| anyhow::anyhow!(e))?;
+            let rxfl = chunks.iter().find(|c| c.name == "rXFL").ok_or_else(|| anyhow::anyhow!("No file list found in PNG"))?;
+            let json_str = String::from_utf8_lossy(&rxfl.data).to_string();
+            let list_val: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| anyhow::anyhow!("Invalid rXFL JSON: {}", e))?;
+            let mut files_vec: Vec<String> = Vec::new();
+            if let serde_json::Value::Array(arr) = list_val {
+                for item in arr.iter() {
+                    if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                        files_vec.push(name.to_string());
+                    } else if let Some(s) = item.as_str() {
+                        files_vec.push(s.to_string());
+                    }
+                }
+            }
+            if files_vec.is_empty() { return Err(anyhow::anyhow!("No files found in rXFL chunk")); }
+
+            use std::io::Cursor;
+            let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
+            if payload.is_empty() { return Err(anyhow::anyhow!("Empty payload")); }
+            let normalized: Vec<u8> = if payload[0] == 0x00u8 {
+                payload[1..].to_vec()
+            } else {
+                let pass = passphrase.as_ref().map(|s: &String| s.as_str());
+                match crate::crypto::try_decrypt(&payload, pass) {
+                    Ok(v) => v,
+                    Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
+                }
+            };
+
+            use std::time::Instant;
+
+            // Determine output base: if user provides it, use it; otherwise pick sensible defaults.
+            let out_base: PathBuf = match output.clone() {
+                Some(p) => p,
+                None => {
+                    if files_vec.len() == 1 {
+                        // default: write the single file into CWD with its original name
+                        PathBuf::from(&files_vec[0])
+                    } else {
+                        // default: create a directory named after the PNG stem
+                        let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+                        PathBuf::from(stem)
+                    }
+                }
+            };
+
+            let start_decode = Instant::now();
+
+            // If normalized starts with ROX1, the inner payload (normalized[4..]) can be either:
+            // - a pack archive (starts with pack magic 0x524F5850) -> use unpack_stream_to_dir
+            // - a single raw file payload (just the file bytes) -> write directly to disk using the name from rXFL
+            if normalized.starts_with(b"ROX1") {
+                let inner = &normalized[4..];
+                // pack magic: 0x524F5850
+                if inner.len() >= 4 && &inner[0..4] == &[0x52, 0x4F, 0x58, 0x50] {
+                    let mut reader: Box<dyn std::io::Read> = Box::new(Cursor::new(inner.to_vec()));
+                    std::fs::create_dir_all(&out_base).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_base, e))?;
+                    let files_slice = Some(files_vec.as_slice());
+                    let written = packer::unpack_stream_to_dir(&mut reader, &out_base, files_slice).map_err(|e| anyhow::anyhow!(e))?;
+                    let decode_time = start_decode.elapsed();
+                    println!("--- Decode summary ---");
+                    println!("input: {:?}", input);
+                    println!("output_dir: {:?}", out_base);
+                    println!("unpacked_files: {}", written.len());
+                    println!("decode_time_ms: {}", decode_time.as_millis());
+                    println!("Wrote {} files into {}", written.len(), out_base.display());
+                } else if files_vec.len() == 1 {
+                    // out_base may be a directory or a file path. If it's an existing directory or ends with a separator, write into it.
+                    if out_base.exists() && out_base.is_dir() {
+                        std::fs::create_dir_all(&out_base).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_base, e))?;
+                        let out_path = out_base.join(&files_vec[0]);
+                        std::fs::write(&out_path, inner).map_err(|e| anyhow::anyhow!("Cannot write file {:?}: {}", out_path, e))?;
+                        let decode_time = start_decode.elapsed();
+                        println!("--- Decode summary ---");
+                        println!("input: {:?}", input);
+                        println!("output: {:?}", out_path);
+                        println!("decode_time_ms: {}", decode_time.as_millis());
+                        println!("Wrote {}", out_path.display());
+                    } else {
+                        // treat out_base as a file path
+                        if let Some(parent) = out_base.parent() {
+                            if !parent.as_os_str().is_empty() {
+                                std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent directory {:?}: {}", parent, e))?;
+                            }
+                        }
+                        std::fs::write(&out_base, inner).map_err(|e| anyhow::anyhow!("Cannot write file {:?}: {}", out_base, e))?;
+                        let decode_time = start_decode.elapsed();
+                        println!("--- Decode summary ---");
+                        println!("input: {:?}", input);
+                        println!("output: {:?}", out_base);
+                        println!("decode_time_ms: {}", decode_time.as_millis());
+                        println!("Wrote {}", out_base.display());
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Payload is not a pack archive and multiple files requested"));
+                }
+            } else {
+                // Not starting with ROX1: attempt zstd decompress and try unpacking as archive
+                let dec = zstd::stream::Decoder::new(Cursor::new(normalized.clone())).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                let mut buf = Vec::new();
+                use std::io::Read as _;
+                let mut dec_reader = dec;
+                dec_reader.read_to_end(&mut buf).map_err(|e| anyhow::anyhow!("zstd decompress error: {}", e))?;
+                if buf.starts_with(b"ROX1") {
+                    let inner = &buf[4..];
+                    if inner.len() >= 4 && &inner[0..4] == &[0x52, 0x4F, 0x58, 0x50] {
+                        let mut reader: Box<dyn std::io::Read> = Box::new(Cursor::new(inner.to_vec()));
+                        std::fs::create_dir_all(&out_base).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_base, e))?;
+                        let files_slice = Some(files_vec.as_slice());
+                        let written = packer::unpack_stream_to_dir(&mut reader, &out_base, files_slice).map_err(|e| anyhow::anyhow!(e))?;
+                        let decode_time = start_decode.elapsed();
+                        println!("--- Decode summary ---");
+                        println!("input: {:?}", input);
+                        println!("output_dir: {:?}", out_base);
+                        println!("unpacked_files: {}", written.len());
+                        println!("decode_time_ms: {}", decode_time.as_millis());
+                    } else if files_vec.len() == 1 {
+                        if out_base.exists() && out_base.is_dir() {
+                            std::fs::create_dir_all(&out_base).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_base, e))?;
+                            let out_path = out_base.join(&files_vec[0]);
+                            std::fs::write(&out_path, &inner).map_err(|e| anyhow::anyhow!("Cannot write file {:?}: {}", out_path, e))?;
+                            println!("Wrote {}", out_path.display());
+                        } else {
+                            if let Some(parent) = out_base.parent() {
+                                if !parent.as_os_str().is_empty() {
+                                    std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent directory {:?}: {}", parent, e))?;
+                                }
+                            }
+                            std::fs::write(&out_base, &inner).map_err(|e| anyhow::anyhow!("Cannot write file {:?}: {}", out_base, e))?;
+                            println!("Wrote {}", out_base.display());
+                        }
+                    } else {
+                        return Err(anyhow::anyhow!("Payload is not a pack archive and multiple files requested"));
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Payload does not contain ROX1 header or a valid pack"));
+                }
             }
         }
         Commands::Crc32 { input } => {

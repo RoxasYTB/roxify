@@ -1,5 +1,0 @@
-{
-  "ok": false,
-  "error": "Command failed: node dist/cli.js encode D:\\a\\roxify\\roxify\\output-tests\\hello.txt D:\\a\\roxify\\roxify\\output-tests\\single.png",
-  "results": []
-}

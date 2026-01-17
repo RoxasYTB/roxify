@@ -49,18 +49,6 @@ Les artifacts seront disponibles dans l'onglet Actions de GitHub.
 npm run build:native:linux
 ```
 
-**macOS x64 :**
-
-```bash
-npm run build:native:macos-x64
-```
-
-**macOS ARM64 :**
-
-```bash
-npm run build:native:macos-arm
-```
-
 **Windows :**
 
 ```bash
@@ -95,7 +83,7 @@ Le module détecte automatiquement la plateforme au runtime et charge le binaire
 
 Le fichier `src/utils/native.ts` détecte automatiquement :
 
-1. La plateforme (linux, darwin, win32)
+1. La plateforme (linux, win32)
 2. L'architecture (x64, arm64)
 3. Charge le binaire approprié
 

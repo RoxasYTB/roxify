@@ -24,8 +24,6 @@ function getNativeModule() {
   function getNativePath(): string {
     const platformMap: Record<string, string> = {
       linux: 'x86_64-unknown-linux-gnu',
-      darwin:
-        arch() === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin',
       win32: 'x86_64-pc-windows-gnu',
     };
 
@@ -35,7 +33,6 @@ function getNativeModule() {
 
     const extMap: Record<string, string> = {
       linux: 'so',
-      darwin: 'dylib',
       win32: 'node',
     };
 

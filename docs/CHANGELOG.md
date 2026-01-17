@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.5] - 2026-01-17
+
+### Patch: CLI usability, `decode` command, release automation
+
+- Added `roxify_native decode` command which extracts file list from `rXFL` and unpacks selected files (supports passphrase). ✅
+- Default output naming: single-file -> original-name.png, directory -> parentDir.png, decode -> default file or folder as appropriate. 🔧
+- Detailed encode/decode summary logs (sizes, times, ratios) added to CLI. 🧾
+- CI: Added cross-platform GitHub Actions workflow for Linux/macOS/Windows to build native artifacts and run integration tests. 🧪
+- Tests: Integration tests added to validate encode/decode defaults and passphrase handling. ✅
+
+---
+
 ## [1.4.1] - 2026-01-12
 
 ### Patch: Performance & Integrity
