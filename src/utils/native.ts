@@ -48,6 +48,8 @@ function getNativeModule() {
       throw new Error(`Unsupported platform: ${currentPlatform}`);
     }
 
+
+
     const targets = targetAlt ? [target, targetAlt] : [target];
 
     const candidates: string[] = [];
@@ -119,16 +121,19 @@ function getNativeModule() {
               require('fs').copyFileSync(c, nodeAlias);
             }
             return nodeAlias;
-          } catch {
+          } catch (e) {
             return c;
           }
         }
         return c;
-      } catch {
+      } catch (e) {
+        // ignore errors while checking candidates
       }
     }
 
-    throw new Error(`Native module not found for ${currentPlatform}-${arch()}.`);
+    throw new Error(
+      `Native module not found for ${currentPlatform}-${arch()}. Checked: ${uniqueCandidates.join(' ')}`,
+    );
   }
 
   return nativeRequire(getNativePath());
