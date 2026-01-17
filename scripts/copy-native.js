@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync } from 'fs';
 import { arch, platform } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -62,6 +62,20 @@ for (const profile of profiles) {
         copyFileSync(candidate, destFileWithTarget);
         console.log(`✓ Copied ${candidate} → ${destFile}`);
         console.log(`✓ Copied ${candidate} → ${destFileWithTarget}`);
+        // also copy into dist so runtime (dist/utils) can find it after packaging
+        try {
+          mkdirSync(join(rootDir, 'dist'), { recursive: true });
+          const distDest = join(rootDir, 'dist', 'roxify_native.node');
+          const distDestWithTarget = join(
+            rootDir,
+            'dist',
+            `roxify_native-${target}.node`,
+          );
+          copyFileSync(candidate, distDest);
+          copyFileSync(candidate, distDestWithTarget);
+          console.log(`✓ Copied ${candidate} → ${distDest}`);
+          console.log(`✓ Copied ${candidate} → ${distDestWithTarget}`);
+        } catch (e) {}
         found = true;
         break;
       }

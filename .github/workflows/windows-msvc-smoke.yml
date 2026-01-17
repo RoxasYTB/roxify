@@ -20,6 +20,35 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Install zstd (choco)
+        if: runner.os == 'Windows'
+        run: choco install zstd -y || true
+      - name: Build native & copy artifact
+        run: |
+          npm run build:native:windows
+          npm run postbuild:native
+      - name: Verify native artifacts
+        shell: pwsh
+        run: |
+          Write-Host "Listing native files at repository root:"
+          Get-ChildItem -Path . -Filter 'roxify_native*.node' -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Get-ChildItem -Path . -Filter 'libroxify_native*.node' -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Write-Host "Listing native files in dist/:"
+          if (Test-Path dist) {
+            Get-ChildItem -Path dist -Filter 'roxify_native*.node' -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            Get-ChildItem -Path dist -Filter 'libroxify_native*.node' -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host 'dist/ directory not found'
+          }
+          $found = @()
+          $found += Get-ChildItem -Path . -Filter 'roxify_native*.node' -File -ErrorAction SilentlyContinue
+          $found += Get-ChildItem -Path . -Filter 'libroxify_native*.node' -File -ErrorAction SilentlyContinue
+          if (Test-Path dist) { $found += Get-ChildItem -Path dist -Filter 'roxify_native*.node' -File -ErrorAction SilentlyContinue; $found += Get-ChildItem -Path dist -Filter 'libroxify_native*.node' -File -ErrorAction SilentlyContinue }
+          if (-not $found) { Write-Error 'No native artifacts found (root or dist). Ensure build:native:windows and postbuild:native produced files.'; exit 1 } else { Write-Host 'Native artifacts present.' }
       - name: Pack and install globally
         shell: pwsh
         run: |

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const { execSync } = require('child_process');
-const { copyFileSync, existsSync, unlinkSync } = require('fs');
+const { copyFileSync, existsSync, unlinkSync, mkdirSync } = require('fs');
 const { join } = require('path');
 
 const root = process.cwd();
@@ -35,6 +35,13 @@ for (const t of targets) {
   copyFileSync(src, dest);
   console.log(`✓ Copied ${src} → ${destName}`);
   copied.push(dest);
+  try {
+    mkdirSync(join(root, 'dist'), { recursive: true });
+    const distDest = join(root, 'dist', destName);
+    copyFileSync(src, distDest);
+    console.log(`✓ Copied ${src} → dist/${destName}`);
+    copied.push(distDest);
+  } catch (e) {}
 }
 
 const maybeLinux = join(
@@ -47,6 +54,12 @@ const maybeLinux = join(
 if (existsSync(maybeLinux)) {
   copyFileSync(maybeLinux, join(root, 'libroxify_native.node'));
   copied.push(join(root, 'libroxify_native.node'));
+  try {
+    mkdirSync(join(root, 'dist'), { recursive: true });
+    const distLinuxDest = join(root, 'dist', 'libroxify_native.node');
+    copyFileSync(maybeLinux, distLinuxDest);
+    copied.push(distLinuxDest);
+  } catch (e) {}
 }
 
 run('npm pack');

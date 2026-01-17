@@ -140,9 +140,21 @@ function getNativeModule() {
       }
     }
 
-    const notFoundDetails = uniqueCandidates.map(p => ({ path: p, exists: existsSync(p) }));
-    console.error('[native] no native module found for', `${currentPlatform}-${arch()}`, 'checked', notFoundDetails);
-    throw new Error(`Native module not found for ${currentPlatform}-${arch()}. Checked: ${uniqueCandidates.join(' ')}`);
+    const notFoundDetails = uniqueCandidates.map((p) => ({
+      path: p,
+      exists: existsSync(p),
+    }));
+    console.error(
+      '[native] no native module found for',
+      `${currentPlatform}-${arch()}`,
+      'checked',
+      notFoundDetails,
+    );
+    throw new Error(
+      `Native module not found for ${currentPlatform}-${arch()}. Checked: ${uniqueCandidates.join(
+        ' ',
+      )}`,
+    );
   }
 
   return nativeRequire(getNativePath());
