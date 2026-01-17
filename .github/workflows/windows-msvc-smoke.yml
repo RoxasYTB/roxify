@@ -27,9 +27,9 @@ jobs:
       - name: Install zstd (choco)
         if: runner.os == 'Windows'
         run: choco install zstd -y || true
-      - name: Build native & copy artifact (fast)
+      - name: Build native & copy artifact
         run: |
-          npm run build:native:quick-release
+          npm run build:native:windows
           npm run postbuild:native
       - name: Verify native artifacts
         shell: pwsh

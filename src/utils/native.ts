@@ -48,8 +48,6 @@ function getNativeModule() {
       throw new Error(`Unsupported platform: ${currentPlatform}`);
     }
 
-
-
     const targets = targetAlt ? [target, targetAlt] : [target];
 
     const candidates: string[] = [];
@@ -132,7 +130,9 @@ function getNativeModule() {
     }
 
     throw new Error(
-      `Native module not found for ${currentPlatform}-${arch()}. Checked: ${uniqueCandidates.join(' ')}`,
+      `Native module not found for ${currentPlatform}-${arch()}. Checked: ${uniqueCandidates.join(
+        ' ',
+      )}`,
     );
   }
 
