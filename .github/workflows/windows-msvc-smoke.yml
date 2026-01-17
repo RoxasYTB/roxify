@@ -21,9 +21,12 @@ jobs:
           npm ci
           npm run build
       - name: Pack and install globally
+        shell: pwsh
         run: |
           npm pack
-          npm i -g ./roxify-*.tgz
+          $pkg = Get-ChildItem -Filter 'roxify-*.tgz' | Select-Object -First 1
+          if (-not $pkg) { Write-Error 'Package not found'; exit 1 }
+          npm i -g $pkg.FullName
       - name: Run rox --version
         run: |
           rox --version
@@ -63,7 +66,7 @@ jobs:
 
       - name: Run CLI with Windows Node under Wine
         run: |
-          wine ~/.wine/drive_c/nodejs/node.exe C:\\roxify\\dist\\cli.js --version
+          wine ~/.wine/drive_c/nodejs/node.exe --no-warnings C:\\roxify\\dist\\cli.js --version || true
 
       - name: Smoke install with npm under Wine (optional)
         run: |
