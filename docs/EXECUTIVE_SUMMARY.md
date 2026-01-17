@@ -51,7 +51,6 @@ Input → Chunking (8MB) → Rayon Parallelism → BWT Transform
 **GPU Support:**
 
 - ✅ Linux: Vulkan (Mesa/NVIDIA/AMD)
-- ✅ macOS: Metal (native)
 - ✅ Windows: DirectX 12 (native)
 - ✅ Fallback: CPU-only (Rayon)
 

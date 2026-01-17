@@ -20,8 +20,6 @@ mkdirSync(releaseDir, { recursive: true });
 
 const targets = [
   { triple: 'x86_64-unknown-linux-gnu', ext: 'so', name: 'libroxify_native' },
-  { triple: 'x86_64-apple-darwin', ext: 'dylib', name: 'libroxify_native' },
-  { triple: 'aarch64-apple-darwin', ext: 'dylib', name: 'libroxify_native' },
   { triple: 'x86_64-pc-windows-msvc', ext: 'dll', name: 'roxify_native' },
   { triple: 'x86_64-pc-windows-gnu', ext: 'dll', name: 'roxify_native' },
 ];

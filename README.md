@@ -374,4 +374,4 @@ Contributions welcome! Please open an issue or PR on GitHub.
 
 ## CI / Multi-platform builds
 
-This project runs continuous integration on Linux, Windows and macOS via GitHub Actions. Native modules are built on each platform and attached to the workflow (and release) as artifacts. On releases we also publish platform artifacts to GitHub Releases. For npm publishing, set the `NPM_TOKEN` secret in your repository settings to allow automated publishes on release.
+This project runs continuous integration on Linux and Windows via GitHub Actions. Native modules are built on each platform and attached to the workflow (and release) as artifacts. On releases we also publish platform artifacts to GitHub Releases. For npm publishing, set the `NPM_TOKEN` secret in your repository settings to allow automated publishes on release.

@@ -14,18 +14,6 @@ const targets = [
     out: 'libroxify_native-x86_64-unknown-linux-gnu.node',
   },
   {
-    name: 'macos-x64',
-    triple: 'x86_64-apple-darwin',
-    ext: 'dylib',
-    out: 'libroxify_native-x86_64-apple-darwin.node',
-  },
-  {
-    name: 'macos-arm',
-    triple: 'aarch64-apple-darwin',
-    ext: 'dylib',
-    out: 'libroxify_native-aarch64-apple-darwin.node',
-  },
-  {
     name: 'windows',
     triple: 'x86_64-pc-windows-msvc',
     ext: 'dll',

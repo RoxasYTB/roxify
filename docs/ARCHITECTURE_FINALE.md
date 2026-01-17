@@ -3,7 +3,7 @@
 ## 🎯 Objectifs Atteints
 
 ✅ **Compression statistique haute-performance** surpassant LZMA
-✅ **Cross-platform** (Windows, macOS, Linux/Debian Trixie)
+✅ **Cross-platform** (Windows, Linux/Debian Trixie)
 ✅ **Scalabilité 2 Go** avec gestion mémoire efficace
 ✅ **Performance < 4 secondes** pour 2 Go
 ✅ **Abstraction GPU** avec fallback CPU automatique

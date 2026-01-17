@@ -10,7 +10,6 @@ const rootDir = join(__dirname, '..');
 
 const platformMap = {
   linux: 'x86_64-unknown-linux-gnu',
-  darwin: arch() === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin',
   win32: 'x86_64-pc-windows-gnu',
 };
 
@@ -20,13 +19,11 @@ const platformAltMap = {
 
 const extMap = {
   linux: 'so',
-  darwin: 'dylib',
   win32: 'dll',
 };
 
 const libNameMap = {
   linux: 'libroxify_native',
-  darwin: 'libroxify_native',
   win32: 'roxify_native',
 };
 

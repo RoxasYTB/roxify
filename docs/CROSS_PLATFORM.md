@@ -7,8 +7,6 @@ Roxify utilise Rust natif et doit être compilé pour chaque plateforme cible.
 ### Plateformes Supportées
 
 - **Linux x64** : `x86_64-unknown-linux-gnu` (.so)
-- **macOS x64** : `x86_64-apple-darwin` (.dylib)
-- **macOS ARM64** : `aarch64-apple-darwin` (.dylib)
 - **Windows x64** : `x86_64-pc-windows-msvc` (.dll)
 
 ### Build Local (plateforme courante)
@@ -21,13 +19,13 @@ Cela compile le module natif pour votre plateforme et le copie automatiquement e
 
 ### Build Multi-Plateforme
 
-#### Option 1 : Script automatique (Linux/macOS)
+#### Option 1 : Script automatique
 
 ```bash
 node scripts/build-all-platforms.js
 ```
 
-Ce script tente de compiler pour toutes les plateformes. Cela nécessite :
+Ce script tente de compiler pour les plateformes supportées (Linux / Windows). Cela nécessite :
 
 - Les toolchains Rust pour chaque cible
 - Les linkers appropriés
@@ -75,8 +73,6 @@ Avant de compiler pour une plateforme, installez la cible :
 
 ```bash
 rustup target add x86_64-unknown-linux-gnu
-rustup target add x86_64-apple-darwin
-rustup target add aarch64-apple-darwin
 rustup target add x86_64-pc-windows-msvc
 ```
 
@@ -86,7 +82,6 @@ Pour compiler depuis Linux vers d'autres plateformes, utilisez `cross` :
 
 ```bash
 cargo install cross
-cross build --release --lib --target x86_64-apple-darwin
 cross build --release --lib --target x86_64-pc-windows-gnu
 ```
 
