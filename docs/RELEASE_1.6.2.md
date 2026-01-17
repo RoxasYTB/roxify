@@ -18,7 +18,7 @@ Notes
 
 Local build note
 
-- On Linux hosts without cross-compilers (macOS/MSVC) the `npm run release:prepare` step may fail while building some targets. To prepare a release locally and keep available artifacts, run:
+- On Linux hosts without MSVC cross-compilers the `npm run release:prepare` step may fail while building some targets. To prepare a release locally and keep available artifacts, run:
 
 ```bash
 IGNORE_TARGET_FAILURES=1 npm run release:prepare

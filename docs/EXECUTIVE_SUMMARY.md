@@ -166,7 +166,6 @@ Runtime Errors:              0 (stable operation)
 
 ```
 Linux (Vulkan):              ✅ Ready (tested)
-macOS (Metal):               ✅ Architecture ready (untested)
 Windows (DirectX 12):        ✅ Architecture ready (untested)
 Node.js Integration:         ✅ Functional (tested)
 TypeScript Types:            ✅ Complete
@@ -200,7 +199,7 @@ npm Module Structure:        ✅ Correct
 
 ### Low Priority
 
-7. **macOS/Windows Testing** - Validation cross-platform
+7. **Windows Testing** - Validation cross-platform
 8. **Algorithm Improvements** - Delta encoding, prediction filtering
 9. **Performance Profiling** - Detailed flamegraph analysis
 

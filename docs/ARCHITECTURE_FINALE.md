@@ -65,7 +65,7 @@ pub fn gpu_available() -> bool ```
 
 **Spécificités**:
 
-- ✅ Support natif Vulkan (Linux), Metal (macOS), DirectX 12 (Windows)
+- ✅ Support natif Vulkan (Linux) et DirectX 12 (Windows)
 - ✅ Fallback automatique si GPU absent
 - ✅ Initialisation lazy (non-blocking)
 - ✅ Gestion des erreurs gracieuse
@@ -393,7 +393,7 @@ console.log(
 Cet module transforme roxify en:
 
 - **Moteur haute-performance** capable de 400+ Mo/s
-- **Cross-platform robuste** (Win/Mac/Linux)
+- **Cross-platform robuste** (Win/Linux)
 - **Scalable** pour 2 Go sans mur mémoire
 - **Intelligente** (adaptative, GPU-aware)
 - **Production-ready** (tests, documentation)

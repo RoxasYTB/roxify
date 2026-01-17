@@ -63,7 +63,7 @@ cargo build --release --lib --no-default-features
 
 # Build all three targets (script):
 # Use system zstd and fast release to avoid compiling zstd C sources and speed up builds
-# Install system zstd (Linux: libzstd-dev, macOS: brew install zstd)
+# Install system zstd (Linux: libzstd-dev, Windows: choco install zstd)
 # Example (fast, using system zstd):
 # USE_SYSTEM_ZSTD=1 FAST_RELEASE=1 npm run build:native:targets
 npm run build:native:targets

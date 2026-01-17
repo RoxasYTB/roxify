@@ -223,7 +223,7 @@ tar -xzf archive.tar.gz
 
 Process multiple files:
 
-**Linux/Mac:**
+**Linux:**
 
 ```bash
 #!/bin/bash
@@ -357,7 +357,7 @@ npx rox decode archive.png - | tar -xzf -
 Set default options:
 
 ```bash
-# Linux/Mac
+# Linux
 export ROX_QUALITY=1
 export ROX_MODE=screenshot
 
