@@ -48,8 +48,6 @@ function getNativeModule() {
       throw new Error(`Unsupported platform: ${currentPlatform}`);
     }
 
-    console.debug('[native] moduleDir', moduleDir);
-
     const targets = targetAlt ? [target, targetAlt] : [target];
 
     const candidates: string[] = [];
@@ -108,18 +106,11 @@ function getNativeModule() {
       resolve(root, 'node_modules/roxify/roxify_native.node'),
     );
 
-    // Remove duplicates while preserving order and give useful debug output
+    // Remove duplicates while preserving order
     const uniqueCandidates = [...new Set(candidates)];
-    console.debug('[native] candidate paths', uniqueCandidates);
 
     for (const c of uniqueCandidates) {
       try {
-        console.debug(
-          '[native] checking candidate',
-          c,
-          'exists?',
-          existsSync(c),
-        );
         if (!existsSync(c)) continue;
         if (c.endsWith('.so')) {
           const nodeAlias = c.replace(/\.so$/, '.node');
@@ -127,34 +118,17 @@ function getNativeModule() {
             if (!existsSync(nodeAlias)) {
               require('fs').copyFileSync(c, nodeAlias);
             }
-            console.debug('[native] using node alias', nodeAlias);
             return nodeAlias;
-          } catch (e) {
+          } catch {
             return c;
           }
         }
-        console.debug('[native] using path', c);
         return c;
-      } catch (e) {
-        console.debug('[native] error while checking candidate', c, e);
+      } catch {
       }
     }
 
-    const notFoundDetails = uniqueCandidates.map((p) => ({
-      path: p,
-      exists: existsSync(p),
-    }));
-    console.error(
-      '[native] no native module found for',
-      `${currentPlatform}-${arch()}`,
-      'checked',
-      notFoundDetails,
-    );
-    throw new Error(
-      `Native module not found for ${currentPlatform}-${arch()}. Checked: ${uniqueCandidates.join(
-        ' ',
-      )}`,
-    );
+    throw new Error(`Native module not found for ${currentPlatform}-${arch()}.`);
   }
 
   return nativeRequire(getNativePath());
