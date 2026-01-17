@@ -2,7 +2,7 @@ name: Windows & Wine smoke tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -72,4 +72,3 @@ jobs:
         run: |
           wine ~/.wine/drive_c/nodejs/npm-cli.js i -g C:\\roxify\\roxify-*.tgz || true
           wine cmd /c rox --version || echo "global install didn't provide rox or rox failed" && true
-
