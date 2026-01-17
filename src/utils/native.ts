@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { createRequire } from 'module';
 import { arch, platform } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 function getNativeModule() {
@@ -48,19 +48,23 @@ function getNativeModule() {
       throw new Error(`Unsupported platform: ${currentPlatform}`);
     }
 
-    const prebuiltPath = join(moduleDir, '../../roxify_native.node');
-    const prebuiltLibPath = join(moduleDir, '../../libroxify_native.node');
-    const bundlePath = join(moduleDir, '../roxify_native.node');
-    const bundleLibPath = join(moduleDir, '../libroxify_native.node');
-    const bundlePathWithTarget = join(
-      moduleDir,
-      `../roxify_native-${target}.node`,
-    );
-    const bundleLibPathWithTarget = join(
-      moduleDir,
-      `../libroxify_native-${target}.node`,
-    );
     console.debug('[native] moduleDir', moduleDir);
+
+    const targets = targetAlt ? [target, targetAlt] : [target];
+    const candidates: string[] = [];
+
+    for (const t of targets) {
+      candidates.push(
+        resolve(moduleDir, `../roxify_native-${t}.node`),
+        resolve(moduleDir, `../libroxify_native-${t}.node`),
+      );
+    }
+
+    candidates.push(
+      resolve(moduleDir, '../roxify_native.node'),
+      resolve(moduleDir, '../libroxify_native.node'),
+    );
+
     let root = moduleDir && moduleDir !== '.' ? moduleDir : process.cwd();
     while (
       root.length > 1 &&
@@ -72,93 +76,18 @@ function getNativeModule() {
       root = parent;
     }
 
-    const bundleNode = resolve(moduleDir, '../roxify_native.node');
-    const bundleLibNode = resolve(moduleDir, '../libroxify_native.node');
-    const bundleNodeWithTarget = resolve(
-      moduleDir,
-      `../roxify_native-${target}.node`,
-    );
-    const bundleLibNodeWithTarget = resolve(
-      moduleDir,
-      `../libroxify_native-${target}.node`,
-    );
-    const repoNode = resolve(root, 'roxify_native.node');
-    const repoLibNode = resolve(root, 'libroxify_native.node');
-    const repoNodeWithTarget = resolve(root, `roxify_native-${target}.node`);
-    const repoLibNodeWithTarget = resolve(
-      root,
-      `libroxify_native-${target}.node`,
-    );
-    const targetNode = resolve(root, 'target/release/roxify_native.node');
-    const targetSo = resolve(root, 'target/release/roxify_native.so');
-    const targetLibSo = resolve(root, 'target/release/libroxify_native.so');
-    const nodeModulesNode = resolve(
-      root,
-      'node_modules/roxify/roxify_native.node',
-    );
-    const nodeModulesNodeWithTarget = resolve(
-      root,
-      `node_modules/roxify/roxify_native-${target}.node`,
-    );
-    const prebuiltNode = resolve(moduleDir, '../../roxify_native.node');
-    const prebuiltLibNode = resolve(moduleDir, '../../libroxify_native.node');
-    const prebuiltNodeWithTarget = resolve(
-      moduleDir,
-      `../../roxify_native-${target}.node`,
-    );
-    const prebuiltLibNodeWithTarget = resolve(
-      moduleDir,
-      `../../libroxify_native-${target}.node`,
-    );
-
-    // Support multiple possible OS triples (e.g. windows-gnu and windows-msvc)
-    const targets = targetAlt ? [target, targetAlt] : [target];
-
-    const candidates: string[] = [];
-
     for (const t of targets) {
-      const bundleNodeWithT = resolve(moduleDir, `../roxify_native-${t}.node`);
-      const bundleLibNodeWithT = resolve(
-        moduleDir,
-        `../libroxify_native-${t}.node`,
-      );
-      const repoNodeWithT = resolve(root, `roxify_native-${t}.node`);
-      const repoLibNodeWithT = resolve(root, `libroxify_native-${t}.node`);
-      const nodeModulesNodeWithT = resolve(
-        root,
-        `node_modules/roxify/roxify_native-${t}.node`,
-      );
-      const prebuiltNodeWithT = resolve(
-        moduleDir,
-        `../../roxify_native-${t}.node`,
-      );
-      const prebuiltLibNodeWithT = resolve(
-        moduleDir,
-        `../../libroxify_native-${t}.node`,
-      );
-
       candidates.push(
-        bundleLibNodeWithT,
-        bundleNodeWithT,
-        repoLibNodeWithT,
-        repoNodeWithT,
-        nodeModulesNodeWithT,
-        prebuiltLibNodeWithT,
-        prebuiltNodeWithT,
+        resolve(root, `roxify_native-${t}.node`),
+        resolve(root, `libroxify_native-${t}.node`),
       );
     }
 
     candidates.push(
-      bundleLibNode,
-      bundleNode,
-      repoLibNode,
-      repoNode,
-      targetNode,
-      targetLibSo,
-      targetSo,
-      nodeModulesNode,
-      prebuiltLibNode,
-      prebuiltNode,
+      resolve(root, 'target/release/roxify_native.node'),
+      resolve(root, 'target/release/libroxify_native.so'),
+      resolve(root, 'target/release/roxify_native.so'),
+      resolve(root, 'node_modules/roxify/roxify_native.node'),
     );
 
     for (const c of candidates) {
