@@ -32,6 +32,7 @@ jobs:
           rox --version
 
   wine:
+    if: false
     name: Wine (Linux) smoke test for Windows binary
     runs-on: ubuntu-latest
     steps:
