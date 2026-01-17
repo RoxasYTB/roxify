@@ -33,11 +33,11 @@
     "build:all": "npm run build:native && npm run build && npm run build:cli",
     "build:cross": "node scripts/build-all-platforms.js && npm run build && npm run build:cli",
     "build:native:fast": "cargo build -p roxify_native --release --lib --no-default-features",
-    "build:native:quick-release": "FAST_RELEASE=1 cargo build --profile fastdev -p roxify_native --lib --no-default-features",
-    "build:native:super-fast": "USE_SYSTEM_ZSTD=1 FAST_RELEASE=1 cargo build --profile fastdev -p roxify_native --lib --no-default-features -j 1",
-    "build:native:low-cpu": "LOW_CPU=1 USE_SYSTEM_ZSTD=1 FAST_RELEASE=1 MAX_JOBS=1 node scripts/build-native-targets.cjs",
+    "build:native:quick-release": "cross-env FAST_RELEASE=1 cargo build --profile fastdev -p roxify_native --lib --no-default-features",
+    "build:native:super-fast": "cross-env USE_SYSTEM_ZSTD=1 FAST_RELEASE=1 cargo build --profile fastdev -p roxify_native --lib --no-default-features -j 1",
+    "build:native:low-cpu": "cross-env LOW_CPU=1 USE_SYSTEM_ZSTD=1 FAST_RELEASE=1 MAX_JOBS=1 node scripts/build-native-targets.cjs",
     "build:native:targets": "node scripts/build-native-targets.cjs",
-    "build:native:targets:fast": "FAST_RELEASE=1 node scripts/build-native-targets.cjs",
+    "build:native:targets:fast": "cross-env FAST_RELEASE=1 node scripts/build-native-targets.cjs",
     "build:pkg": "npm run build && npx pkg . --target node18-win-x64 --output dist/rox.exe --compress Brotli --public",
     "postbuild:native": "node scripts/copy-native.js",
     "clean:targets": "node scripts/clean-artifacts.js",
@@ -85,6 +85,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "cross-env": "^7.0.3",
     "pkg": "^5.8.1",
     "typescript": "^5.6.0"
   },
