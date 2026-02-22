@@ -73,7 +73,7 @@ pub fn encode_png_chunks(chunks: &[PngChunk]) -> Result<Vec<u8>, String> {
         let mut crc_data = Vec::new();
         crc_data.extend_from_slice(chunk_type);
         crc_data.extend_from_slice(&chunk.data);
-        let crc = crc32fast::hash(&crc_data);
+        let crc = crate::core::crc32_bytes(&crc_data);
         output.extend_from_slice(&write_u32_be(crc));
     }
 
@@ -100,25 +100,49 @@ pub fn get_png_metadata(png_data: &[u8]) -> Result<(u32, u32, u8, u8), String> {
 }
 
 pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    if let Ok(payload) = extract_payload_direct(png_data) {
+        return Ok(payload);
+    }
     let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
-    let img = image::load_from_memory(&reconst).map_err(|e| format!("image load error: {}", e))?;
-    let rgb = img.to_rgb8();
-    let raw = rgb.into_raw();
+    extract_payload_direct(&reconst)
+}
+
+fn find_pixel_header(raw: &[u8]) -> Result<usize, String> {
     let magic = b"PXL1";
-        let mut pos_opt: Option<usize> = None;
     for i in 0..(raw.len().saturating_sub(magic.len())) {
         if &raw[i..i + magic.len()] == magic {
-            pos_opt = Some(i);
-            break;
+            return Ok(i);
         }
     }
-    let pos = pos_opt.ok_or("PIXEL_MAGIC not found")?;
-    let mut idx = pos + magic.len();
+    Err("PIXEL_MAGIC not found".to_string())
+}
+
+fn decode_to_rgb(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(png_data).map_err(|e| format!("image load error: {}", e))?;
+    Ok(img.to_rgb8().into_raw())
+}
+
+pub fn extract_name_from_png(png_data: &[u8]) -> Option<String> {
+    let raw = decode_to_rgb(png_data).ok()?;
+    let pos = find_pixel_header(&raw).ok()?;
+    let mut idx = pos + 4;
+    if idx + 2 > raw.len() { return None; }
+    idx += 1;
+    let name_len = raw[idx] as usize; idx += 1;
+    if name_len == 0 || idx + name_len > raw.len() { return None; }
+    String::from_utf8(raw[idx..idx + name_len].to_vec()).ok()
+}
+
+fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    let raw = decode_to_rgb(png_data)?;
+    let pos = find_pixel_header(&raw)?;
+    let mut idx = pos + 4;
     if idx + 2 > raw.len() { return Err("Truncated header".to_string()); }
     let _version = raw[idx]; idx += 1;
     let name_len = raw[idx] as usize; idx += 1;
     if idx + name_len > raw.len() { return Err("Truncated name".to_string()); }
-    idx += name_len;     if idx + 4 > raw.len() { return Err("Truncated payload length".to_string()); }
+    idx += name_len;
+    if idx + 4 > raw.len() { return Err("Truncated payload length".to_string()); }
     let payload_len = ((raw[idx] as u32) << 24)
         | ((raw[idx+1] as u32) << 16)
         | ((raw[idx+2] as u32) << 8)

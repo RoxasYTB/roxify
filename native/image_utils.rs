@@ -56,13 +56,17 @@ pub fn sharp_metadata(input: &[u8]) -> Result<(u32, u32, String), String> {
 }
 
 pub fn rgb_to_png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let img: RgbImage = ImageBuffer::from_raw(width, height, rgb.to_vec())
-        .ok_or("Failed to create image from raw RGB data")?;
+    use image::codecs::png::{PngEncoder, CompressionType, FilterType};
+    use image::ImageEncoder;
 
     let mut output = Vec::new();
-    img.write_to(&mut Cursor::new(&mut output), ImageFormat::Png)
+    let encoder = PngEncoder::new_with_quality(
+        &mut output,
+        CompressionType::Fast,
+        FilterType::NoFilter,
+    );
+    encoder.write_image(rgb, width, height, image::ExtendedColorType::Rgb8)
         .map_err(|e| format!("Failed to encode PNG: {}", e))?;
-
     Ok(output)
 }
 

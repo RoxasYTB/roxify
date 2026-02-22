@@ -2,12 +2,18 @@ use clap::{Parser, Subcommand};
 use std::fs::File;
 use std::io::{Read, Write};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod core;
 mod encoder;
 mod packer;
 mod crypto;
 mod png_utils;
 mod reconstitution;
+mod archive;
+
+use crate::encoder::ImageFormat;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -30,7 +36,11 @@ enum Commands {
         encrypt: String,
         #[arg(short, long)]
         name: Option<String>,
+        /// optional zstd dictionary file for payload compression
+        #[arg(long, value_name = "FILE")]
+        dict: Option<PathBuf>,
     },
+
     List {
         input: PathBuf,
     },
@@ -55,6 +65,19 @@ enum Commands {
         output: Option<PathBuf>,
         #[arg(short, long, default_value_t = 19)]
         level: i32,
+        /// optional zstd dictionary file to use for compression
+        #[arg(long, value_name = "FILE")]
+        dict: Option<PathBuf>,
+    },
+    TrainDict {
+        /// sample files used to train the dictionary
+        #[arg(short, long, value_name = "FILE", required = true)]
+        samples: Vec<PathBuf>,
+        /// desired dictionary size in bytes
+        #[arg(short, long, default_value_t = 112640)]
+        size: usize,
+        /// output dictionary file
+        output: PathBuf,
     },
     Decompress {
         input: PathBuf,
@@ -63,6 +86,9 @@ enum Commands {
         files: Option<String>,
         #[arg(short, long)]
         passphrase: Option<String>,
+        /// optional dictionary file used during decompression
+        #[arg(long, value_name = "FILE")]
+        dict: Option<PathBuf>,
     },
     Crc32 {
         input: PathBuf,
@@ -104,34 +130,68 @@ fn parse_markers(v: &[String]) -> Option<Vec<u8>> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Encode { input, output, level, passphrase, encrypt, name } => {
-            let pack_result = packer::pack_path_with_metadata(&input)?;
+        Commands::TrainDict { samples, size, output } => {
+            let dict = core::train_zstd_dictionary(&samples, size)?;
+            write_all(&output, &dict)?;
+            println!("wrote {} bytes dictionary to {:?}", dict.len(), output);
+            return Ok(());
+        }
+        Commands::Encode { input, output, level, passphrase, encrypt, name, dict } => {
+            let is_dir = input.is_dir();
+            let (payload, file_list_json) = if is_dir {
+                let tar_data = archive::tar_pack_directory(&input)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let list = archive::tar_file_list(&tar_data)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let json_list: Vec<serde_json::Value> = list.iter()
+                    .map(|(name, size)| serde_json::json!({"name": name, "size": size}))
+                    .collect();
+                (tar_data, Some(serde_json::to_string(&json_list)?))
+            } else {
+                let pack_result = packer::pack_path_with_metadata(&input)?;
+                (pack_result.data, pack_result.file_list_json)
+            };
 
             let file_name = name.as_deref()
                 .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
+            let dict_bytes: Option<Vec<u8>> = match dict {
+                Some(path) => Some(read_all(&path)?),
+                None => None,
+            };
+
             let png = if let Some(ref pass) = passphrase {
-                encoder::encode_to_png_with_encryption_name_and_filelist(
-                    &pack_result.data,
+                encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
+                    &payload,
                     level,
                     Some(pass),
                     Some(&encrypt),
+                    ImageFormat::Png,
                     file_name,
-                    pack_result.file_list_json.as_deref()
+                    file_list_json.as_deref(),
+                    dict_bytes.as_deref(),
                 )?
             } else {
-                encoder::encode_to_png_with_name_and_filelist(
-                    &pack_result.data,
+                encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
+                    &payload,
                     level,
+                    None,
+                    None,
+                    ImageFormat::Png,
                     file_name,
-                    pack_result.file_list_json.as_deref()
+                    file_list_json.as_deref(),
+                    dict_bytes.as_deref(),
                 )?
             };
 
             write_all(&output, &png)?;
 
-            if pack_result.file_list_json.is_some() {
-                println!("(rXFL chunk embedded)");
+            if file_list_json.is_some() {
+                if is_dir {
+                    println!("(TAR archive, rXFL chunk embedded)");
+                } else {
+                    println!("(rXFL chunk embedded)");
+                }
             }
         }
         Commands::List { input } => {
@@ -186,14 +246,27 @@ fn main() -> anyhow::Result<()> {
             let dest = output.unwrap_or_else(|| PathBuf::from("raw.bin"));
             write_all(&dest, &out)?;
         }
-        Commands::Compress { input, output, level } => {
+        Commands::Compress { input, output, level, dict } => {
             let buf = read_all(&input)?;
-            let out = crate::core::zstd_compress_bytes(&buf, level).map_err(|e: String| anyhow::anyhow!(e))?;
+            let dict_bytes: Option<Vec<u8>> = match dict {
+                Some(path) => Some(read_all(&path)?),
+                None => None,
+            };
+            let out = crate::core::zstd_compress_bytes(
+                &buf,
+                level,
+                dict_bytes.as_deref(),
+            )
+            .map_err(|e: String| anyhow::anyhow!(e))?;
             let dest = output.unwrap_or_else(|| PathBuf::from("out.zst"));
             write_all(&dest, &out)?;
         }
-        Commands::Decompress { input, output, files, passphrase } => {
+        Commands::Decompress { input, output, files, passphrase, dict } => {
             let buf = read_all(&input)?;
+            let dict_bytes: Option<Vec<u8>> = match dict {
+                Some(path) => Some(read_all(&path)?),
+                None => None,
+            };
                         if let Some(files_str) = files {
                                 let file_list: Option<Vec<String>> = if files_str.trim_start().starts_with('[') {
                     match serde_json::from_str::<Vec<String>>(&files_str) {
@@ -260,7 +333,7 @@ fn main() -> anyhow::Result<()> {
                     let first = payload[0];
                     if first == 0x00u8 {
                         let compressed = payload[1..].to_vec();
-                        match crate::core::zstd_decompress_bytes(&compressed) {
+                        match crate::core::zstd_decompress_bytes(&compressed, dict_bytes.as_deref()) {
                             Ok(mut o) => {
                                 if o.starts_with(b"ROX1") { o = o[4..].to_vec(); }
                                 o
@@ -275,20 +348,27 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     } else {
-                                                let pass = passphrase.as_ref().map(|s| s.as_str());
+                        let pass = passphrase.as_ref().map(|s| s.as_str());
                         match crate::crypto::try_decrypt(&payload, pass) {
                             Ok(v) => {
-                                if v.starts_with(b"ROX1") {
-                                                                        v[4..].to_vec()
+                                let inner = if v.starts_with(b"ROX1") {
+                                    v[4..].to_vec()
                                 } else {
-                                                                        v
+                                    v
+                                };
+                                match crate::core::zstd_decompress_bytes(&inner, dict_bytes.as_deref()) {
+                                    Ok(mut o) => {
+                                        if o.starts_with(b"ROX1") { o = o[4..].to_vec(); }
+                                        o
+                                    }
+                                    Err(_) => inner,
                                 }
                             }
                             Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
                         }
                     }
                 } else {
-                    match crate::core::zstd_decompress_bytes(&buf) {
+                    match crate::core::zstd_decompress_bytes(&buf, dict_bytes.as_deref()) {
                         Ok(mut x) => { if x.starts_with(b"ROX1") { x = x[4..].to_vec(); } x },
                         Err(e) => {
                             if buf.starts_with(b"ROX1") {
@@ -302,7 +382,45 @@ fn main() -> anyhow::Result<()> {
                 };
 
                 let dest = output.unwrap_or_else(|| PathBuf::from("out.raw"));
-                write_all(&dest, &out_bytes)?;
+
+                if archive::is_tar(&out_bytes) {
+                    let out_dir = if dest.extension().is_none() || dest.is_dir() {
+                        dest
+                    } else {
+                        PathBuf::from(".")
+                    };
+                    std::fs::create_dir_all(&out_dir)
+                        .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", out_dir, e))?;
+                    let written = archive::tar_unpack(&out_bytes, &out_dir)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    println!("Unpacked {} files (TAR) to {:?}", written.len(), out_dir);
+                } else if out_bytes.len() >= 4
+                    && u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5850u32
+                {
+                    let out_dir = if dest.extension().is_none() || dest.is_dir() {
+                        dest
+                    } else {
+                        PathBuf::from(".")
+                    };
+                    std::fs::create_dir_all(&out_dir)
+                        .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", out_dir, e))?;
+                    let written = packer::unpack_buffer_to_dir(&out_bytes, &out_dir, None)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    println!("Unpacked {} files to {:?}", written.len(), out_dir);
+                } else if dest.is_dir() {
+                    let fname = if is_png {
+                        png_utils::extract_name_from_png(&buf)
+                    } else {
+                        None
+                    }.unwrap_or_else(|| {
+                        input.file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "out.raw".to_string())
+                    });
+                    write_all(&dest.join(&fname), &out_bytes)?;
+                } else {
+                    write_all(&dest, &out_bytes)?;
+                }
             }
         }
         Commands::Crc32 { input } => {

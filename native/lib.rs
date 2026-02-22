@@ -1,6 +1,9 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod core;
 mod common;
 #[cfg(feature = "gpu")]
@@ -17,6 +20,7 @@ mod png_utils;
 mod image_utils;
 mod progress;
 mod reconstitution;
+mod archive;
 
 pub use core::*;
 #[cfg(feature = "gpu")]
@@ -96,8 +100,22 @@ pub fn native_zstd_compress(buffer: Buffer, level: i32) -> Result<Vec<u8>> {
 
 #[cfg(not(test))]
 #[napi]
+pub fn native_zstd_compress_with_dict(buffer: Buffer, level: i32, dict: Buffer) -> Result<Vec<u8>> {
+    let dict_slice: &[u8] = &dict;
+    core::zstd_compress_bytes(&buffer, level, Some(dict_slice)).map_err(|e| Error::from_reason(e))
+}
+
+#[cfg(not(test))]
+#[napi]
 pub fn native_zstd_decompress(buffer: Buffer) -> Result<Vec<u8>> {
     common::zstd_decompress_bytes(&buffer).map_err(|e| Error::from_reason(e))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_zstd_decompress_with_dict(buffer: Buffer, dict: Buffer) -> Result<Vec<u8>> {
+    let dict_slice: &[u8] = &dict;
+    core::zstd_decompress_bytes(&buffer, Some(dict_slice)).map_err(|e| Error::from_reason(e))
 }
 
 #[cfg(not(test))]
@@ -112,8 +130,7 @@ pub fn check_gpu_status() -> GpuStatus {
 #[cfg(not(test))]
 #[napi]
 pub fn bwt_transform(buffer: Buffer) -> Result<Vec<u8>> {
-    let data = buffer.to_vec();
-    match bwt::bwt_encode(&data) {
+    match bwt::bwt_encode(&buffer) {
         Ok(result) => {
             let mut output = Vec::with_capacity(4 + result.transformed.len());
             output.extend_from_slice(&result.primary_index.to_le_bytes());

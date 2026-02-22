@@ -128,6 +128,7 @@ npm install roxify
 
 - `-p, --passphrase <pass>` - Decryption passphrase
 - `-o, --output <path>` - Output file path (auto-detected from metadata if not provided)
+- `--dict <file>` - Optional zstd dictionary file; improves compression on many small similar files
 
 **Examples:**
 

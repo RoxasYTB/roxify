@@ -94,6 +94,7 @@ export async function encodeBinaryToPng(
         });
       }
     },
+    opts.dict,
   );
 
   if (opts.onProgress)
@@ -266,9 +267,8 @@ export async function encodeBinaryToPng(
   }
 
   {
-    const nameBuf = opts.name
-      ? Buffer.from(opts.name, 'utf8')
-      : Buffer.alloc(0);
+    const nameBuf =
+      opts.name ? Buffer.from(opts.name, 'utf8') : Buffer.alloc(0);
     const nameLen = nameBuf.length;
     const payloadLenBuf = Buffer.alloc(4);
     payloadLenBuf.writeUInt32BE(payloadTotalLen, 0);
@@ -318,9 +318,9 @@ export async function encodeBinaryToPng(
     );
     const padding = (3 - (dataWithoutMarkersLen % 3)) % 3;
     const paddedData =
-      padding > 0
-        ? [...dataWithoutMarkers, Buffer.alloc(padding)]
-        : dataWithoutMarkers;
+      padding > 0 ?
+        [...dataWithoutMarkers, Buffer.alloc(padding)]
+      : dataWithoutMarkers;
 
     const markerStartBytes = colorsToBytes(MARKER_START);
     const compressionMarkerBytes = colorsToBytes(COMPRESSION_MARKERS.zstd);

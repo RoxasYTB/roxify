@@ -2,11 +2,17 @@ import { native } from './native.js';
 
 let nativeZstdCompress: ((data: Buffer, level: number) => Uint8Array) | null =
   null;
+let nativeZstdCompressWithDict:
+  | ((data: Buffer, level: number, dict: Buffer) => Uint8Array)
+  | null = null;
 let nativeZstdDecompress: ((data: Buffer) => Uint8Array) | null = null;
 
 try {
   if (native?.nativeZstdCompress) {
     nativeZstdCompress = native.nativeZstdCompress;
+  }
+  if (native?.nativeZstdCompressWithDict) {
+    nativeZstdCompressWithDict = native.nativeZstdCompressWithDict;
   }
   if (native?.nativeZstdDecompress) {
     nativeZstdDecompress = native.nativeZstdDecompress;
@@ -17,15 +23,21 @@ export async function compressStream(
   stream: AsyncGenerator<Buffer>,
   level: number = 19,
   onProgress?: (loaded: number, total: number) => void,
+  dict?: Buffer,
 ): Promise<{ chunks: Buffer[]; totalLength: number }> {
   const compressedChunks: Buffer[] = [];
   let chunkCount = 0;
 
   for await (const chunk of stream) {
-    if (!nativeZstdCompress) {
+    if (!nativeZstdCompress && !nativeZstdCompressWithDict) {
       throw new Error('Native zstd compression not available');
     }
-    const compressed = Buffer.from(nativeZstdCompress(chunk, level));
+    const compressed = Buffer.from(
+      nativeZstdCompressWithDict && dict ?
+        nativeZstdCompressWithDict(chunk, level, dict)
+        // fall back to plain
+      : nativeZstdCompress!(chunk, level),
+    );
     compressedChunks.push(compressed);
     chunkCount++;
     if (onProgress) onProgress(chunkCount, 0);
@@ -52,6 +64,7 @@ export async function parallelZstdCompress(
   payload: Buffer | Buffer[],
   level: number = 19,
   onProgress?: (loaded: number, total: number) => void,
+  dict?: Buffer,
 ): Promise<Buffer[]> {
   const chunkSize = 8 * 1024 * 1024;
   const chunks: Buffer[] = [];
@@ -84,12 +97,16 @@ export async function parallelZstdCompress(
   const totalChunks = chunks.length;
   const compressedChunks: Buffer[] = [];
 
-  if (!nativeZstdCompress) {
+  if (!nativeZstdCompress && !nativeZstdCompressWithDict) {
     throw new Error('Native zstd compression not available');
   }
 
   for (let i = 0; i < totalChunks; i++) {
-    const compressed = Buffer.from(nativeZstdCompress(chunks[i], level));
+    const compressed = Buffer.from(
+      nativeZstdCompressWithDict && dict ?
+        nativeZstdCompressWithDict(chunks[i], level, dict)
+      : nativeZstdCompress!(chunks[i], level),
+    );
     compressedChunks.push(compressed);
     if (onProgress) onProgress(i + 1, totalChunks);
   }

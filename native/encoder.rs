@@ -19,16 +19,17 @@ pub enum ImageFormat {
 
 pub fn encode_to_png(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
     let format = predict_best_format_raw(data);
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, None, None)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, None, None, None)
 }
+
 
 pub fn encode_to_png_with_name(data: &[u8], compression_level: i32, name: Option<&str>) -> Result<Vec<u8>> {
     let format = predict_best_format_raw(data);
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, name, None)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, name, None, None)
 }
 
 pub fn encode_to_png_with_name_and_filelist(data: &[u8], compression_level: i32, name: Option<&str>, file_list: Option<&str>) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, name, file_list)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, name, file_list, None)
 }
 
 fn predict_best_format_raw(data: &[u8]) -> ImageFormat {
@@ -59,7 +60,7 @@ fn predict_best_format_raw(data: &[u8]) -> ImageFormat {
 }
 
 pub fn encode_to_png_raw(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, None, None)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, None, None, None)
 }
 
 pub fn encode_to_png_with_encryption_and_name(
@@ -70,7 +71,7 @@ pub fn encode_to_png_with_encryption_and_name(
     name: Option<&str>,
 ) -> Result<Vec<u8>> {
     let format = predict_best_format_raw(data);
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, format, name, None)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, format, name, None, None)
 }
 
 pub fn encode_to_png_with_encryption_name_and_filelist(
@@ -81,10 +82,10 @@ pub fn encode_to_png_with_encryption_name_and_filelist(
     name: Option<&str>,
     file_list: Option<&str>,
 ) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, ImageFormat::Png, name, file_list)
+    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, ImageFormat::Png, name, file_list, None)
 }
 
-fn encode_to_png_with_encryption_name_and_format_and_filelist(
+pub fn encode_to_png_with_encryption_name_and_format_and_filelist(
     data: &[u8],
     compression_level: i32,
     passphrase: Option<&str>,
@@ -92,8 +93,9 @@ fn encode_to_png_with_encryption_name_and_format_and_filelist(
     format: ImageFormat,
     name: Option<&str>,
     file_list: Option<&str>,
+    dict: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let png = encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, passphrase, encrypt_type, name, file_list)?;
+    let png = encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, passphrase, encrypt_type, name, file_list, dict)?;
 
     match format {
         ImageFormat::Png => Ok(png),
@@ -119,10 +121,11 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     encrypt_type: Option<&str>,
     name: Option<&str>,
     file_list: Option<&str>,
+    dict: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
     let payload_input = [MAGIC, data].concat();
 
-    let compressed = crate::core::zstd_compress_bytes(&payload_input, compression_level)
+    let compressed = crate::core::zstd_compress_bytes(&payload_input, compression_level, dict)
         .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {
@@ -383,7 +386,7 @@ mod tests {
     fn test_rXFL_chunk_present_when_file_list_provided() {
         let sample_data = b"hello world".to_vec();
         let file_list_json = Some("[{\"name\": \"a.txt\", \"size\": 11}]" as &str);
-        let png = encode_to_png_with_encryption_name_and_filelist_internal(&sample_data, 3, None, None, None, file_list_json)
+        let png = encode_to_png_with_encryption_name_and_filelist_internal(&sample_data, 3, None, None, None, file_list_json, None)
             .expect("encode should succeed");
 
         let chunks = png_utils::extract_png_chunks(&png).expect("extract chunks");
@@ -405,7 +408,7 @@ mod tests {
         fs::write(dir.join("sub").join("b.txt"), b"world").unwrap();
 
         let pack_result = crate::packer::pack_path_with_metadata(&dir).expect("pack path");
-        let png = encode_to_png_with_encryption_name_and_filelist_internal(&pack_result.data, 3, None, None, None, pack_result.file_list_json.as_deref())
+        let png = encode_to_png_with_encryption_name_and_filelist_internal(&pack_result.data, 3, None, None, None, pack_result.file_list_json.as_deref(), None)
             .expect("encode should succeed");
 
         let payload = crate::png_utils::extract_payload_from_png(&png).expect("extract payload");
@@ -413,7 +416,7 @@ mod tests {
         assert_eq!(payload[0], 0x00u8);
 
         let compressed = payload[1..].to_vec();
-        let mut decompressed = crate::core::zstd_decompress_bytes(&compressed).expect("decompress");
+        let mut decompressed = crate::core::zstd_decompress_bytes(&compressed, None).expect("decompress");
         if decompressed.starts_with(b"ROX1") {
             decompressed = decompressed[4..].to_vec();
         }
@@ -434,7 +437,7 @@ mod tests {
             .expect("encode should succeed");
                 let payload = crate::png_utils::extract_payload_from_png(&png).expect("extract");
                 let decrypted = crate::crypto::try_decrypt(&payload, Some("password")).expect("decrypt");
-                let mut decompressed = crate::core::zstd_decompress_bytes(&decrypted).expect("decompress");
+                let mut decompressed = crate::core::zstd_decompress_bytes(&decrypted, None).expect("decompress");
         if decompressed.starts_with(b"ROX1") { decompressed = decompressed[4..].to_vec(); }
                 assert_eq!(decompressed, data);
     }
@@ -489,25 +492,26 @@ fn optimize_format(png_data: &[u8]) -> Result<Vec<u8>> {
 fn optimize_to_webp(png_data: &[u8]) -> Result<Vec<u8>> {
     use std::fs;
 
-    let tmp_in = "/tmp/roxify_temp_in.png";
-    let tmp_out = "/tmp/roxify_temp_out.webp";
+    let tmp_dir = std::env::temp_dir();
+    let tmp_in = tmp_dir.join("roxify_temp_in.png");
+    let tmp_out = tmp_dir.join("roxify_temp_out.webp");
 
-    fs::write(tmp_in, png_data)?;
+    fs::write(&tmp_in, png_data)?;
 
     let status = Command::new("cwebp")
-        .args(&["-lossless", tmp_in, "-o", tmp_out])
+        .args(&["-lossless", &tmp_in.to_string_lossy(), "-o", &tmp_out.to_string_lossy()])
         .stderr(Stdio::null())
         .stdout(Stdio::null())
         .status()?;
 
     if status.success() {
-        let result = fs::read(tmp_out)?;
-        let _ = fs::remove_file(tmp_in);
-        let _ = fs::remove_file(tmp_out);
+        let result = fs::read(&tmp_out)?;
+        let _ = fs::remove_file(&tmp_in);
+        let _ = fs::remove_file(&tmp_out);
         Ok(result)
     } else {
-        let _ = fs::remove_file(tmp_in);
-        let _ = fs::remove_file(tmp_out);
+        let _ = fs::remove_file(&tmp_in);
+        let _ = fs::remove_file(&tmp_out);
         Err(anyhow::anyhow!("WebP conversion failed"))
     }
 }
@@ -515,25 +519,26 @@ fn optimize_to_webp(png_data: &[u8]) -> Result<Vec<u8>> {
 fn optimize_to_jxl(png_data: &[u8]) -> Result<Vec<u8>> {
     use std::fs;
 
-    let tmp_in = "/tmp/roxify_temp_in.png";
-    let tmp_out = "/tmp/roxify_temp_out.jxl";
+    let tmp_dir = std::env::temp_dir();
+    let tmp_in = tmp_dir.join("roxify_temp_in.png");
+    let tmp_out = tmp_dir.join("roxify_temp_out.jxl");
 
-    fs::write(tmp_in, png_data)?;
+    fs::write(&tmp_in, png_data)?;
 
     let status = Command::new("cjxl")
-        .args(&[tmp_in, tmp_out, "-d", "0", "-e", "9"])
+        .args(&[&tmp_in.to_string_lossy() as &str, &tmp_out.to_string_lossy() as &str, "-d", "0", "-e", "9"])
         .stderr(Stdio::null())
         .stdout(Stdio::null())
         .status()?;
 
     if status.success() {
-        let result = fs::read(tmp_out)?;
-        let _ = fs::remove_file(tmp_in);
-        let _ = fs::remove_file(tmp_out);
+        let result = fs::read(&tmp_out)?;
+        let _ = fs::remove_file(&tmp_in);
+        let _ = fs::remove_file(&tmp_out);
         Ok(result)
     } else {
-        let _ = fs::remove_file(tmp_in);
-        let _ = fs::remove_file(tmp_out);
+        let _ = fs::remove_file(&tmp_in);
+        let _ = fs::remove_file(&tmp_out);
         Err(anyhow::anyhow!("JXL conversion failed"))
     }
 }
@@ -541,23 +546,24 @@ fn optimize_to_jxl(png_data: &[u8]) -> Result<Vec<u8>> {
 fn reconvert_to_png(data: &[u8], original_format: &str) -> Result<Vec<u8>> {
     use std::fs;
 
+    let tmp_dir = std::env::temp_dir();
     let tmp_in = match original_format {
-        "webp" => "/tmp/roxify_reconvert_in.webp",
-        "jxl" => "/tmp/roxify_reconvert_in.jxl",
+        "webp" => tmp_dir.join("roxify_reconvert_in.webp"),
+        "jxl" => tmp_dir.join("roxify_reconvert_in.jxl"),
         _ => return Err(anyhow::anyhow!("Unknown format")),
     };
-    let tmp_out = "/tmp/roxify_reconvert_out.png";
+    let tmp_out = tmp_dir.join("roxify_reconvert_out.png");
 
-    fs::write(tmp_in, data)?;
+    fs::write(&tmp_in, data)?;
 
     let status = match original_format {
         "webp" => Command::new("dwebp")
-            .args(&[tmp_in, "-o", tmp_out])
+            .args(&[&tmp_in.to_string_lossy() as &str, "-o", &tmp_out.to_string_lossy() as &str])
             .stderr(Stdio::null())
             .stdout(Stdio::null())
             .status()?,
         "jxl" => Command::new("djxl")
-            .args(&[tmp_in, tmp_out])
+            .args(&[&tmp_in.to_string_lossy() as &str, &tmp_out.to_string_lossy() as &str])
             .stderr(Stdio::null())
             .stdout(Stdio::null())
             .status()?,
@@ -565,13 +571,13 @@ fn reconvert_to_png(data: &[u8], original_format: &str) -> Result<Vec<u8>> {
     };
 
     if status.success() {
-        let result = fs::read(tmp_out)?;
-        let _ = fs::remove_file(tmp_in);
-        let _ = fs::remove_file(tmp_out);
+        let result = fs::read(&tmp_out)?;
+        let _ = fs::remove_file(&tmp_in);
+        let _ = fs::remove_file(&tmp_out);
         Ok(result)
     } else {
-        let _ = fs::remove_file(tmp_in);
-        let _ = fs::remove_file(tmp_out);
+        let _ = fs::remove_file(&tmp_in);
+        let _ = fs::remove_file(&tmp_out);
         Err(anyhow::anyhow!("Reconversion to PNG failed"))
     }
 }

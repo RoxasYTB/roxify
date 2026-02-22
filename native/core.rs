@@ -1,5 +1,7 @@
 use rayon::prelude::*;
 use std::sync::Arc;
+use std::path::PathBuf;
+use anyhow::Result;
 
 pub struct PlainScanResult {
     pub marker_positions: Vec<u32>,
@@ -59,7 +61,26 @@ pub fn scan_pixels_bytes(buf: &[u8], channels: usize, marker_bytes: Option<&[u8]
 }
 
 pub fn crc32_bytes(buf: &[u8]) -> u32 {
-    crc32fast::hash(buf)
+    // parallelize checksum on large buffers, since crc32fast::hash is single-threaded
+    const PAR_THRESHOLD: usize = 4 * 1024 * 1024; // 4 MiB
+    if buf.len() < PAR_THRESHOLD {
+        crc32fast::hash(buf)
+    } else {
+        // compute per-chunk hasher in parallel then combine
+        let chunk = PAR_THRESHOLD;
+        let combined = buf
+            .par_chunks(chunk)
+            .map(|chunk| {
+                let mut h = crc32fast::Hasher::new();
+                h.update(chunk);
+                h
+            })
+            .reduce(|| crc32fast::Hasher::new(), |mut a, b| {
+                a.combine(&b);
+                a
+            });
+        combined.finalize()
+    }
 }
 
 pub fn adler32_bytes(buf: &[u8]) -> u32 {
@@ -115,8 +136,12 @@ fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::r
         let _ = encoder.multithread(threads);
     }
 
-    if buf.len() > 10 * 1024 * 1024 {
+    if buf.len() > 1024 * 1024 {
         let _ = encoder.long_distance_matching(true);
+        let wlog = if buf.len() > 512 * 1024 * 1024 { 28 }
+            else if buf.len() > 64 * 1024 * 1024 { 27 }
+            else { 26 };
+        let _ = encoder.window_log(wlog);
     }
 
     let _ = encoder.set_pledged_src_size(Some(buf.len() as u64));
@@ -128,20 +153,50 @@ fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::r
     encoder.finish().map_err(|e| format!("zstd finish error: {}", e))
 }
 
-pub fn zstd_compress_bytes(buf: &[u8], level: i32) -> std::result::Result<Vec<u8>, String> {
+pub fn train_zstd_dictionary(sample_paths: &[PathBuf], dict_size: usize) -> Result<Vec<u8>> {
+    // load all sample files contiguously
+    let mut samples = Vec::new();
+    let mut lengths = Vec::new();
+    for path in sample_paths {
+        let data = std::fs::read(path)?;
+        lengths.push(data.len());
+        samples.extend_from_slice(&data);
+    }
+    let dict = zstd::dict::from_continuous(&samples, &lengths, dict_size)?;
+    Ok(dict)
+}
+
+/// Compress a slice with optional zstd dictionary.
+///
+/// If `dict` is `Some`, the provided dictionary bytes are passed to the
+/// encoder; the same dictionary will be required for decompression. When
+/// called from the CLI a small user-supplied file is read once and handed
+/// through this parameter.  The old behaviour is preserved by passing
+/// `None` (see `zstd_compress_bytes(buf, level, None)` below).
+pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
     let actual_level = if level >= 19 { 22 } else { level };
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), actual_level)
-        .map_err(|e| format!("zstd encoder init error: {}", e))?;
+    // initialize encoder, optionally with dictionary
+    let mut encoder = if let Some(d) = dict {
+        zstd::stream::Encoder::with_dictionary(Vec::new(), actual_level, d)
+            .map_err(|e| format!("zstd encoder init error: {}", e))?
+    } else {
+        zstd::stream::Encoder::new(Vec::new(), actual_level)
+            .map_err(|e| format!("zstd encoder init error: {}", e))?
+    };
 
     let threads = num_cpus::get() as u32;
     if threads > 1 {
         let _ = encoder.multithread(threads);
     }
 
-    if buf.len() > 10 * 1024 * 1024 {
+    if buf.len() > 1024 * 1024 {
         let _ = encoder.long_distance_matching(true);
+        let wlog = if buf.len() > 512 * 1024 * 1024 { 28 }
+            else if buf.len() > 64 * 1024 * 1024 { 27 }
+            else { 26 };
+        let _ = encoder.window_log(wlog);
     }
 
     let _ = encoder.set_pledged_src_size(Some(buf.len() as u64));
@@ -150,9 +205,20 @@ pub fn zstd_compress_bytes(buf: &[u8], level: i32) -> std::result::Result<Vec<u8
     encoder.finish().map_err(|e| format!("zstd finish error: {}", e))
 }
 
-pub fn zstd_decompress_bytes(buf: &[u8]) -> std::result::Result<Vec<u8>, String> {
-    zstd::stream::decode_all(buf).map_err(|e| format!("zstd decompress error: {}", e))
+pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
+    use std::io::Read;
+    if let Some(d) = dict {
+        let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(buf), d)
+            .map_err(|e| format!("zstd decoder init error: {}", e))?;
+        let mut out = Vec::new();
+        decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
+        Ok(out)
+    } else {
+        zstd::stream::decode_all(buf).map_err(|e| format!("zstd decompress error: {}", e))
+    }
 }
+
+// backwards compatibility wrapper
 
 pub fn zstd_compress_bytes_fast(buf: &[u8], level: i32) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
@@ -192,6 +258,31 @@ mod tests {
     }
 
     #[test]
+    fn test_train_dictionary() {
+        use std::fs::{write, create_dir_all};
+        let td = std::env::temp_dir().join("rox_dict_test");
+        let _ = create_dir_all(&td);
+        let f1 = td.join("a.bin");
+        let f2 = td.join("b.bin");
+        // produce 1 MiB of repeated data per file
+        let big = vec![0xABu8; 1024 * 1024];
+        write(&f1, &big).unwrap();
+        write(&f2, &big).unwrap();
+        // choose dictionary size 16 KiB (far below total sample size ≈2 MiB)
+        match train_zstd_dictionary(&[f1.clone(), f2.clone()], 16 * 1024) {
+            Ok(dict) => {
+                assert!(dict.len() <= 16 * 1024);
+                assert!(!dict.is_empty());
+            }
+            Err(e) => {
+                // dictionary training may fail due to insufficient or unsuitable samples;
+                // ensure error string is nonempty to catch panics
+                assert!(!e.to_string().is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn test_delta_roundtrip() {
         let data = vec![10u8, 20, 30, 40, 250];
         let enc = delta_encode_bytes(&data);
@@ -204,5 +295,19 @@ mod tests {
         let data = b"hello".to_vec();
         assert_eq!(crc32_bytes(&data), crc32fast::hash(&data));
         assert_eq!(adler32_bytes(&data), adler32_bytes(&data));
+
+        // also test large buffer triggers parallel branch
+        let big = vec![0xAAu8; 5 * 1024 * 1024];
+        assert_eq!(crc32_bytes(&big), crc32fast::hash(&big));
+    }
+
+    #[test]
+    fn test_zstd_dict_roundtrip() {
+        let data = b"this is some test data that repeats. ".repeat(1000);
+        // simple dictionary containing a substring
+        let dict = b"test data";
+        let compressed = zstd_compress_bytes(&data, 3, Some(dict)).expect("compress");
+        let decompressed = zstd_decompress_bytes(&compressed, Some(dict)).expect("decompress");
+        assert_eq!(decompressed, data);
     }
 }

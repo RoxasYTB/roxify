@@ -24,6 +24,17 @@ import { cropAndReconstitute } from './reconstitution.js';
 import { DecodeOptions, DecodeResult } from './types.js';
 import { parallelZstdDecompress, tryZstdDecompress } from './zstd.js';
 
+function isColorMatch(
+  r1: number,
+  g1: number,
+  b1: number,
+  r2: number,
+  g2: number,
+  b2: number,
+): boolean {
+  return Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2) < 50;
+}
+
 async function tryDecompress(
   payload: Buffer,
   onProgress?: (info: {
@@ -390,9 +401,14 @@ export async function decodePngToBinary(
       hasMarkerStart = true;
       for (let i = 0; i < MARKER_START.length; i++) {
         if (
-          firstPixels[i].r !== MARKER_START[i].r ||
-          firstPixels[i].g !== MARKER_START[i].g ||
-          firstPixels[i].b !== MARKER_START[i].b
+          !isColorMatch(
+            firstPixels[i].r,
+            firstPixels[i].g,
+            firstPixels[i].b,
+            MARKER_START[i].r,
+            MARKER_START[i].g,
+            MARKER_START[i].b,
+          )
         ) {
           hasMarkerStart = false;
           break;
@@ -525,9 +541,14 @@ export async function decodePngToBinary(
       for (let mi = 0; mi < MARKER_START.length && match; mi++) {
         const offset = (i + mi) * 3;
         if (
-          logicalData[offset] !== MARKER_START[mi].r ||
-          logicalData[offset + 1] !== MARKER_START[mi].g ||
-          logicalData[offset + 2] !== MARKER_START[mi].b
+          !isColorMatch(
+            logicalData[offset],
+            logicalData[offset + 1],
+            logicalData[offset + 2],
+            MARKER_START[mi].r,
+            MARKER_START[mi].g,
+            MARKER_START[mi].b,
+          )
         ) {
           match = false;
         }
@@ -560,9 +581,14 @@ export async function decodePngToBinary(
             const idx = (y * logicalWidth + (x + mi)) * 3;
             if (
               idx + 2 >= logicalData.length ||
-              logicalData[idx] !== MARKER_START[mi].r ||
-              logicalData[idx + 1] !== MARKER_START[mi].g ||
-              logicalData[idx + 2] !== MARKER_START[mi].b
+              !isColorMatch(
+                logicalData[idx],
+                logicalData[idx + 1],
+                logicalData[idx + 2],
+                MARKER_START[mi].r,
+                MARKER_START[mi].g,
+                MARKER_START[mi].b,
+              )
             ) {
               match = false;
             }
@@ -681,9 +707,14 @@ export async function decodePngToBinary(
     for (let i = 0; i < MARKER_START.length; i++) {
       const offset = (startIdx + i) * 3;
       if (
-        logicalData[offset] !== MARKER_START[i].r ||
-        logicalData[offset + 1] !== MARKER_START[i].g ||
-        logicalData[offset + 2] !== MARKER_START[i].b
+        !isColorMatch(
+          logicalData[offset],
+          logicalData[offset + 1],
+          logicalData[offset + 2],
+          MARKER_START[i].r,
+          MARKER_START[i].g,
+          MARKER_START[i].b,
+        )
       ) {
         throw new Error('Marker START not found - image format not supported');
       }
@@ -723,9 +754,14 @@ export async function decodePngToBinary(
         }
         const offset = pixelIdx * 3;
         if (
-          logicalData[offset] !== MARKER_END[mi].r ||
-          logicalData[offset + 1] !== MARKER_END[mi].g ||
-          logicalData[offset + 2] !== MARKER_END[mi].b
+          !isColorMatch(
+            logicalData[offset],
+            logicalData[offset + 1],
+            logicalData[offset + 2],
+            MARKER_END[mi].r,
+            MARKER_END[mi].g,
+            MARKER_END[mi].b,
+          )
         ) {
           matchEnd = false;
         }
@@ -933,9 +969,14 @@ export async function decodePngToBinary(
                     const idx = (y * logicalWidth2 + (x + mi)) * 3;
                     if (
                       idx + 2 >= logicalData2.length ||
-                      logicalData2[idx] !== MARKER_START[mi].r ||
-                      logicalData2[idx + 1] !== MARKER_START[mi].g ||
-                      logicalData2[idx + 2] !== MARKER_START[mi].b
+                      !isColorMatch(
+                        logicalData2[idx],
+                        logicalData2[idx + 1],
+                        logicalData2[idx + 2],
+                        MARKER_START[mi].r,
+                        MARKER_START[mi].g,
+                        MARKER_START[mi].b,
+                      )
                     ) {
                       match = false;
                     }
@@ -1025,9 +1066,14 @@ export async function decodePngToBinary(
                 }
                 const offset = pixelIdx * 3;
                 if (
-                  logicalData2[offset] !== MARKER_END[mi].r ||
-                  logicalData2[offset + 1] !== MARKER_END[mi].g ||
-                  logicalData2[offset + 2] !== MARKER_END[mi].b
+                  !isColorMatch(
+                    logicalData2[offset],
+                    logicalData2[offset + 1],
+                    logicalData2[offset + 2],
+                    MARKER_END[mi].r,
+                    MARKER_END[mi].g,
+                    MARKER_END[mi].b,
+                  )
                 ) {
                   matchEnd2 = false;
                 }

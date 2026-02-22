@@ -93,6 +93,11 @@ export function unpackBuffer(
   fileList?: string[],
 ): { files: { path: string; buf: Buffer }[] } | null {
   if (buf.length < 8) return null;
+
+  if (isTar(buf)) {
+    return unpackTar(buf, fileList);
+  }
+
   const magic = buf.readUInt32BE(0);
 
   if (magic === 0x524f5849) {
@@ -103,9 +108,8 @@ export function unpackBuffer(
 
     const files: { path: string; buf: Buffer }[] = [];
 
-    const entriesToProcess = fileList
-      ? index.filter((e) => fileList.includes(e.path))
-      : index;
+    const entriesToProcess =
+      fileList ? index.filter((e) => fileList.includes(e.path)) : index;
 
     for (const entry of entriesToProcess) {
       const entryStart = dataStart + entry.offset;
@@ -271,4 +275,66 @@ export async function packPathsGenerator(
   }
 
   return { index, stream: streamGenerator(), totalSize };
+}
+
+export function isTar(buf: Buffer): boolean {
+  if (buf.length < 263) return false;
+  return buf.slice(257, 262).toString('ascii') === 'ustar';
+}
+
+function unpackTar(
+  buf: Buffer,
+  fileList?: string[],
+): { files: { path: string; buf: Buffer }[] } | null {
+  const files: { path: string; buf: Buffer }[] = [];
+  let offset = 0;
+
+  while (offset + 512 <= buf.length) {
+    const header = buf.slice(offset, offset + 512);
+
+    let allZero = true;
+    for (let i = 0; i < 512; i++) {
+      if (header[i] !== 0) {
+        allZero = false;
+        break;
+      }
+    }
+    if (allZero) break;
+
+    const nameRaw = header.slice(0, 100).toString('ascii');
+    const name = nameRaw.replace(/\0+$/, '');
+
+    const sizeOctal = header
+      .slice(124, 136)
+      .toString('ascii')
+      .replace(/\0+$/, '')
+      .trim();
+    const size = parseInt(sizeOctal, 8) || 0;
+
+    const typeFlag = header[156];
+
+    const prefix = header.slice(345, 500).toString('ascii').replace(/\0+$/, '');
+    const fullPath = prefix ? `${prefix}/${name}` : name;
+
+    const cleanPath = fullPath
+      .split('/')
+      .filter((c) => c && c !== '.' && c !== '..')
+      .join('/');
+
+    offset += 512;
+
+    if (typeFlag === 0 || typeFlag === 0x30) {
+      if (offset + size > buf.length) break;
+      const content = buf.slice(offset, offset + size);
+
+      if (!fileList || fileList.includes(cleanPath)) {
+        files.push({ path: cleanPath, buf: Buffer.from(content) });
+      }
+    }
+
+    const blocks = Math.ceil(size / 512);
+    offset += blocks * 512;
+  }
+
+  return files.length > 0 ? { files } : null;
 }

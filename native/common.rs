@@ -59,7 +59,25 @@ pub fn scan_pixels_bytes(buf: &[u8], channels: usize, marker_bytes: Option<&[u8]
 }
 
 pub fn crc32_bytes(buf: &[u8]) -> u32 {
-    crc32fast::hash(buf)
+    // mirror core implementation; keep in sync until common and core merge
+    const PAR_THRESHOLD: usize = 4 * 1024 * 1024;
+    if buf.len() < PAR_THRESHOLD {
+        crc32fast::hash(buf)
+    } else {
+        let chunk = PAR_THRESHOLD;
+        let combined = buf
+            .par_chunks(chunk)
+            .map(|chunk| {
+                let mut h = crc32fast::Hasher::new();
+                h.update(chunk);
+                h
+            })
+            .reduce(|| crc32fast::Hasher::new(), |mut a, b| {
+                a.combine(&b);
+                a
+            });
+        combined.finalize()
+    }
 }
 
 pub fn adler32_bytes(buf: &[u8]) -> u32 {
@@ -121,8 +139,12 @@ fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::r
         let _ = encoder.multithread(threads);
     }
 
-    if buf.len() > 10 * 1024 * 1024 {
+    if buf.len() > 1024 * 1024 {
         let _ = encoder.long_distance_matching(true);
+        let wlog = if buf.len() > 512 * 1024 * 1024 { 28 }
+            else if buf.len() > 64 * 1024 * 1024 { 27 }
+            else { 26 };
+        let _ = encoder.window_log(wlog);
     }
 
     let _ = encoder.set_pledged_src_size(Some(buf.len() as u64));

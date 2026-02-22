@@ -13,6 +13,9 @@ path = "native/lib.rs"
 name = "roxify_native"
 path = "native/main.rs"
 
+[dev-dependencies]
+rand = "0.8"
+
 [dependencies]
 napi = "2"
 napi-derive = "2"
@@ -30,10 +33,12 @@ miniz_oxide = "0.8.9"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # indicatif removed from default deps to reduce heavy build graph
 walkdir = "2.5.0"
+tar = "0.4"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
 rand = "0.8"
 sha2 = "0.10"
+mimalloc = "0.1"
 
 wgpu = { version = "0.19", optional = true }
 memmap2 = "0.9"

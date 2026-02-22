@@ -4,6 +4,8 @@ export interface EncodeOptions {
   compression?: 'zstd';
   compressionLevel?: number;
   passphrase?: string;
+  /** optional dictionary to use for zstd compression */
+  dict?: Buffer;
   name?: string;
   mode?: 'screenshot';
   encrypt?: 'auto' | 'aes' | 'xor' | 'none';
