@@ -183,6 +183,243 @@ async function runJsTests() {
   } catch (e) {
     console.log(`  \x1b[33m⚠\x1b[0m pack/unpack test skipped: ${e.message}`);
   }
+
+  // ===========================================================================
+  // Unstretch tests
+  // ===========================================================================
+  console.log('\n\x1b[1m━━━ Unstretch tests ━━━\x1b[0m');
+
+  try {
+    const decoder = await import(path.join(distDir, 'utils', 'decoder.js'));
+
+    test('unstretchImage: basic 2x2 stretch of 2x2 image', () => {
+      // Logical image: 2x2 pixels (red, green / blue, yellow)
+      // Stretched 2x: 4x4
+      const w = 4, h = 4;
+      const buf = Buffer.alloc(w * h * 3);
+      // Row 0 and 1: red(2px), green(2px)
+      for (let y = 0; y < 2; y++) {
+        for (let x = 0; x < 2; x++) { buf[(y * w + x) * 3] = 255; buf[(y * w + x) * 3 + 1] = 0; buf[(y * w + x) * 3 + 2] = 0; }
+        for (let x = 2; x < 4; x++) { buf[(y * w + x) * 3] = 0; buf[(y * w + x) * 3 + 1] = 255; buf[(y * w + x) * 3 + 2] = 0; }
+      }
+      // Row 2 and 3: blue(2px), yellow(2px)
+      for (let y = 2; y < 4; y++) {
+        for (let x = 0; x < 2; x++) { buf[(y * w + x) * 3] = 0; buf[(y * w + x) * 3 + 1] = 0; buf[(y * w + x) * 3 + 2] = 255; }
+        for (let x = 2; x < 4; x++) { buf[(y * w + x) * 3] = 255; buf[(y * w + x) * 3 + 1] = 255; buf[(y * w + x) * 3 + 2] = 0; }
+      }
+      const result = decoder.unstretchImage(buf, w, h);
+      assert.ok(result, 'should return a result');
+      assert.strictEqual(result.width, 2);
+      assert.strictEqual(result.height, 2);
+      // red at (0,0)
+      assert.strictEqual(result.data[0], 255);
+      assert.strictEqual(result.data[1], 0);
+      assert.strictEqual(result.data[2], 0);
+      // green at (1,0)
+      assert.strictEqual(result.data[3], 0);
+      assert.strictEqual(result.data[4], 255);
+      assert.strictEqual(result.data[5], 0);
+      // blue at (0,1)
+      assert.strictEqual(result.data[6], 0);
+      assert.strictEqual(result.data[7], 0);
+      assert.strictEqual(result.data[8], 255);
+      // yellow at (1,1)
+      assert.strictEqual(result.data[9], 255);
+      assert.strictEqual(result.data[10], 255);
+      assert.strictEqual(result.data[11], 0);
+    });
+
+    test('unstretchImage: 3x3 stretch (odd factor)', () => {
+      // 2x1 image: red, blue → stretched 3x: 6x3
+      const w = 6, h = 3;
+      const buf = Buffer.alloc(w * h * 3);
+      for (let y = 0; y < 3; y++) {
+        for (let x = 0; x < 3; x++) { buf[(y * w + x) * 3] = 255; } // red
+        for (let x = 3; x < 6; x++) { buf[(y * w + x) * 3 + 2] = 255; } // blue
+      }
+      const result = decoder.unstretchImage(buf, w, h);
+      assert.ok(result);
+      assert.strictEqual(result.width, 2);
+      assert.strictEqual(result.height, 1);
+    });
+
+    test('unstretchImage: with white padding', () => {
+      // 8x6 image with white padding, inner 4x4 data (2x2 logical stretched 2x)
+      const w = 8, h = 6;
+      const buf = Buffer.alloc(w * h * 3, 255); // all white
+      // Place 4x4 block starting at (2,1)
+      for (let y = 1; y < 3; y++) {
+        for (let x = 2; x < 4; x++) { buf[(y * w + x) * 3] = 255; buf[(y * w + x) * 3 + 1] = 0; buf[(y * w + x) * 3 + 2] = 0; } // red
+        for (let x = 4; x < 6; x++) { buf[(y * w + x) * 3] = 0; buf[(y * w + x) * 3 + 1] = 128; buf[(y * w + x) * 3 + 2] = 0; } // dark green
+      }
+      for (let y = 3; y < 5; y++) {
+        for (let x = 2; x < 4; x++) { buf[(y * w + x) * 3] = 0; buf[(y * w + x) * 3 + 1] = 0; buf[(y * w + x) * 3 + 2] = 200; } // blue
+        for (let x = 4; x < 6; x++) { buf[(y * w + x) * 3] = 128; buf[(y * w + x) * 3 + 1] = 0; buf[(y * w + x) * 3 + 2] = 128; } // purple
+      }
+      const result = decoder.unstretchImage(buf, w, h);
+      assert.ok(result);
+      assert.strictEqual(result.width, 2);
+      assert.strictEqual(result.height, 2);
+    });
+
+    test('unstretchImage: non-uniform stretch factors', () => {
+      // 2x2 logical, stretched non-uniformly: col0=3px, col1=2px → width=5
+      // row0=2px, row1=3px → height=5
+      const w = 5, h = 5;
+      const buf = Buffer.alloc(w * h * 3);
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) {
+          const logX = x < 3 ? 0 : 1;
+          const logY = y < 2 ? 0 : 1;
+          const idx = (y * w + x) * 3;
+          buf[idx] = logX === 0 && logY === 0 ? 200 : logX === 1 && logY === 0 ? 100 : logX === 0 ? 50 : 10;
+          buf[idx + 1] = buf[idx];
+          buf[idx + 2] = buf[idx];
+        }
+      }
+      const result = decoder.unstretchImage(buf, w, h);
+      assert.ok(result);
+      assert.strictEqual(result.width, 2);
+      assert.strictEqual(result.height, 2);
+    });
+
+    test('unstretchImage: returns null for non-stretched image', () => {
+      // Each pixel is unique → no runs to collapse
+      const w = 3, h = 3;
+      const buf = Buffer.alloc(w * h * 3);
+      for (let i = 0; i < w * h; i++) {
+        buf[i * 3] = i * 28;
+        buf[i * 3 + 1] = (i * 37) % 256;
+        buf[i * 3 + 2] = (i * 53) % 256;
+      }
+      const result = decoder.unstretchImage(buf, w, h);
+      assert.strictEqual(result, null, 'should return null for non-stretched');
+    });
+
+    test('unstretchImage: returns null for all-white image', () => {
+      const buf = Buffer.alloc(12 * 3, 255);
+      const result = decoder.unstretchImage(buf, 4, 3);
+      assert.strictEqual(result, null);
+    });
+
+    test('unstretchImage: large stretch factor (10x)', () => {
+      // 3x2 logical stretched 10x → 30x20
+      const logW = 3, logH = 2, factor = 10;
+      const w = logW * factor, h = logH * factor;
+      const buf = Buffer.alloc(w * h * 3);
+      const colors = [[255,0,0],[0,255,0],[0,0,255],[128,128,0],[0,128,128],[128,0,128]];
+      for (let ly = 0; ly < logH; ly++) {
+        for (let lx = 0; lx < logW; lx++) {
+          const c = colors[ly * logW + lx];
+          for (let dy = 0; dy < factor; dy++) {
+            for (let dx = 0; dx < factor; dx++) {
+              const px = lx * factor + dx;
+              const py = ly * factor + dy;
+              const idx = (py * w + px) * 3;
+              buf[idx] = c[0]; buf[idx+1] = c[1]; buf[idx+2] = c[2];
+            }
+          }
+        }
+      }
+      const result = decoder.unstretchImage(buf, w, h);
+      assert.ok(result);
+      assert.strictEqual(result.width, logW);
+      assert.strictEqual(result.height, logH);
+    });
+  } catch (e) {
+    console.log(`  \x1b[33m⚠\x1b[0m unstretch tests skipped: ${e.message}`);
+  }
+
+  // ===========================================================================
+  // End-to-end unstretch: encode → stretch → decode
+  // ===========================================================================
+  console.log('\n\x1b[1m━━━ E2E Unstretch tests ━━━\x1b[0m');
+
+  try {
+    const encoder = await import(path.join(distDir, 'utils', 'encoder.js'));
+    const decoder = await import(path.join(distDir, 'utils', 'decoder.js'));
+    const nativeMod = await import(path.join(distDir, 'utils', 'native.js'));
+    const nat = nativeMod.native;
+
+    /**
+     * Stretch a raw RGB buffer by a given factor (nearest-neighbor).
+     * Optionally add white padding.
+     */
+    function stretchRaw(rawBuf, w, h, factorX, factorY, padX, padY) {
+      const newW = w * factorX + padX * 2;
+      const newH = h * factorY + padY * 2;
+      const out = Buffer.alloc(newW * newH * 3, 255); // white background
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const srcIdx = (y * w + x) * 3;
+          const r = rawBuf[srcIdx], g = rawBuf[srcIdx+1], b = rawBuf[srcIdx+2];
+          for (let dy = 0; dy < factorY; dy++) {
+            for (let dx = 0; dx < factorX; dx++) {
+              const dstX = padX + x * factorX + dx;
+              const dstY = padY + y * factorY + dy;
+              const dstIdx = (dstY * newW + dstX) * 3;
+              out[dstIdx] = r; out[dstIdx+1] = g; out[dstIdx+2] = b;
+            }
+          }
+        }
+      }
+      return { buf: out, width: newW, height: newH };
+    }
+
+    await testAsync('E2E: encode → 5x stretch → decode', async () => {
+      const payload = Buffer.from('Hello stretched world!');
+      const png = await encoder.encodeBinaryToPng(payload, {
+        compressionLevel: 3,
+        mode: 'screenshot',
+      });
+
+      // Get raw pixels of encoded PNG
+      const raw = nat.sharpToRaw(png);
+      const rawBuf = Buffer.from(raw.pixels);
+
+      // Stretch 5x with padding
+      const stretched = stretchRaw(rawBuf, raw.width, raw.height, 5, 5, 20, 10);
+
+      // Create a PNG from the stretched raw
+      const stretchedPng = nat.rgbToPng(stretched.buf, stretched.width, stretched.height);
+
+      // Decode the stretched PNG
+      const decoded = await decoder.decodePngToBinary(Buffer.from(stretchedPng));
+      assert.ok(decoded, 'should decode stretched image');
+      assert.deepStrictEqual(decoded.buf, payload);
+    });
+
+    await testAsync('E2E: encode → 3x non-uniform stretch → decode', async () => {
+      const payload = Buffer.from('Non-uniform stretch test');
+      const png = await encoder.encodeBinaryToPng(payload, {
+        compressionLevel: 3,
+        mode: 'screenshot',
+      });
+
+      const raw = nat.sharpToRaw(png);
+      const rawBuf = Buffer.from(raw.pixels);
+
+      // Non-uniform: 4x horizontal, 3x vertical, with padding
+      const stretched = stretchRaw(rawBuf, raw.width, raw.height, 4, 3, 30, 15);
+      const stretchedPng = nat.rgbToPng(stretched.buf, stretched.width, stretched.height);
+      const decoded = await decoder.decodePngToBinary(Buffer.from(stretchedPng));
+      assert.ok(decoded);
+      assert.deepStrictEqual(decoded.buf, payload);
+    });
+
+    // Test with extract.png if it exists
+    const extractPath = path.join(root, 'extract.png');
+    if (fs.existsSync(extractPath)) {
+      await testAsync('E2E: decode extract.png (real stretched image)', async () => {
+        const pngBuf = fs.readFileSync(extractPath);
+        const decoded = await decoder.decodePngToBinary(pngBuf);
+        assert.ok(decoded, 'should decode extract.png');
+        assert.ok(decoded.files || decoded.buf, 'should have output');
+      });
+    }
+  } catch (e) {
+    console.log(`  \x1b[33m⚠\x1b[0m E2E unstretch tests skipped: ${e.message}`);
+  }
 }
 
 // =============================================================================

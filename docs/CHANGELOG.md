@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.7.0] - 2026-03-03
+
+### Feature: Stretch-Resilient Decoding
+
+- **Added**: Automatic un-stretch of nearest-neighbor scaled roxified images. The decoder
+  now detects stretched images, collapses horizontal runs of identical pixels, removes
+  duplicate rows, and recovers the original logical pixel grid.
+- **Added**: White/near-white background cropping before un-stretch to handle images
+  with padding (screenshots, copy-pasted images).
+- **Added**: Tolerance-based fallback for slightly noisy stretched images (e.g., JPEG
+  re-compression of a stretched PNG).
+- **Added**: Uniform-color row expansion — rows that collapse to a single pixel are
+  automatically expanded to the logical width.
+- **Added**: Exported `unstretchImage()` function for direct use in the JavaScript API.
+- **Added**: 10 new tests (7 unit tests for `unstretchImage` + 3 E2E stretch/decode roundtrips).
+- **Updated**: README and documentation with stretch-resilient decoding section.
+
 ## [1.6.9] - 2026-03-03
 
 ### Fix: Native module not found when installed globally

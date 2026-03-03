@@ -46,6 +46,7 @@ The core compression and image-processing logic is written in Rust and exposed t
 - **Audio container** -- encode data as structured multi-frequency tones (not white noise) in WAV files
 - **Directory packing** -- encode entire directory trees into a single PNG
 - **Screenshot reconstitution** -- recover data from photographed or screenshotted PNGs
+- **Stretch-resilient decoding** -- automatically un-stretches nearest-neighbor scaled images back to original pixel data
 - **CLI and programmatic API** -- use from the terminal or import as a library
 - **Cross-platform** -- prebuilt binaries for Linux x64, macOS x64/ARM64, and Windows x64
 - **Full TypeScript support** with exported types and TSDoc annotations
@@ -388,6 +389,21 @@ interface DecodeResult {
 | `screenshot` | Encodes data as RGB pixels in a standard PNG. The image looks like a gradient or noise pattern and survives re-uploads and social media processing. | Sharing on image-only platforms, bypassing file-type filters |
 | `compact` | Minimal 1x1 PNG with data embedded in a custom ancillary chunk (`rXDT`). Produces the smallest possible output. | Programmatic use, archival, maximum compression ratio |
 
+### Stretch-Resilient Decoding
+
+Roxify automatically detects and recovers data from **nearest-neighbor stretched** images. If a roxified PNG is scaled up (e.g., zoomed in a browser, pasted in a document, resized in an image editor with nearest-neighbor interpolation), the decoder:
+
+1. **Crops** the image to the non-background bounding box
+2. **Collapses** horizontal runs of identical pixels back to single logical pixels
+3. **Deduplicates** consecutive identical rows
+
+This means you can share a roxified image at any zoom level and it will still decode correctly. Non-uniform stretch factors and white padding are fully supported.
+
+```bash
+# Works even on stretched/zoomed screenshots
+rox decode zoomed-screenshot.png -o output/
+```
+
 ---
 
 ## Encryption
@@ -603,7 +619,7 @@ Input --> RS ECC Encode --> Interleave --> Block Encode (MFSK audio / QR-like im
 ### Decompression Pipeline
 
 ```
-Input --> PNG Parse --> AES-256-GCM Decrypt (optional) --> Zstd Decompress --> Output
+Input --> PNG Parse --> Un-stretch (if needed) --> AES-256-GCM Decrypt (optional) --> Zstd Decompress --> Output
 ```
 
 ### Lossy-Resilient Decode Pipeline

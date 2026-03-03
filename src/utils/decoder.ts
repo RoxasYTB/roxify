@@ -38,6 +38,160 @@ function isColorMatch(
   return Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2) < 50;
 }
 
+/**
+ * Un-stretch an image that was nearest-neighbor scaled.
+ * 1. Crops to non-background bounding box
+ * 2. Collapses horizontal runs of identical pixels into single pixels
+ * 3. Removes duplicate consecutive rows
+ *
+ * Returns null if the image doesn't appear to be stretched.
+ */
+export function unstretchImage(
+  rawRGB: Buffer,
+  width: number,
+  height: number,
+  tolerance: number = 0,
+): { data: Buffer; width: number; height: number } | null {
+  if (width <= 0 || height <= 0 || rawRGB.length < width * height * 3) {
+    return null;
+  }
+
+  // Step 1: Find bounding box of non-background pixels
+  // Background = white-ish (all channels >= 240)
+  let minX = width,
+    maxX = -1,
+    minY = height,
+    maxY = -1;
+
+  for (let y = 0; y < height; y++) {
+    const rowBase = y * width * 3;
+    for (let x = 0; x < width; x++) {
+      const idx = rowBase + x * 3;
+      const r = rawRGB[idx],
+        g = rawRGB[idx + 1],
+        b = rawRGB[idx + 2];
+      // Skip background: white or near-white
+      if (r >= 240 && g >= 240 && b >= 240) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null; // all background
+
+  const cropW = maxX - minX + 1;
+  const cropH = maxY - minY + 1;
+
+  // Don't process tiny images
+  if (cropW < 2 || cropH < 2) return null;
+
+  // Step 2: Collapse horizontal runs per row + deduplicate rows
+  const pixelsMatch = (
+    buf: Buffer,
+    i1: number,
+    i2: number,
+  ): boolean => {
+    if (tolerance === 0) {
+      return (
+        buf[i1] === buf[i2] &&
+        buf[i1 + 1] === buf[i2 + 1] &&
+        buf[i1 + 2] === buf[i2 + 2]
+      );
+    }
+    return (
+      Math.abs(buf[i1] - buf[i2]) +
+        Math.abs(buf[i1 + 1] - buf[i2 + 1]) +
+        Math.abs(buf[i1 + 2] - buf[i2 + 2]) <=
+      tolerance
+    );
+  };
+
+  const logicalRows: Array<{ pixels: number[]; key: string }> = [];
+  let logicalW = -1;
+  let prevRowKey = '';
+
+  for (let y = minY; y <= maxY; y++) {
+    const rowBase = y * width * 3;
+    const pixels: number[] = [];
+    let prevIdx = -1;
+
+    for (let x = minX; x <= maxX; x++) {
+      const idx = rowBase + x * 3;
+      if (prevIdx >= 0 && pixelsMatch(rawRGB, idx, prevIdx)) {
+        continue; // same as previous pixel, skip (collapse run)
+      }
+      pixels.push(rawRGB[idx], rawRGB[idx + 1], rawRGB[idx + 2]);
+      prevIdx = idx;
+    }
+
+    // Compute row key for dedup
+    const rowKey = pixels.join(',');
+    if (rowKey === prevRowKey) {
+      continue; // duplicate row, skip
+    }
+    prevRowKey = rowKey;
+
+    const rowW = pixels.length / 3;
+    if (logicalW === -1) {
+      logicalW = rowW;
+    } else if (rowW !== logicalW) {
+      // A uniform-color row collapses to 1 pixel — expand to logicalW
+      if (rowW === 1 && logicalW > 1) {
+        const r = pixels[0], g = pixels[1], b = pixels[2];
+        for (let f = 1; f < logicalW; f++) {
+          pixels.push(r, g, b);
+        }
+      } else if (logicalW === 1 && rowW > 1) {
+        // First row was uniform, adopt new width and expand it
+        const prevRow = logicalRows[logicalRows.length - 1];
+        if (prevRow) {
+          const pr = prevRow.pixels[0], pg = prevRow.pixels[1], pb = prevRow.pixels[2];
+          prevRow.pixels = [];
+          for (let f = 0; f < rowW; f++) {
+            prevRow.pixels.push(pr, pg, pb);
+          }
+        }
+        logicalW = rowW;
+      } else {
+        // Inconsistent row widths → not a clean stretch
+        // Try with tolerance if we haven't already
+        if (tolerance === 0) {
+          return unstretchImage(rawRGB, width, height, 30);
+        }
+        return null;
+      }
+    }
+
+    logicalRows.push({ pixels, key: rowKey });
+  }
+
+  if (logicalRows.length === 0 || logicalW <= 0) return null;
+
+  const logicalH = logicalRows.length;
+
+  // Sanity: must have actually reduced the image
+  if (logicalW >= cropW && logicalH >= cropH) return null;
+
+  // Build output buffer
+  const data = Buffer.allocUnsafe(logicalW * logicalH * 3);
+  let outIdx = 0;
+  for (const row of logicalRows) {
+    for (let i = 0; i < row.pixels.length; i++) {
+      data[outIdx++] = row.pixels[i];
+    }
+  }
+
+  if (process.env.ROX_DEBUG) {
+    console.log(
+      `DEBUG: unstretch ${width}x${height} → crop ${cropW}x${cropH} → logical ${logicalW}x${logicalH}`,
+    );
+  }
+
+  return { data, width: logicalW, height: logicalH };
+}
+
 async function tryDecompress(
   payload: Buffer,
   onProgress?: (info: {
@@ -548,46 +702,81 @@ export async function decodePngToBinary(
       }
     }
 
-    let logicalWidth: number;
-    let logicalHeight: number;
-    let logicalData: Buffer;
+    let logicalWidth: number = 0;
+    let logicalHeight: number = 0;
+    let logicalData: Buffer = Buffer.alloc(0);
 
     if (hasMarkerStart || hasPixelMagic || hasBlockMagic) {
       logicalWidth = currentWidth;
       logicalHeight = currentHeight;
       logicalData = rawRGB;
     } else {
-      if (process.env.ROX_DEBUG || opts.debugDir) {
-        console.log(
-          'DEBUG: about to call cropAndReconstitute, debugDir=',
+      // Try cropAndReconstitute first (for screenshots with markers)
+      let reconSuccess = false;
+      try {
+        if (process.env.ROX_DEBUG || opts.debugDir) {
+          console.log(
+            'DEBUG: about to call cropAndReconstitute, debugDir=',
+            opts.debugDir,
+          );
+        }
+        const reconstructed = await cropAndReconstitute(
+          processedBuf,
           opts.debugDir,
         );
-      }
-      const reconstructed = await cropAndReconstitute(
-        processedBuf,
-        opts.debugDir,
-      );
-      if (process.env.ROX_DEBUG || opts.debugDir) {
-        console.log(
-          'DEBUG: cropAndReconstitute returned, reconstructed len=',
-          reconstructed.length,
-        );
+        if (process.env.ROX_DEBUG || opts.debugDir) {
+          console.log(
+            'DEBUG: cropAndReconstitute returned, reconstructed len=',
+            reconstructed.length,
+          );
+        }
+
+        const rawData = native.sharpToRaw(reconstructed);
+        if (process.env.ROX_DEBUG || opts.debugDir) {
+          console.log(
+            'DEBUG: rawData from reconstructed:',
+            rawData.width,
+            'x',
+            rawData.height,
+            'pixels=',
+            Math.floor(rawData.pixels.length / 3),
+          );
+        }
+        logicalWidth = rawData.width;
+        logicalHeight = rawData.height;
+        logicalData = Buffer.from(rawData.pixels);
+        reconSuccess = true;
+      } catch (reconErr) {
+        if (process.env.ROX_DEBUG) {
+          console.log(
+            'DEBUG: cropAndReconstitute failed:',
+            reconErr instanceof Error ? reconErr.message : reconErr,
+          );
+        }
       }
 
-      const rawData = native.sharpToRaw(reconstructed);
-      if (process.env.ROX_DEBUG || opts.debugDir) {
-        console.log(
-          'DEBUG: rawData from reconstructed:',
-          rawData.width,
-          'x',
-          rawData.height,
-          'pixels=',
-          Math.floor(rawData.pixels.length / 3),
-        );
+      // Fallback: try un-stretching (nearest-neighbor scaled images)
+      if (!reconSuccess) {
+        const pixelW = isBlockEncoded ? currentWidth / 2 : currentWidth;
+        const pixelH = isBlockEncoded ? currentHeight / 2 : currentHeight;
+
+        if (process.env.ROX_DEBUG) {
+          console.log(
+            `DEBUG: trying unstretch on ${pixelW}x${pixelH} rawRGB`,
+          );
+        }
+
+        const unstretched = unstretchImage(rawRGB, pixelW, pixelH);
+        if (unstretched) {
+          logicalWidth = unstretched.width;
+          logicalHeight = unstretched.height;
+          logicalData = unstretched.data;
+        } else {
+          throw new Error(
+            'No valid markers found and image unstretch failed',
+          );
+        }
       }
-      logicalWidth = rawData.width;
-      logicalHeight = rawData.height;
-      logicalData = Buffer.from(rawData.pixels);
     }
     if (process.env.ROX_DEBUG) {
       console.log(
