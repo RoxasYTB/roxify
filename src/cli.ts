@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 
 import {
-    mkdirSync,
-    readdirSync,
-    readFileSync,
-    statSync,
-    writeFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
 } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import {
-    DataFormatError,
-    decodePngToBinary,
-    encodeBinaryToPng,
-    hasPassphraseInPng,
-    IncorrectPassphraseError,
-    listFilesInPng,
-    PassphraseRequiredError,
+  DataFormatError,
+  decodePngToBinary,
+  encodeBinaryToPng,
+  hasPassphraseInPng,
+  IncorrectPassphraseError,
+  listFilesInPng,
+  PassphraseRequiredError,
 } from './index.js';
 import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
 import * as cliProgress from './stub-progress.js';
 import {
-    encodeWithRustCLI,
-    isRustBinaryAvailable,
+  encodeWithRustCLI,
+  isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
 const VERSION = '1.6.1';
@@ -109,6 +109,23 @@ Options:
   --debug                   Export debug images (doubled.png, reconstructed.png)
   -v, --verbose             Show detailed errors
 
+Lossy-Resilient Encoding:
+  --lossy-resilient         Enable lossy-resilient mode (survives JPEG/MP3)
+  --ecc-level <level>       ECC redundancy: low|medium|quartile|high (default: medium)
+  --block-size <n>          Robust image block size: 2-8 pixels (default: 4)
+
+  When --lossy-resilient is active, data is encoded with Reed-Solomon ECC
+  and rendered as a QR-code-style grid (image) or MFSK tones (audio).
+  Use --sound or --image to choose the container format.
+
+Examples:
+  npx rox encode secret.pdf                      Encode to PNG
+  npx rox encode secret.pdf --sound               Encode to WAV
+  npx rox encode secret.pdf --lossy-resilient     Lossy-resilient PNG
+  npx rox encode secret.pdf --lossy-resilient --sound --ecc-level high
+  npx rox decode secret.pdf.png                   Decode back
+  npx rox decode secret.pdf.wav                   Decode WAV back
+
 Run "npx rox help" for this message.
 `);
 }
@@ -143,6 +160,25 @@ function parseArgs(args: string[]) {
       } else if (key === 'force-ts') {
         parsed.forceTs = true;
         i++;
+      } else if (key === 'lossy-resilient') {
+        parsed.lossyResilient = true;
+        i++;
+      } else if (key === 'ecc-level') {
+        const lvl = args[i + 1];
+        if (!['low', 'medium', 'quartile', 'high'].includes(lvl)) {
+          console.error(`Invalid --ecc-level: ${lvl}. Must be low|medium|quartile|high`);
+          process.exit(1);
+        }
+        parsed.eccLevel = lvl;
+        i += 2;
+      } else if (key === 'block-size') {
+        const bs = parseInt(args[i + 1], 10);
+        if (isNaN(bs) || bs < 2 || bs > 8) {
+          console.error(`Invalid --block-size: ${args[i + 1]}. Must be 2-8`);
+          process.exit(1);
+        }
+        parsed.blockSize = bs;
+        i += 2;
       } else if (key === 'sound') {
         parsed.container = 'sound';
         i++;
@@ -425,6 +461,11 @@ async function encodeCommand(args: string[]) {
     if (parsed.passphrase) {
       options.passphrase = parsed.passphrase;
       options.encrypt = parsed.encrypt || 'aes';
+    }
+    if (parsed.lossyResilient) {
+      options.lossyResilient = true;
+      if (parsed.eccLevel) options.eccLevel = parsed.eccLevel;
+      if (parsed.blockSize) options.robustBlockSize = parsed.blockSize;
     }
 
     console.log(`Encoding to ${resolvedOutput} (Mode: ${mode}, Container: ${containerMode === 'sound' ? 'WAV' : 'PNG'})\n`);

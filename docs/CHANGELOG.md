@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.8] - 2026-03-03
+
+### CLI: Lossy-Resilient Options
+
+- **Added**: `--lossy-resilient` flag to enable lossy-resilient encoding from the CLI
+- **Added**: `--ecc-level <low|medium|quartile|high>` option to set Reed-Solomon ECC redundancy level
+- **Added**: `--block-size <2-8>` option to set robust image block size (pixels per data block)
+- **Added**: Input validation with clear error messages for invalid `--ecc-level` and `--block-size` values
+- **Added**: Comprehensive examples section in CLI help showing lossy-resilient usage with `--sound`/`--image`
+- **Improved**: CLI help menu reorganized with dedicated "Lossy-Resilient Encoding" section
+- All new flags are properly passed through to the TypeScript encoder (`lossyResilient`, `eccLevel`, `robustBlockSize`)
+
 ## [1.6.7] - 2026-03-03
 
 ### Critical Bug Fix: Decode Corruption
