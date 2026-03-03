@@ -85,6 +85,63 @@ pub fn encode_to_png_with_encryption_name_and_filelist(
     encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, ImageFormat::Png, name, file_list, None)
 }
 
+// ─── WAV container encoding ─────────────────────────────────────────────────
+
+/// Encode data into WAV container (8-bit PCM).
+/// Same compression/encryption pipeline as PNG, but wrapped in a WAV file
+/// instead of pixel grid. Overhead: 44 bytes (constant) vs PNG's variable overhead.
+pub fn encode_to_wav(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
+    encode_to_wav_with_encryption_name_and_filelist(data, compression_level, None, None, None, None)
+}
+
+pub fn encode_to_wav_with_name_and_filelist(
+    data: &[u8],
+    compression_level: i32,
+    name: Option<&str>,
+    file_list: Option<&str>,
+) -> Result<Vec<u8>> {
+    encode_to_wav_with_encryption_name_and_filelist(data, compression_level, None, None, name, file_list)
+}
+
+pub fn encode_to_wav_with_encryption_name_and_filelist(
+    data: &[u8],
+    compression_level: i32,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    name: Option<&str>,
+    file_list: Option<&str>,
+) -> Result<Vec<u8>> {
+    // Same compression + encryption pipeline as PNG
+    let payload_input = [MAGIC, data].concat();
+
+    let compressed = crate::core::zstd_compress_bytes(&payload_input, compression_level, None)
+        .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
+
+    let encrypted = if let Some(pass) = passphrase {
+        match encrypt_type.unwrap_or("aes") {
+            "xor" => crate::crypto::encrypt_xor(&compressed, pass),
+            "aes" => crate::crypto::encrypt_aes(&compressed, pass)?,
+            _ => crate::crypto::encrypt_aes(&compressed, pass)?,
+        }
+    } else {
+        crate::crypto::no_encryption(&compressed)
+    };
+
+    let meta_pixel = build_meta_pixel_with_name_and_filelist(&encrypted, name, file_list)?;
+
+    // Prepend PIXEL_MAGIC so decoder can validate the payload
+    let wav_payload = [PIXEL_MAGIC, &meta_pixel].concat();
+
+    // Wrap in WAV container (44 bytes overhead, constant)
+    Ok(crate::audio::bytes_to_wav(&wav_payload))
+}
+
+/// Extract payload from a WAV file and return the raw meta_pixel bytes.
+pub fn decode_wav_payload(wav_data: &[u8]) -> Result<Vec<u8>> {
+    crate::audio::wav_to_bytes(wav_data)
+        .map_err(|e| anyhow::anyhow!("WAV decode failed: {}", e))
+}
+
 pub fn encode_to_png_with_encryption_name_and_format_and_filelist(
     data: &[u8],
     compression_level: i32,

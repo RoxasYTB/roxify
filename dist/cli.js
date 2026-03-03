@@ -52,18 +52,20 @@ async function readLargeFile(filePath) {
 }
 function showHelp() {
     console.log(`
-ROX CLI — Encode/decode binary in PNG
+ROX CLI — Encode/decode binary in PNG or WAV
 
 Usage:
   npx rox <command> [options]
 
 Commands:
-  encode <input>... [output]   Encode one or more files/directories into a PNG
-  decode <input> [output]   Decode PNG to original file
-  list <input>               List files in a Rox PNG archive
-  havepassphrase <input>     Check whether the PNG requires a passphrase
+  encode <input>... [output]   Encode one or more files/directories
+  decode <input> [output]      Decode PNG/WAV to original file
+  list <input>                 List files in a Rox archive
+  havepassphrase <input>       Check whether the archive requires a passphrase
 
 Options:
+  --image                   Use PNG container (default)
+  --sound                   Use WAV audio container (smaller overhead, faster)
   -p, --passphrase <pass>   Use passphrase (AES-256-GCM)
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
@@ -114,6 +116,14 @@ function parseArgs(args) {
             }
             else if (key === 'force-ts') {
                 parsed.forceTs = true;
+                i++;
+            }
+            else if (key === 'sound') {
+                parsed.container = 'sound';
+                i++;
+            }
+            else if (key === 'image') {
+                parsed.container = 'image';
                 i++;
             }
             else if (key === 'debug-dir') {
@@ -201,12 +211,14 @@ async function encodeCommand(args) {
         safeCwd = '/';
     }
     const resolvedInputs = inputPaths.map((p) => resolve(safeCwd, p));
+    const containerMode = parsed.container || 'image'; // default: image (PNG)
+    const containerExt = containerMode === 'sound' ? '.wav' : '.png';
     let outputName = inputPaths.length === 1 ? basename(firstInput) : 'archive';
     if (inputPaths.length === 1 && !statSync(resolvedInputs[0]).isDirectory()) {
-        outputName = outputName.replace(/(\.[^.]+)?$/, '.png');
+        outputName = outputName.replace(/(\.[^.]+)?$/, containerExt);
     }
     else {
-        outputName += '.png';
+        outputName += containerExt;
     }
     let resolvedOutput;
     try {
@@ -241,7 +253,7 @@ async function encodeCommand(args) {
     catch (e) {
         anyInputDir = false;
     }
-    if (isRustBinaryAvailable() && !parsed.forceTs) {
+    if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound') {
         try {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
             const startTime = Date.now();
@@ -338,6 +350,7 @@ async function encodeCommand(args) {
             skipOptimization: false,
             compressionLevel: 19,
             outputFormat: 'auto',
+            container: containerMode,
         });
         if (parsed.verbose)
             options.verbose = true;
@@ -347,7 +360,7 @@ async function encodeCommand(args) {
             options.passphrase = parsed.passphrase;
             options.encrypt = parsed.encrypt || 'aes';
         }
-        console.log(`Encoding to ${resolvedOutput} (Mode: ${mode})\n`);
+        console.log(`Encoding to ${resolvedOutput} (Mode: ${mode}, Container: ${containerMode === 'sound' ? 'WAV' : 'PNG'})\n`);
         let inputData;
         let inputSizeVal = 0;
         let displayName;

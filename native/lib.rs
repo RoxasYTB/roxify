@@ -18,6 +18,7 @@ mod packer;
 mod crypto;
 mod png_utils;
 mod image_utils;
+mod audio;
 mod progress;
 mod reconstitution;
 mod archive;
@@ -386,5 +387,78 @@ pub fn png_to_rgb(png_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
 pub fn crop_and_reconstitute(png_buffer: Buffer) -> Result<Vec<u8>> {
     reconstitution::crop_and_reconstitute(&png_buffer)
         .map_err(|e| Error::from_reason(e))
+}
+
+// ─── WAV container NAPI exports ──────────────────────────────────────────────
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_wav(buffer: Buffer, compression_level: i32) -> Result<Vec<u8>> {
+    encoder::encode_to_wav(&buffer, compression_level)
+        .map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_wav_with_name_and_filelist(
+    buffer: Buffer,
+    compression_level: i32,
+    name: Option<String>,
+    file_list_json: Option<String>,
+) -> Result<Vec<u8>> {
+    encoder::encode_to_wav_with_name_and_filelist(
+        &buffer,
+        compression_level,
+        name.as_deref(),
+        file_list_json.as_deref(),
+    )
+    .map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_wav_with_encryption_name_and_filelist(
+    buffer: Buffer,
+    compression_level: i32,
+    passphrase: Option<String>,
+    encrypt_type: Option<String>,
+    name: Option<String>,
+    file_list_json: Option<String>,
+) -> Result<Vec<u8>> {
+    encoder::encode_to_wav_with_encryption_name_and_filelist(
+        &buffer,
+        compression_level,
+        passphrase.as_deref(),
+        encrypt_type.as_deref(),
+        name.as_deref(),
+        file_list_json.as_deref(),
+    )
+    .map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_decode_wav_payload(wav_buffer: Buffer) -> Result<Vec<u8>> {
+    encoder::decode_wav_payload(&wav_buffer)
+        .map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_bytes_to_wav(buffer: Buffer) -> Vec<u8> {
+    audio::bytes_to_wav(&buffer)
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_wav_to_bytes(wav_buffer: Buffer) -> Result<Vec<u8>> {
+    audio::wav_to_bytes(&wav_buffer)
+        .map_err(|e| Error::from_reason(e))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_is_wav(buffer: Buffer) -> bool {
+    audio::is_wav(&buffer)
 }
 

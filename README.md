@@ -42,6 +42,8 @@ The core compression and image-processing logic is written in Rust and exposed t
 - **Multi-threaded Zstd compression** (level 19) with parallel chunk processing via Rayon
 - **AES-256-GCM encryption** with PBKDF2 key derivation (100,000 iterations)
 - **Lossless roundtrip** -- encoded data is recovered byte-for-byte
+- **Lossy-resilient mode** -- QR-code-style Reed-Solomon error correction survives JPEG, WebP, MP3, AAC, and OGG recompression
+- **Audio container** -- encode data as structured multi-frequency tones (not white noise) in WAV files
 - **Directory packing** -- encode entire directory trees into a single PNG
 - **Screenshot reconstitution** -- recover data from photographed or screenshotted PNGs
 - **CLI and programmatic API** -- use from the terminal or import as a library
@@ -249,6 +251,10 @@ interface EncodeOptions {
   includeFileList?: boolean;       // Include file manifest in PNG
   fileList?: Array<string | { name: string; size: number }>;
   skipOptimization?: boolean;      // Skip PNG optimization pass
+  lossyResilient?: boolean;       // Enable lossy-resilient encoding (RS ECC)
+  eccLevel?: EccLevel;             // 'low' | 'medium' | 'quartile' | 'high'
+  robustBlockSize?: number;        // 2–8 pixels per data block (lossy image)
+  container?: 'image' | 'sound';   // Output container format
   onProgress?: (info: ProgressInfo) => void;
   showProgress?: boolean;
   verbose?: boolean;
@@ -275,6 +281,7 @@ interface DecodeResult {
   buf?: Buffer;                    // Decoded binary payload
   meta?: { name?: string };        // Metadata (original filename)
   files?: PackedFile[];            // Unpacked directory entries, if applicable
+  correctedErrors?: number;        // RS errors corrected (lossy-resilient mode)
 }
 ```
 
@@ -299,6 +306,79 @@ Roxify supports two encryption methods:
 | `xor` | XOR cipher with passphrase-derived key | Obfuscation only, not cryptographically secure | Casual deterrent against inspection |
 
 When `encrypt` is set to `auto` (the default when a passphrase is provided), AES is selected.
+
+---
+
+## Lossy-Resilient Mode
+
+Enable `lossyResilient: true` to produce output that survives lossy compression. This uses the same error correction algorithm as QR codes (Reed-Solomon over GF(256)) combined with block-based signal encoding.
+
+### How It Works
+
+1. **Reed-Solomon ECC** adds configurable redundancy (10–100%) to the data.
+2. **Interleaving** spreads data across RS blocks so burst errors don't overwhelm a single block.
+3. **Block encoding** (image: large pixel blocks; audio: multi-frequency tones) makes the signal robust against quantization.
+4. **Finder patterns** (image only) enable automatic alignment after re-encoding.
+
+### Error Correction Levels
+
+| Level | Parity Symbols | Overhead | Correctable Errors |
+|-------|---------------:|---------:|-------------------:|
+| `low` | 20 / block | ~10% | ~4% |
+| `medium` | 40 / block | ~19% | ~9% |
+| `quartile` | 64 / block | ~33% | ~15% |
+| `high` | 128 / block | ~100% | ~25% |
+
+### Example
+
+```typescript
+// Image that survives JPEG compression
+const png = await encodeBinaryToPng(data, {
+  lossyResilient: true,
+  eccLevel: 'quartile',
+  robustBlockSize: 4,   // 4×4 pixels per data bit
+});
+
+// Audio that survives MP3 compression
+const wav = await encodeBinaryToPng(data, {
+  container: 'sound',
+  lossyResilient: true,
+  eccLevel: 'medium',
+});
+
+// Decode automatically detects the format
+const result = await decodePngToBinary(png);
+console.log('Errors corrected:', result.correctedErrors);
+```
+
+For full documentation, see [Lossy Resilience Guide](./docs/LOSSY_RESILIENCE.md).
+
+---
+
+## Audio Container
+
+Roxify can encode data into WAV audio files using `container: 'sound'`.
+
+### Standard Mode (`lossyResilient: false`)
+
+Data bytes are stored directly as 8-bit PCM samples. This is the fastest and most compact option, but the output sounds like white noise and does not survive lossy audio compression.
+
+### Lossy-Resilient Mode (`lossyResilient: true`)
+
+Data is encoded using **8-channel multi-frequency shift keying (MFSK)**:
+
+- 8 carrier frequencies (600–2700 Hz) encode 1 byte per symbol.
+- Each carrier is modulated with raised-cosine windowing.
+- The output sounds like a series of **musical chords** — structured and pleasant, not white noise.
+- Reed-Solomon ECC enables recovery after MP3/AAC/OGG transcoding.
+
+```typescript
+const wav = await encodeBinaryToPng(data, {
+  container: 'sound',
+  lossyResilient: true,
+  eccLevel: 'medium',
+});
+```
 
 ---
 
@@ -420,10 +500,22 @@ Roxify is a hybrid Rust and TypeScript module. The performance-critical paths --
 Input --> Zstd Compress (multi-threaded, Rayon) --> AES-256-GCM Encrypt (optional) --> PNG Encode --> Output
 ```
 
+### Lossy-Resilient Pipeline
+
+```
+Input --> RS ECC Encode --> Interleave --> Block Encode (MFSK audio / QR-like image) --> WAV/PNG Output
+```
+
 ### Decompression Pipeline
 
 ```
 Input --> PNG Parse --> AES-256-GCM Decrypt (optional) --> Zstd Decompress --> Output
+```
+
+### Lossy-Resilient Decode Pipeline
+
+```
+Input --> Detect Format --> Demodulate/Read Blocks --> De-interleave --> RS ECC Decode --> Output
 ```
 
 ### Rust Modules
@@ -436,6 +528,7 @@ Input --> PNG Parse --> AES-256-GCM Decrypt (optional) --> Zstd Decompress --> O
 | `crypto.rs` | AES-256-GCM encryption and PBKDF2 key derivation |
 | `archive.rs` | Tar-based archiving with optional Zstd compression |
 | `reconstitution.rs` | Screenshot detection and automatic crop to recover encoded data |
+| `audio.rs` | WAV container encoding and decoding (PCM byte packing) |
 | `bwt.rs` | Parallel Burrows-Wheeler Transform |
 | `rans.rs` | rANS (Asymmetric Numeral Systems) entropy coder |
 | `hybrid.rs` | Block-based orchestration of BWT, context mixing, and rANS |
@@ -443,6 +536,19 @@ Input --> PNG Parse --> AES-256-GCM Decrypt (optional) --> Zstd Decompress --> O
 | `image_utils.rs` | Image resizing, pixel format conversion, metadata extraction |
 | `png_utils.rs` | Low-level PNG chunk read/write operations |
 | `progress.rs` | Progress tracking for long-running compression/decompression |
+
+### TypeScript Modules
+
+| Module | Responsibility |
+|---|---|
+| `ecc.ts` | Reed-Solomon GF(256) codec, block ECC, interleaving |
+| `robust-audio.ts` | MFSK audio modulation/demodulation, Goertzel detection, sync preamble |
+| `robust-image.ts` | QR-code-like block encoding, finder patterns, majority voting |
+| `encoder.ts` | High-level encoding orchestration (standard + lossy-resilient) |
+| `decoder.ts` | High-level decoding with automatic format detection |
+| `audio.ts` | Standard WAV container (8-bit PCM) |
+| `helpers.ts` | Delta coding, XOR cipher, palette generation |
+| `zstd.ts` | Parallel Zstd compression via native module |
 
 ---
 
@@ -512,3 +618,4 @@ MIT. See [LICENSE](LICENSE) for details.
 - [CLI Documentation](./docs/CLI.md)
 - [JavaScript SDK Reference](./docs/JAVASCRIPT_SDK.md)
 - [Cross-Platform Build Guide](./docs/CROSS_PLATFORM.md)
+- [Lossy Resilience Guide](./docs/LOSSY_RESILIENCE.md)

@@ -1,12 +1,12 @@
 import * as zlib from 'zlib';
 import { unpackBuffer } from '../pack.js';
 import {
-  CHUNK_TYPE,
-  ENC_AES,
-  ENC_XOR,
-  MAGIC,
-  MARKER_COLORS,
-  PIXEL_MAGIC,
+    CHUNK_TYPE,
+    ENC_AES,
+    ENC_XOR,
+    MAGIC,
+    MARKER_COLORS,
+    PIXEL_MAGIC,
 } from './constants.js';
 import { decodePngToBinary } from './decoder.js';
 import { PassphraseRequiredError } from './errors.js';

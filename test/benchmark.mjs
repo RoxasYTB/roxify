@@ -202,6 +202,29 @@ function decompressRoxify(pngFile, outputDir) {
   return hrMs(start);
 }
 
+function benchRoxifyWav(inputDir, outputFile) {
+  // roxify --sound uses WAV container instead of PNG
+  const start = process.hrtime.bigint();
+  execSync(`node "${join(ROOT, 'dist/cli.js')}" encode "${inputDir}" "${outputFile}" -m compact --sound`, {
+    stdio: 'pipe',
+    cwd: ROOT,
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+  });
+  const ms = hrMs(start);
+  return { ms, size: statSync(outputFile).size };
+}
+
+function decompressRoxifyWav(wavFile, outputDir) {
+  mkdirSync(outputDir, { recursive: true });
+  const start = process.hrtime.bigint();
+  execSync(`node "${join(ROOT, 'dist/cli.js')}" decode "${wavFile}" "${outputDir}"`, {
+    stdio: 'pipe',
+    cwd: ROOT,
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+  });
+  return hrMs(start);
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 const DATASETS = [
@@ -213,7 +236,7 @@ const DATASETS = [
   { name: 'Mixed files (10 MB)', generator: generateMixedDataset, size: 10 * 1024 * 1024 },
 ];
 
-const TOOLS = ['zip', 'tar.gz', '7z', 'roxify'];
+const TOOLS = ['zip', 'tar.gz', '7z', 'roxify (PNG)', 'roxify (WAV)'];
 
 (async () => {
   console.log('Roxify Compression Benchmark (MAX compression for all tools)');
@@ -221,7 +244,7 @@ const TOOLS = ['zip', 'tar.gz', '7z', 'roxify'];
   console.log(`Platform: ${process.platform} ${process.arch}`);
   console.log(`Node: ${process.version}`);
   console.log(`Date: ${new Date().toISOString().split('T')[0]}`);
-  console.log(`Config: zip -9 | gzip -9 | 7z -mx=9 | roxify zstd-19\n`);
+  console.log(`Config: zip -9 | gzip -9 | 7z -mx=9 | roxify zstd-19 (PNG & WAV)\n`);
 
   const results = [];
 
@@ -276,17 +299,30 @@ const TOOLS = ['zip', 'tar.gz', '7z', 'roxify'];
       console.log(`  7z:     FAILED - ${e.message}`);
     }
 
-    // roxify
+    // roxify (PNG)
     try {
       const roxOut = join(TMP, 'out.png');
       const r = benchRoxify(dataDir, roxOut);
       const decDir = join(TMP, 'dec_rox');
       const decMs = decompressRoxify(roxOut, decDir);
       r.decMs = decMs;
-      row.results.roxify = r;
-      console.log(`  roxify: ${fmt(r.size)} (${pct(r.size, totalSize)}) enc ${fmtTime(r.ms)} | dec ${fmtTime(decMs)}`);
+      row.results['roxify (PNG)'] = r;
+      console.log(`  roxify PNG: ${fmt(r.size)} (${pct(r.size, totalSize)}) enc ${fmtTime(r.ms)} | dec ${fmtTime(decMs)}`);
     } catch (e) {
-      console.log(`  roxify: FAILED - ${e.stderr?.toString() || e.message}`);
+      console.log(`  roxify PNG: FAILED - ${e.stderr?.toString() || e.message}`);
+    }
+
+    // roxify (WAV)
+    try {
+      const wavOut = join(TMP, 'out.wav');
+      const r = benchRoxifyWav(dataDir, wavOut);
+      const decDir = join(TMP, 'dec_rox_wav');
+      const decMs = decompressRoxifyWav(wavOut, decDir);
+      r.decMs = decMs;
+      row.results['roxify (WAV)'] = r;
+      console.log(`  roxify WAV: ${fmt(r.size)} (${pct(r.size, totalSize)}) enc ${fmtTime(r.ms)} | dec ${fmtTime(decMs)}`);
+    } catch (e) {
+      console.log(`  roxify WAV: FAILED - ${e.stderr?.toString() || e.message}`);
     }
 
     results.push(row);

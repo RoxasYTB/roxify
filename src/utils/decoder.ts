@@ -4,23 +4,26 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { unpackBuffer } from '../pack.js';
+import { isWav, wavToBytes } from './audio.js';
 import {
-  CHUNK_TYPE,
-  MAGIC,
-  MARKER_END,
-  MARKER_START,
-  PIXEL_MAGIC,
-  PIXEL_MAGIC_BLOCK,
-  PNG_HEADER,
+    CHUNK_TYPE,
+    MAGIC,
+    MARKER_END,
+    MARKER_START,
+    PIXEL_MAGIC,
+    PIXEL_MAGIC_BLOCK,
+    PNG_HEADER,
 } from './constants.js';
 import {
-  DataFormatError,
-  IncorrectPassphraseError,
-  PassphraseRequiredError,
+    DataFormatError,
+    IncorrectPassphraseError,
+    PassphraseRequiredError,
 } from './errors.js';
 import { colorsToBytes, deltaDecode, tryDecryptIfNeeded } from './helpers.js';
 import { native } from './native.js';
 import { cropAndReconstitute } from './reconstitution.js';
+import { decodeRobustAudio, isRobustAudioWav } from './robust-audio.js';
+import { decodeRobustImage, isRobustImage } from './robust-image.js';
 import { DecodeOptions, DecodeResult } from './types.js';
 import { parallelZstdDecompress, tryZstdDecompress } from './zstd.js';
 
@@ -199,6 +202,117 @@ export async function decodePngToBinary(
 
   if (opts.onProgress) opts.onProgress({ phase: 'processed' });
 
+  // ─── Robust audio detection (lossy-resilient WAV) ──────────────────────────
+  if (isWav(processedBuf) && isRobustAudioWav(processedBuf)) {
+    try {
+      const result = decodeRobustAudio(processedBuf);
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      progressBar?.stop();
+
+      // Try unpack multi-file archive
+      try {
+        const unpack = unpackBuffer(result.data);
+        if (unpack && unpack.files && unpack.files.length > 0) {
+          return { files: unpack.files, correctedErrors: result.correctedErrors };
+        }
+      } catch (e) {}
+
+      return { buf: result.data, correctedErrors: result.correctedErrors };
+    } catch (e) {
+      // Fall through to legacy WAV decoding
+    }
+  }
+
+  // ─── WAV container detection ───────────────────────────────────────────────
+  if (isWav(processedBuf)) {
+    const pcmData = wavToBytes(processedBuf);
+
+    // The WAV payload starts with PIXEL_MAGIC ("PXL1")
+    if (pcmData.length >= 4 && pcmData.subarray(0, 4).equals(PIXEL_MAGIC)) {
+      let idx = 4; // skip PIXEL_MAGIC
+      const version = pcmData[idx++];
+      const nameLen = pcmData[idx++];
+      let name: string | undefined;
+      if (nameLen > 0) {
+        name = pcmData.subarray(idx, idx + nameLen).toString('utf8');
+        idx += nameLen;
+      }
+      const payloadLen = pcmData.readUInt32BE(idx);
+      idx += 4;
+      const rawPayload = pcmData.subarray(idx, idx + payloadLen);
+      idx += payloadLen;
+
+      // Check for rXFL file list after payload
+      let fileListJson: string | undefined;
+      if (idx + 8 < pcmData.length &&
+          pcmData.subarray(idx, idx + 4).toString('utf8') === 'rXFL') {
+        idx += 4;
+        const jsonLen = pcmData.readUInt32BE(idx);
+        idx += 4;
+        fileListJson = pcmData.subarray(idx, idx + jsonLen).toString('utf8');
+      }
+
+      let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
+
+      if (opts.onProgress) opts.onProgress({ phase: 'decompress_start' });
+      try {
+        payload = await tryDecompress(payload, (info) => {
+          if (opts.onProgress) opts.onProgress(info);
+        });
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        if (opts.passphrase)
+          throw new IncorrectPassphraseError(
+            'Incorrect passphrase (WAV mode, zstd failed: ' + errMsg + ')',
+          );
+        throw new DataFormatError(
+          'WAV mode zstd decompression failed: ' + errMsg,
+        );
+      }
+
+      if (!payload.subarray(0, MAGIC.length).equals(MAGIC)) {
+        throw new DataFormatError(
+          'Invalid ROX format in WAV (missing ROX1 magic after decompression)',
+        );
+      }
+      payload = payload.subarray(MAGIC.length);
+
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      progressBar?.stop();
+
+      // Try unpack multi-file archive
+      try {
+        const unpack = unpackBuffer(payload);
+        if (unpack && unpack.files && unpack.files.length > 0) {
+          return { files: unpack.files, meta: { name } };
+        }
+      } catch (e) {}
+
+      return { buf: payload, meta: { name } };
+    }
+  }
+
+  // ─── Robust image detection (lossy-resilient PNG) ──────────────────────────
+  try {
+    if (isRobustImage(processedBuf)) {
+      const result = decodeRobustImage(processedBuf);
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      progressBar?.stop();
+
+      try {
+        const unpack = unpackBuffer(result.data);
+        if (unpack && unpack.files && unpack.files.length > 0) {
+          return { files: unpack.files, correctedErrors: result.correctedErrors };
+        }
+      } catch (e) {}
+
+      return { buf: result.data, correctedErrors: result.correctedErrors };
+    }
+  } catch (e) {
+    // Fall through to standard decoding
+  }
+
+  // ─── MAGIC header (compact mode) ──────────────────────────────────────────
   if (processedBuf.subarray(0, MAGIC.length).equals(MAGIC)) {
     const d = processedBuf.subarray(MAGIC.length);
     const nameLen = d[0];

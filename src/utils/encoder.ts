@@ -1,6 +1,7 @@
 import { createCipheriv, pbkdf2Sync, randomBytes } from 'crypto';
 import * as zlib from 'zlib';
 import { unpackBuffer } from '../pack.js';
+import { bytesToWav } from './audio.js';
 import {
   COMPRESSION_MARKERS,
   ENC_AES,
@@ -16,6 +17,8 @@ import {
 import { crc32 } from './crc.js';
 import { colorsToBytes } from './helpers.js';
 import { native } from './native.js';
+import { encodeRobustAudio } from './robust-audio.js';
+import { encodeRobustImage } from './robust-image.js';
 import { EncodeOptions } from './types.js';
 import { parallelZstdCompress } from './zstd.js';
 /**
@@ -70,6 +73,33 @@ export async function encodeBinaryToPng(
 
   const compressionLevel = opts.compressionLevel ?? 19;
 
+  // ─── Lossy-resilient encoding fast path ────────────────────────────────────
+  // When lossyResilient is true, use QR-code-style block encoding with
+  // Reed-Solomon FEC. This produces output that survives lossy compression.
+  if (opts.lossyResilient) {
+    const inputBuf = Array.isArray(input) ? Buffer.concat(input) : (input as Buffer);
+    if (opts.onProgress) opts.onProgress({ phase: 'compress_start', total: inputBuf.length });
+
+    if (opts.container === 'sound') {
+      // Robust audio encoding (multi-tone FSK + RS ECC)
+      const result = encodeRobustAudio(inputBuf, {
+        eccLevel: opts.eccLevel ?? 'medium',
+      });
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      progressBar?.stop();
+      return result;
+    } else {
+      // Robust image encoding (QR-code-like blocks + RS ECC)
+      const result = encodeRobustImage(inputBuf, {
+        blockSize: opts.robustBlockSize ?? 4,
+        eccLevel: opts.eccLevel ?? 'medium',
+      });
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      progressBar?.stop();
+      return result;
+    }
+  }
+
   // --- Native encoder fast path: let Rust handle compression/encryption/PNG ---
   // This must be checked BEFORE TS compression to avoid double-compression.
   if (
@@ -101,28 +131,52 @@ export async function encodeBinaryToPng(
 
     if (opts.onProgress) opts.onProgress({ phase: 'compress_start', total: inputBuf.length });
 
-    if (opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
-      const result = native.nativeEncodePngWithEncryptionNameAndFilelist(
-        inputBuf,
-        compressionLevel,
-        opts.passphrase,
-        opts.encrypt,
-        fileName,
-        fileListJson,
-      );
-      if (opts.onProgress) opts.onProgress({ phase: 'done' });
-      progressBar?.stop();
-      return Buffer.from(result);
-    } else {
-      const result = native.nativeEncodePngWithNameAndFilelist(
-        inputBuf,
-        compressionLevel,
-        fileName,
-        fileListJson,
-      );
-      if (opts.onProgress) opts.onProgress({ phase: 'done' });
-      progressBar?.stop();
-      return Buffer.from(result);
+    // ── WAV container (--sound) via native Rust encoder ──
+    if (opts.container === 'sound') {
+      if (typeof native.nativeEncodeWavWithEncryptionNameAndFilelist === 'function' &&
+          opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
+        const result = native.nativeEncodeWavWithEncryptionNameAndFilelist(
+          inputBuf, compressionLevel, opts.passphrase, opts.encrypt, fileName, fileListJson,
+        );
+        if (opts.onProgress) opts.onProgress({ phase: 'done' });
+        progressBar?.stop();
+        return Buffer.from(result);
+      } else if (typeof native.nativeEncodeWavWithNameAndFilelist === 'function') {
+        const result = native.nativeEncodeWavWithNameAndFilelist(
+          inputBuf, compressionLevel, fileName, fileListJson,
+        );
+        if (opts.onProgress) opts.onProgress({ phase: 'done' });
+        progressBar?.stop();
+        return Buffer.from(result);
+      }
+      // fallthrough to TS WAV path below if native WAV not available
+    }
+
+    // ── PNG container (default) via native Rust encoder ──
+    if (opts.container !== 'sound') {
+      if (opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
+        const result = native.nativeEncodePngWithEncryptionNameAndFilelist(
+          inputBuf,
+          compressionLevel,
+          opts.passphrase,
+          opts.encrypt,
+          fileName,
+          fileListJson,
+        );
+        if (opts.onProgress) opts.onProgress({ phase: 'done' });
+        progressBar?.stop();
+        return Buffer.from(result);
+      } else {
+        const result = native.nativeEncodePngWithNameAndFilelist(
+          inputBuf,
+          compressionLevel,
+          fileName,
+          fileListJson,
+        );
+        if (opts.onProgress) opts.onProgress({ phase: 'done' });
+        progressBar?.stop();
+        return Buffer.from(result);
+      }
     }
   }
 
@@ -269,6 +323,55 @@ export async function encodeBinaryToPng(
 
   if (opts.output === 'rox') {
     return Buffer.concat([MAGIC, ...meta]);
+  }
+
+  // ─── WAV container (TS fallback path) ──────────────────────────────────────
+  if (opts.container === 'sound') {
+    const nameBuf =
+      opts.name ? Buffer.from(opts.name, 'utf8') : Buffer.alloc(0);
+    const nameLen = nameBuf.length;
+    const payloadLenBuf = Buffer.alloc(4);
+    payloadLenBuf.writeUInt32BE(payloadTotalLen, 0);
+    const version = 1;
+    let wavPayload: Buffer[] = [
+      PIXEL_MAGIC,
+      Buffer.from([version]),
+      Buffer.from([nameLen]),
+      nameBuf,
+      payloadLenBuf,
+      ...payload,
+    ];
+
+    if (opts.includeFileList && opts.fileList) {
+      let sizeMapW: Record<string, number> | null = null;
+      if (!Array.isArray(input)) {
+        try {
+          const unpack = unpackBuffer(input as Buffer);
+          if (unpack) {
+            sizeMapW = {};
+            for (const ef of unpack.files) sizeMapW[ef.path] = ef.buf.length;
+          }
+        } catch (e) {}
+      }
+      const normalizedW = opts.fileList.map((f: any) => {
+        if (typeof f === 'string')
+          return { name: f, size: sizeMapW && sizeMapW[f] ? sizeMapW[f] : 0 };
+        if (f && typeof f === 'object') {
+          if (f.name) return { name: f.name, size: f.size ?? 0 };
+          if (f.path) return { name: f.path, size: f.size ?? 0 };
+        }
+        return { name: String(f), size: 0 };
+      });
+      const jsonBufW = Buffer.from(JSON.stringify(normalizedW), 'utf8');
+      const lenBufW = Buffer.alloc(4);
+      lenBufW.writeUInt32BE(jsonBufW.length, 0);
+      wavPayload = [...wavPayload, Buffer.from('rXFL', 'utf8'), lenBufW, jsonBufW];
+    }
+
+    const wavData = bytesToWav(Buffer.concat(wavPayload));
+    payload.length = 0;
+    progressBar?.stop();
+    return wavData;
   }
 
   {

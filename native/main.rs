@@ -11,6 +11,7 @@ mod encoder;
 mod packer;
 mod crypto;
 mod png_utils;
+mod audio;
 mod reconstitution;
 mod archive;
 
