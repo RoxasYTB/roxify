@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.6.7] - 2026-03-03
+
+### Critical Bug Fix: Decode Corruption
+
+- **Fixed**: Encode/decode roundtrip was producing corrupted output. The TS encoder
+  was compressing data (zstd multi-chunk), then passing the already-compressed
+  payload to the Rust native encoder which compressed it a second time. The decoder
+  only decompressed once, returning the intermediate compressed form instead of the
+  original data. Now the native encoder receives the original input directly.
+- **Fixed**: `parallelZstdCompress` now concatenates small Buffer arrays into a
+  single buffer before compression, eliminating multi-chunk overhead for files < 8 MB.
+- **Improved**: Compression level raised from 12 to 19 in the CLI (matching the
+  API default). Removed aggressive level 22 auto-boost in Rust encoder for better
+  speed/ratio balance.
+- **Verified**: Full cross-compatibility — Rust encode ↔ JS decode, JS encode ↔
+  Rust decode, encrypted roundtrips, directory roundtrips all passing.
+
 ## [1.6.6] - 2026-03-03
 
 ### Maintenance, Optimization and Documentation

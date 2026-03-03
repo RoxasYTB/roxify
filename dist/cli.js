@@ -258,7 +258,7 @@ async function encodeCommand(args) {
             }, 500);
             const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
             const fileName = basename(inputPaths[0]);
-            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 12, parsed.passphrase, encryptType, fileName);
+            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 19, parsed.passphrase, encryptType, fileName);
             clearInterval(progressInterval);
             const encodeTime = Date.now() - startTime;
             encodeBar.update(100, {
@@ -336,7 +336,7 @@ async function encodeCommand(args) {
             mode,
             name: parsed.outputName || 'archive',
             skipOptimization: false,
-            compressionLevel: 12,
+            compressionLevel: 19,
             outputFormat: 'auto',
         });
         if (parsed.verbose)

@@ -127,7 +127,7 @@ pub fn delta_decode_bytes(buf: &[u8]) -> Vec<u8> {
 fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
-    let actual_level = if level >= 19 { 22 } else { level };
+    let actual_level = level.min(19).max(1);
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), actual_level)
         .map_err(|e| format!("zstd encoder init error: {}", e))?;
 
@@ -201,7 +201,7 @@ pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::
         return compress_with_chunk_size(buf, level, best_chunk_size);
     }
 
-    let actual_level = if level >= 19 { 22 } else { level };
+    let actual_level = level.min(19).max(1);
     let mut encoder = if let Some(d) = dict {
         zstd::stream::Encoder::with_dictionary(Vec::new(), actual_level, d)
             .map_err(|e| format!("zstd encoder init error: {}", e))?

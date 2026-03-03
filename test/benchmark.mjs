@@ -7,10 +7,10 @@
  */
 
 import { execSync } from 'child_process';
-import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, existsSync } from 'fs';
-import { join, resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
+import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');

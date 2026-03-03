@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 
 import {
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    statSync,
+    writeFileSync,
 } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import {
-  DataFormatError,
-  decodePngToBinary,
-  encodeBinaryToPng,
-  hasPassphraseInPng,
-  IncorrectPassphraseError,
-  listFilesInPng,
-  PassphraseRequiredError,
+    DataFormatError,
+    decodePngToBinary,
+    encodeBinaryToPng,
+    hasPassphraseInPng,
+    IncorrectPassphraseError,
+    listFilesInPng,
+    PassphraseRequiredError,
 } from './index.js';
 import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
 import * as cliProgress from './stub-progress.js';
 import {
-  encodeWithRustCLI,
-  isRustBinaryAvailable,
+    encodeWithRustCLI,
+    isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
 const VERSION = '1.6.1';
@@ -305,7 +305,7 @@ async function encodeCommand(args: string[]) {
       await encodeWithRustCLI(
         inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0],
         resolvedOutput,
-        12,
+        19,
         parsed.passphrase,
         encryptType,
         fileName,
@@ -404,7 +404,7 @@ async function encodeCommand(args: string[]) {
       mode,
       name: parsed.outputName || 'archive',
       skipOptimization: false,
-      compressionLevel: 12,
+      compressionLevel: 19,
       outputFormat: 'auto',
     });
 

@@ -67,8 +67,34 @@ export async function parallelZstdCompress(
   dict?: Buffer,
 ): Promise<Buffer[]> {
   const chunkSize = 8 * 1024 * 1024;
-  const chunks: Buffer[] = [];
 
+  // For small payloads (< chunkSize), concatenate and compress as single frame
+  // to avoid multi-chunk overhead (16+ bytes header per chunk boundary).
+  let flat: Buffer | null = null;
+  if (Array.isArray(payload)) {
+    const totalLen = payload.reduce((a, b) => a + b.length, 0);
+    if (totalLen <= chunkSize) {
+      flat = Buffer.concat(payload);
+    }
+  } else {
+    flat = payload;
+  }
+
+  if (flat && flat.length <= chunkSize) {
+    if (onProgress) onProgress(0, 1);
+    if (!nativeZstdCompress && !nativeZstdCompressWithDict) {
+      throw new Error('Native zstd compression not available');
+    }
+    const result = Buffer.from(
+      nativeZstdCompressWithDict && dict ?
+        nativeZstdCompressWithDict(flat, level, dict)
+      : nativeZstdCompress!(flat, level),
+    );
+    if (onProgress) onProgress(1, 1);
+    return [result];
+  }
+
+  const chunks: Buffer[] = [];
   if (Array.isArray(payload)) {
     for (const p of payload) {
       if (p.length <= chunkSize) {
@@ -80,15 +106,6 @@ export async function parallelZstdCompress(
       }
     }
   } else {
-    if (payload.length <= chunkSize) {
-      if (onProgress) onProgress(0, 1);
-      if (!nativeZstdCompress) {
-        throw new Error('Native zstd compression not available');
-      }
-      const result = Buffer.from(nativeZstdCompress(payload, level));
-      if (onProgress) onProgress(1, 1);
-      return [result];
-    }
     for (let i = 0; i < payload.length; i += chunkSize) {
       chunks.push(payload.subarray(i, Math.min(i + chunkSize, payload.length)));
     }

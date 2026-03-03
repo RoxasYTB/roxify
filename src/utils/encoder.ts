@@ -68,6 +68,65 @@ export async function encodeBinaryToPng(
     }
   }
 
+  const compressionLevel = opts.compressionLevel ?? 19;
+
+  // --- Native encoder fast path: let Rust handle compression/encryption/PNG ---
+  // This must be checked BEFORE TS compression to avoid double-compression.
+  if (
+    typeof native.nativeEncodePngWithNameAndFilelist === 'function' &&
+    opts.includeFileList &&
+    opts.fileList
+  ) {
+    const fileName = opts.name || undefined;
+    const inputBuf = Array.isArray(input) ? Buffer.concat(input) : (input as Buffer);
+    let sizeMap: Record<string, number> | null = null;
+    try {
+      const unpack = unpackBuffer(inputBuf);
+      if (unpack) {
+        sizeMap = {};
+        for (const ef of unpack.files) sizeMap[ef.path] = ef.buf.length;
+      }
+    } catch (e) {}
+
+    const normalized = opts.fileList.map((f: any) => {
+      if (typeof f === 'string')
+        return { name: f, size: sizeMap && sizeMap[f] ? sizeMap[f] : 0 };
+      if (f && typeof f === 'object') {
+        if (f.name) return { name: f.name, size: f.size ?? 0 };
+        if (f.path) return { name: f.path, size: f.size ?? 0 };
+      }
+      return { name: String(f), size: 0 };
+    });
+    const fileListJson = JSON.stringify(normalized);
+
+    if (opts.onProgress) opts.onProgress({ phase: 'compress_start', total: inputBuf.length });
+
+    if (opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
+      const result = native.nativeEncodePngWithEncryptionNameAndFilelist(
+        inputBuf,
+        compressionLevel,
+        opts.passphrase,
+        opts.encrypt,
+        fileName,
+        fileListJson,
+      );
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      progressBar?.stop();
+      return Buffer.from(result);
+    } else {
+      const result = native.nativeEncodePngWithNameAndFilelist(
+        inputBuf,
+        compressionLevel,
+        fileName,
+        fileListJson,
+      );
+      if (opts.onProgress) opts.onProgress({ phase: 'done' });
+      progressBar?.stop();
+      return Buffer.from(result);
+    }
+  }
+
+  // --- TypeScript compression/encryption pipeline ---
   let payloadInput: Buffer | Buffer[];
   let totalLen = 0;
   if (Array.isArray(input)) {
@@ -81,7 +140,6 @@ export async function encodeBinaryToPng(
   if (opts.onProgress)
     opts.onProgress({ phase: 'compress_start', total: totalLen });
 
-  const compressionLevel = opts.compressionLevel ?? 19;
   let payload = await parallelZstdCompress(
     payloadInput,
     compressionLevel,
@@ -168,59 +226,6 @@ export async function encodeBinaryToPng(
   const payloadTotalLen = payload.reduce((a, b) => a + b.length, 0);
   if (opts.onProgress)
     opts.onProgress({ phase: 'meta_prep_done', loaded: payloadTotalLen });
-
-  if (
-    typeof native.nativeEncodePngWithNameAndFilelist === 'function' &&
-    opts.includeFileList &&
-    opts.fileList
-  ) {
-    const fileName = opts.name || undefined;
-    let sizeMap: Record<string, number> | null = null;
-    if (!Array.isArray(input)) {
-      try {
-        const unpack = unpackBuffer(input as Buffer);
-        if (unpack) {
-          sizeMap = {};
-          for (const ef of unpack.files) sizeMap[ef.path] = ef.buf.length;
-        }
-      } catch (e) {}
-    }
-
-    const normalized = opts.fileList.map((f: any) => {
-      if (typeof f === 'string')
-        return { name: f, size: sizeMap && sizeMap[f] ? sizeMap[f] : 0 };
-      if (f && typeof f === 'object') {
-        if (f.name) return { name: f.name, size: f.size ?? 0 };
-        if (f.path) return { name: f.path, size: f.size ?? 0 };
-      }
-      return { name: String(f), size: 0 };
-    });
-    const fileListJson = JSON.stringify(normalized);
-
-    const flatPayload = Buffer.concat(payload);
-
-    if (opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
-      const result = native.nativeEncodePngWithEncryptionNameAndFilelist(
-        flatPayload,
-        compressionLevel,
-        opts.passphrase,
-        opts.encrypt,
-        fileName,
-        fileListJson,
-      );
-      if (opts.onProgress) opts.onProgress({ phase: 'done' });
-      return Buffer.from(result);
-    } else {
-      const result = native.nativeEncodePngWithNameAndFilelist(
-        flatPayload,
-        compressionLevel,
-        fileName,
-        fileListJson,
-      );
-      if (opts.onProgress) opts.onProgress({ phase: 'done' });
-      return Buffer.from(result);
-    }
-  }
 
   const metaParts: Buffer[] = [];
   const includeName =
