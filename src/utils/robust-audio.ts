@@ -75,6 +75,46 @@ function writeWavHeader(buf: Buffer, dataBytes: number): void {
   buf.writeUInt32LE(dataBytes, o);
 }
 
+// ─── Pre-computed Lookup Tables ─────────────────────────────────────────────
+
+/** Pre-computed Hann window for symbol length. */
+const HANN_WINDOW = new Float64Array(SYMBOL_SAMPLES);
+{
+  const factor = (2 * Math.PI) / (SYMBOL_SAMPLES - 1);
+  for (let n = 0; n < SYMBOL_SAMPLES; n++) {
+    HANN_WINDOW[n] = 0.5 * (1 - Math.cos(factor * n));
+  }
+}
+
+/** Pre-computed sine tables for each carrier frequency (symbol length). */
+const CARRIER_SINE_TABLES: Float64Array[] = CARRIERS.map(freq => {
+  const table = new Float64Array(SYMBOL_SAMPLES);
+  const w = (2 * Math.PI * freq) / SAMPLE_RATE;
+  for (let n = 0; n < SYMBOL_SAMPLES; n++) {
+    table[n] = TONE_AMPLITUDE * HANN_WINDOW[n] * Math.sin(w * n);
+  }
+  return table;
+});
+
+/** Pre-computed sine tables for sync tones. */
+const SYNC_SINE_TABLES: Float64Array[] = SYNC_FREQS.map(freq => {
+  const table = new Float64Array(SYNC_TONE_SAMPLES);
+  const w = (2 * Math.PI * freq) / SAMPLE_RATE;
+  const factor = (2 * Math.PI) / (SYNC_TONE_SAMPLES - 1);
+  for (let n = 0; n < SYNC_TONE_SAMPLES; n++) {
+    const window = 0.5 * (1 - Math.cos(factor * n));
+    table[n] = 0.3 * window * Math.sin(w * n);
+  }
+  return table;
+});
+
+/** Pre-computed Goertzel coefficients for each carrier. */
+const GOERTZEL_COEFFS: { k: number; coeff: number }[] = CARRIERS.map(freq => {
+  const k = Math.round((freq * SYMBOL_SAMPLES) / SAMPLE_RATE);
+  const w = (2 * Math.PI * k) / SYMBOL_SAMPLES;
+  return { k, coeff: 2 * Math.cos(w) };
+});
+
 // ─── Signal Processing Primitives ───────────────────────────────────────────
 
 /**
@@ -125,15 +165,16 @@ function goertzelEnergy(
 
 /**
  * Modulate a single byte into audio samples (8-channel OFDM symbol).
+ * Uses pre-computed sine tables for maximum speed.
  */
 function modulateByte(byte: number): Float64Array {
   const out = new Float64Array(TOTAL_SYMBOL_SAMPLES);
 
   for (let bit = 0; bit < 8; bit++) {
     if (byte & (1 << bit)) {
-      const tone = generateTone(CARRIERS[bit], SYMBOL_SAMPLES, TONE_AMPLITUDE);
+      const table = CARRIER_SINE_TABLES[bit];
       for (let n = 0; n < SYMBOL_SAMPLES; n++) {
-        out[n] += tone[n];
+        out[n] += table[n];
       }
     }
   }
@@ -144,15 +185,26 @@ function modulateByte(byte: number): Float64Array {
 
 /**
  * Demodulate audio samples into a byte.
+ * Uses pre-computed Goertzel coefficients for maximum speed.
  */
 function demodulateByte(samples: Float64Array): number {
   // Extract the active symbol region (skip guard)
   const symbol = samples.subarray(0, SYMBOL_SAMPLES);
+  const N = SYMBOL_SAMPLES;
+  const N2 = N * N;
   let byte = 0;
 
   for (let bit = 0; bit < 8; bit++) {
-    const energy = goertzelEnergy(symbol, CARRIERS[bit], SAMPLE_RATE);
-    if (energy > DETECTION_THRESHOLD) {
+    const { coeff } = GOERTZEL_COEFFS[bit];
+    let s1 = 0;
+    let s2 = 0;
+    for (let n = 0; n < N; n++) {
+      const s0 = symbol[n] + coeff * s1 - s2;
+      s2 = s1;
+      s1 = s0;
+    }
+    const power = (s1 * s1 + s2 * s2 - coeff * s1 * s2) / N2;
+    if (power > DETECTION_THRESHOLD) {
       byte |= 1 << bit;
     }
   }
@@ -162,15 +214,14 @@ function demodulateByte(samples: Float64Array): number {
 
 /**
  * Generate sync preamble (4 descending tones).
+ * Uses pre-computed sine tables.
  */
 function generatePreamble(): Float64Array {
   const out = new Float64Array(SYNC_TOTAL_SAMPLES);
   for (let i = 0; i < SYNC_FREQS.length; i++) {
-    const tone = generateTone(SYNC_FREQS[i], SYNC_TONE_SAMPLES, 0.3);
+    const table = SYNC_SINE_TABLES[i];
     const offset = i * SYNC_TONE_SAMPLES;
-    for (let n = 0; n < SYNC_TONE_SAMPLES; n++) {
-      out[offset + n] = tone[n];
-    }
+    out.set(table, offset);
   }
   return out;
 }
@@ -248,32 +299,31 @@ export function encodeRobustAudio(
     numSymbols * TOTAL_SYMBOL_SAMPLES +
     tailSamples;
 
-  const audioFloat = new Float64Array(totalSamples);
-
-  // Preamble
-  audioFloat.set(preamble, 0);
-
-  // Data symbols
-  let sampleOffset = SYNC_TOTAL_SAMPLES;
-  for (let i = 0; i < numSymbols; i++) {
-    const symbol = modulateByte(fullPayload[i]);
-    audioFloat.set(symbol, sampleOffset);
-    sampleOffset += TOTAL_SYMBOL_SAMPLES;
-  }
-
-  // 4. Convert to 16-bit PCM WAV
+  // 4. Convert to 16-bit PCM WAV directly (skip intermediate Float64Array)
   const dataBytes = totalSamples * 2; // 16-bit = 2 bytes/sample
   const wav = Buffer.alloc(WAV_HEADER_SIZE + dataBytes);
   writeWavHeader(wav, dataBytes);
 
   let offset = WAV_HEADER_SIZE;
-  for (let n = 0; n < totalSamples; n++) {
-    // Clamp to [-1, 1] and convert to 16-bit signed integer
-    const sample = Math.max(-1, Math.min(1, audioFloat[n]));
-    const int16 = Math.round(sample * 32767);
-    wav.writeInt16LE(int16, offset);
+
+  // Write preamble directly
+  for (let n = 0; n < SYNC_TOTAL_SAMPLES; n++) {
+    const sample = Math.max(-1, Math.min(1, preamble[n]));
+    wav.writeInt16LE(Math.round(sample * 32767), offset);
     offset += 2;
   }
+
+  // Write data symbols directly (avoid allocating a huge Float64Array)
+  for (let i = 0; i < numSymbols; i++) {
+    const symbol = modulateByte(fullPayload[i]);
+    for (let n = 0; n < TOTAL_SYMBOL_SAMPLES; n++) {
+      const sample = Math.max(-1, Math.min(1, symbol[n]));
+      wav.writeInt16LE(Math.round(sample * 32767), offset);
+      offset += 2;
+    }
+  }
+
+  // Tail silence is already zeros in the buffer
 
   return wav;
 }

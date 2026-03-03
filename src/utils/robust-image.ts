@@ -87,6 +87,7 @@ interface GridLayout {
 /**
  * Compute grid layout: place finder patterns, quiet zones, and determine
  * which block positions are available for data.
+ * Optimized: uses flat boolean array instead of Set<string> for reserved lookup.
  */
 function computeLayout(dataBlocks: number): GridLayout {
   // Minimum grid to fit data + finder patterns + quiet zones
@@ -99,42 +100,43 @@ function computeLayout(dataBlocks: number): GridLayout {
   const gridW = side;
   const gridH = side;
 
-  // Determine reserved regions (finder patterns + quiet zones)
-  const reserved = new Set<string>();
+  // Determine reserved regions (finder patterns + quiet zones) using flat array
+  const reserved = new Uint8Array(gridW * gridH);
 
   // Top-left finder
   for (let y = 0; y < finderFootprint; y++) {
     for (let x = 0; x < finderFootprint; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
 
   // Top-right finder
   for (let y = 0; y < finderFootprint; y++) {
     for (let x = gridW - finderFootprint; x < gridW; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
 
   // Bottom-left finder
   for (let y = gridH - finderFootprint; y < gridH; y++) {
     for (let x = 0; x < finderFootprint; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
 
   // Bottom-right finder
   for (let y = gridH - finderFootprint; y < gridH; y++) {
     for (let x = gridW - finderFootprint; x < gridW; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
 
   // Collect available data positions (row-by-row)
   const dataPositions: Array<[number, number]> = [];
   for (let y = 0; y < gridH; y++) {
+    const rowBase = y * gridW;
     for (let x = 0; x < gridW; x++) {
-      if (!reserved.has(`${x},${y}`)) {
+      if (!reserved[rowBase + x]) {
         dataPositions.push([x, y]);
       }
     }
@@ -147,6 +149,7 @@ function computeLayout(dataBlocks: number): GridLayout {
 
 /**
  * Render the block grid into an RGB pixel buffer.
+ * Optimized: fills row spans instead of individual pixels.
  *
  * @param grid - 2D grid of block values (0 = black, 255 = white).
  * @param blockSize - Pixel size of each block (e.g., 4 = 4×4 pixels per block).
@@ -161,22 +164,29 @@ function renderGrid(
   const width = gridW * blockSize;
   const height = gridH * blockSize;
   const rgb = Buffer.alloc(width * height * 3);
+  const stride = width * 3;
 
   for (let by = 0; by < gridH; by++) {
-    for (let bx = 0; bx < gridW; bx++) {
-      const val = grid[by][bx];
-      const r = val;
-      const g = val;
-      const b = val;
+    const row = grid[by];
+    // Build one pixel row for this block row
+    const firstRowOffset = by * blockSize * stride;
 
-      for (let dy = 0; dy < blockSize; dy++) {
-        for (let dx = 0; dx < blockSize; dx++) {
-          const px = (by * blockSize + dy) * width + (bx * blockSize + dx);
-          rgb[px * 3] = r;
-          rgb[px * 3 + 1] = g;
-          rgb[px * 3 + 2] = b;
-        }
+    for (let bx = 0; bx < gridW; bx++) {
+      const val = row[bx];
+      const pxStart = firstRowOffset + bx * blockSize * 3;
+      // Fill one row of pixel span for this block
+      for (let dx = 0; dx < blockSize; dx++) {
+        const off = pxStart + dx * 3;
+        rgb[off] = val;
+        rgb[off + 1] = val;
+        rgb[off + 2] = val;
       }
+    }
+
+    // Copy the first pixel row to the remaining (blockSize - 1) rows
+    const srcStart = firstRowOffset;
+    for (let dy = 1; dy < blockSize; dy++) {
+      rgb.copy(rgb, firstRowOffset + dy * stride, srcStart, srcStart + stride);
     }
   }
 
@@ -522,35 +532,34 @@ export function decodeRobustImage(png: Buffer): RobustImageDecodeResult {
   const grid = readBlocks(rgb, width, height, blockSize, gridW, gridH);
 
   // 4. Compute layout (same algorithm as encoding)
-  const layout = computeLayout(0); // dummy size
-  // Re-compute with actual grid
   const finderFootprint = FINDER_SIZE + QUIET_ZONE;
-  const reserved = new Set<string>();
+  const reserved = new Uint8Array(gridW * gridH);
   for (let y = 0; y < finderFootprint; y++) {
     for (let x = 0; x < finderFootprint; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
   for (let y = 0; y < finderFootprint; y++) {
     for (let x = gridW - finderFootprint; x < gridW; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
   for (let y = gridH - finderFootprint; y < gridH; y++) {
     for (let x = 0; x < finderFootprint; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
   for (let y = gridH - finderFootprint; y < gridH; y++) {
     for (let x = gridW - finderFootprint; x < gridW; x++) {
-      reserved.add(`${x},${y}`);
+      reserved[y * gridW + x] = 1;
     }
   }
 
   const dataPositions: Array<[number, number]> = [];
   for (let y = 0; y < gridH; y++) {
+    const rowBase = y * gridW;
     for (let x = 0; x < gridW; x++) {
-      if (!reserved.has(`${x},${y}`)) {
+      if (!reserved[rowBase + x]) {
         dataPositions.push([x, y]);
       }
     }

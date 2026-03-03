@@ -55,42 +55,136 @@ The core compression and image-processing logic is written in Rust and exposed t
 
 ## Benchmarks
 
-All measurements were taken on Linux x64 with Node.js v20. Each tool was run with default settings (zip deflate, gzip via `tar czf`, 7z LZMA2 at level 5, Roxify in compact mode with Zstd level 19). Roxify produces a valid PNG file rather than a raw archive.
+All measurements were taken on Linux x64 (Intel i7-6700K @ 4.0 GHz, 32 GB RAM) with Node.js v20. Every tool uses its **maximum compression** setting: zip -9, gzip -9, 7z LZMA2 -mx=9, and Roxify Zstd level 19. Roxify produces a valid PNG or WAV file rather than a raw archive.
 
-### Compression Ratio and Speed
+### Compression Ratio (Maximum Compression for All Tools)
 
-| Dataset | Files | Original | zip | tar.gz | 7z | Roxify (PNG) |
-|---|---:|---|---|---|---|---|
-| Text files (1 MB) | 128 | 1.00 MB | 259 KB (25.3%) 52 ms | 196 KB (19.2%) 78 ms | 162 KB (15.8%) 347 ms | 203 KB (19.9%) 534 ms |
-| JSON files (1 MB) | 1 183 | 1.00 MB | 700 KB (68.3%) 78 ms | 270 KB (26.4%) 43 ms | 212 KB (20.7%) 191 ms | 339 KB (33.0%) 766 ms |
-| Binary (random, 1 MB) | 33 | 1.00 MB | 1.00 MB (100.5%) 29 ms | 1.00 MB (100.4%) 47 ms | 1.00 MB (100.1%) 128 ms | 1.00 MB (100.5%) 689 ms |
-| Mixed (text+JSON+bin, 5 MB) | 2 241 | 5.00 MB | 3.26 MB (65.2%) 253 ms | 2.43 MB (48.7%) 228 ms | 2.27 MB (45.5%) 1.21 s | 2.59 MB (51.7%) 2.04 s |
-| Text files (10 MB) | 1 285 | 10.00 MB | 2.54 MB (25.4%) 357 ms | 1.91 MB (19.1%) 657 ms | 1.53 MB (15.3%) 4.70 s | 1.98 MB (19.8%) 2.15 s |
-| Mixed (text+JSON+bin, 10 MB) | 4 467 | 10.00 MB | 6.52 MB (65.2%) 461 ms | 4.86 MB (48.6%) 452 ms | 4.54 MB (45.4%) 2.51 s | 5.16 MB (51.6%) 3.77 s |
+| Dataset | Original | zip -9 | gzip -9 | 7z LZMA2 -9 | Roxify PNG | Roxify WAV |
+|---|---|---|---|---|---|---|
+| Text 1 MB | 1.00 MB | 219 KB (21.4%) | 219 KB (21.4%) | 187 KB (18.3%) | **188 KB (18.3%)** | **187 KB (18.3%)** |
+| JSON 1 MB | 1.00 MB | 263 KB (25.7%) | 263 KB (25.7%) | 225 KB (22.0%) | **220 KB (21.5%)** | **219 KB (21.4%)** |
+| Binary 1 MB | 1.00 MB | 1.00 MB (100%) | 1.00 MB (100%) | 1.00 MB (100%) | 1.00 MB (100%) | 1.00 MB (100%) |
+| Mixed 5 MB | 5.00 MB | 2.45 MB (49.0%) | 2.45 MB (49.1%) | 2.33 MB (46.6%) | 2.38 MB (47.6%) | 2.38 MB (47.6%) |
+| Text 10 MB | 10.00 MB | 2.13 MB (21.3%) | 2.13 MB (21.3%) | 1.71 MB (17.1%) | **1.71 MB (17.1%)** | **1.70 MB (17.0%)** |
+| Mixed 10 MB | 10.00 MB | 4.90 MB (49.0%) | 4.90 MB (49.0%) | 4.65 MB (46.5%) | 4.73 MB (47.3%) | 4.73 MB (47.3%) |
+
+> **Roxify matches 7z LZMA2 ultra-compression on text** (18.3% for both at 1 MB) and **beats LZMA2 on JSON** (21.4% vs 22.0%). On mixed data, Roxify is within 1 percentage point of LZMA2 while producing a shareable PNG/WAV instead of an archive.
+
+### Encode and Decode Speed (CLI)
+
+| Dataset | Tool | Encode | Decode | Enc Throughput | Dec Throughput |
+|---|---|---|---|---|---|
+| Text 1 MB | zip -9 | 112 ms | 36 ms | 8.9 MB/s | 27.6 MB/s |
+| | gzip -9 | 146 ms | 38 ms | 6.9 MB/s | 26.0 MB/s |
+| | 7z LZMA -9 | 303 ms | 21 ms | 3.3 MB/s | 46.6 MB/s |
+| | **Roxify PNG** | **859 ms** | **577 ms** | **1.2 MB/s** | **1.7 MB/s** |
+| | **Roxify WAV** | **794 ms** | **480 ms** | **1.3 MB/s** | **2.1 MB/s** |
+| JSON 1 MB | zip -9 | 79 ms | 20 ms | 12.7 MB/s | 50.5 MB/s |
+| | 7z LZMA -9 | 197 ms | 26 ms | 5.1 MB/s | 37.9 MB/s |
+| | **Roxify PNG** | **1.14 s** | **755 ms** | **0.9 MB/s** | **1.3 MB/s** |
+| | **Roxify WAV** | **1.49 s** | **518 ms** | **0.7 MB/s** | **1.9 MB/s** |
+| Text 10 MB | zip -9 | 1.21 s | 70 ms | 8.2 MB/s | 143.8 MB/s |
+| | 7z LZMA -9 | 5.05 s | 99 ms | 2.0 MB/s | 100.8 MB/s |
+| | **Roxify PNG** | **9.05 s** | **4.53 s** | **1.1 MB/s** | **2.2 MB/s** |
+| | **Roxify WAV** | **9.22 s** | **2.59 s** | **1.1 MB/s** | **3.9 MB/s** |
+
+> Roxify CLI includes Node.js startup overhead (~400 ms). In the JS API (below), the same operations are significantly faster. WAV decode is consistently faster than PNG decode due to simpler container parsing.
+
+### JavaScript API Throughput
+
+Direct API calls (no CLI startup overhead):
+
+| Size | Container | Encode | Decode | Enc Throughput | Dec Throughput | Output | Ratio | Integrity |
+|---|---|---|---|---|---|---|---|---|
+| 1 KB | PNG | 9 ms | 12 ms | 0.1 MB/s | 0.1 MB/s | 1.14 KB | 114.3% | ✓ |
+| 10 KB | PNG | 18 ms | 34 ms | 0.5 MB/s | 0.3 MB/s | 10.32 KB | 103.2% | ✓ |
+| 100 KB | PNG | 52 ms | 109 ms | 1.9 MB/s | 0.9 MB/s | 100.52 KB | 100.5% | ✓ |
+| 500 KB | PNG | 339 ms | 541 ms | 1.4 MB/s | 0.9 MB/s | 502.64 KB | 100.5% | ✓ |
+| 1 MB | PNG | 875 ms | 1.24 s | 1.1 MB/s | 0.8 MB/s | 1.00 MB | 100.3% | ✓ |
+| 5 MB | PNG | 3.39 s | 4.12 s | 1.5 MB/s | 1.2 MB/s | 5.01 MB | 100.2% | ✓ |
+| 10 MB | PNG | 6.84 s | 12.28 s | 1.5 MB/s | 0.8 MB/s | 10.01 MB | 100.1% | ✓ |
+| 1 KB | WAV | 2 ms | 2 ms | 0.6 MB/s | 0.6 MB/s | 1.08 KB | 107.5% | ✓ |
+| 10 KB | WAV | 4 ms | 5 ms | 2.3 MB/s | 1.8 MB/s | 10.08 KB | 100.8% | ✓ |
+| 100 KB | WAV | 39 ms | 28 ms | 2.5 MB/s | 3.5 MB/s | 100.08 KB | 100.1% | ✓ |
+| 500 KB | WAV | 172 ms | 190 ms | 2.8 MB/s | 2.6 MB/s | 500.09 KB | 100.0% | ✓ |
+| 1 MB | WAV | 452 ms | 276 ms | 2.2 MB/s | 3.6 MB/s | 1.00 MB | 100.0% | ✓ |
+| 5 MB | WAV | 2.70 s | 1.65 s | 1.8 MB/s | 3.0 MB/s | 5.00 MB | 100.0% | ✓ |
+| 10 MB | WAV | 4.81 s | 2.56 s | 2.1 MB/s | 3.9 MB/s | 10.00 MB | 100.0% | ✓ |
+
+> WAV container is **2–4× faster** than PNG for decoding at large sizes, and produces slightly smaller output thanks to simpler framing.
+
+### Reed-Solomon ECC Throughput
+
+| Size | Encode | Decode | Enc Throughput | Dec Throughput | Overhead |
+|---|---|---|---|---|---|
+| 1 KB | 6 ms | 4 ms | 0.2 MB/s | 0.2 MB/s | 125.7% |
+| 10 KB | 7 ms | 6 ms | 1.3 MB/s | 1.5 MB/s | 119.6% |
+| 100 KB | 49 ms | 45 ms | 2.0 MB/s | 2.1 MB/s | 118.8% |
+| 1 MB | 483 ms | 377 ms | 2.1 MB/s | 2.7 MB/s | 118.6% |
+
+### Lossy-Resilient Encoding
+
+#### Robust Image (QR-code-style, block size 4×4)
+
+| Data Size | Encode Time | Output (PNG) |
+|---|---|---|
+| 32 B | 32 ms | 122 KB |
+| 128 B | 39 ms | 122 KB |
+| 512 B | 76 ms | 316 KB |
+| 1 KB | 139 ms | 508 KB |
+| 2 KB | 251 ms | 986 KB |
+
+#### Robust Audio (MFSK 8-channel, medium ECC)
+
+| Data Size | Encode | Decode | Output (WAV) | Integrity |
+|---|---|---|---|---|
+| 10 B | 33 ms | 44 ms | 1.35 MB | ✓ |
+| 32 B | 19 ms | 31 ms | 1.35 MB | ✓ |
+| 64 B | 22 ms | 24 ms | 1.35 MB | ✓ |
+| 128 B | 21 ms | 28 ms | 1.35 MB | ✓ |
+| 256 B | 40 ms | 45 ms | 2.59 MB | ✓ |
+
+### Data Integrity Verification
+
+All encode/decode roundtrips produce bit-exact output, verified by SHA-256:
+
+| Test Case | PNG | WAV |
+|---|---|---|
+| Empty buffer (0 B) | ✓ | ✓ |
+| Single byte (1 B) | ✓ | ✓ |
+| All byte values (256 B) | ✓ | ✓ |
+| 1 KB text | ✓ | ✓ |
+| 100 KB random | ✓ | ✓ |
+| 1 MB random | ✓ | ✓ |
+| 5 MB random | ✓ | ✓ |
+
+**14 / 14 integrity tests passed** across both containers.
 
 ### Key Observations
 
-- **On compressible data** (text, JSON), Roxify achieves ratios comparable to tar.gz (19--33%) while producing a standard PNG image instead of an archive file. The output can be shared on platforms that only accept images.
-- **On incompressible data** (random bytes), all tools converge to approximately 100% as expected. No compression algorithm can shrink truly random data.
-- **7z (LZMA2)** achieves the best ratios overall but is significantly slower. Roxify finishes faster than 7z on the 10 MB text dataset (2.15 s vs 4.70 s).
-- **zip** is the fastest tool but offers the weakest compression, especially on many small files (68.3% on JSON vs Roxify's 33.0%).
-- The overhead of PNG framing and Zstd's higher compression level adds latency on small datasets. On larger inputs, Roxify's multi-threaded pipeline narrows the gap.
+- **Roxify matches LZMA2 ultra-compression** on text data (18.3%) and **outperforms it on JSON** (21.4% vs 22.0%), while producing a standard PNG or WAV file instead of an archive.
+- **WAV container decode is 2–4× faster** than PNG decode at large sizes (3.9 MB/s vs 0.8 MB/s for 10 MB).
+- **WAV encode for 1 KB data completes in 2 ms** — well under the sub-second target.
+- **Lossy-resilient audio** encode/decode completes in under 50 ms for data up to 256 bytes, with full integrity.
+- **100% data integrity** across all sizes and containers — every byte is recovered exactly.
+- The CLI overhead (~400 ms Node.js startup) is amortized on larger inputs. For programmatic use, the JS API eliminates this entirely.
+- On incompressible (random) data, all tools converge to ~100% as expected. No compression algorithm can shrink truly random data.
 
 ### Methodology
 
-Benchmarks were generated using `test/benchmark.mjs`. Datasets consist of procedurally generated text, JSON, and random binary files. Each tool was invoked via its standard CLI with default or documented settings:
+Benchmarks were generated using `test/benchmark-detailed.cjs`. Datasets consist of procedurally generated text, JSON, and random binary data. Each tool was invoked with its maximum compression setting:
 
-| Tool | Command |
+| Tool | Command / Setting |
 |---|---|
-| zip | `zip -r -q` |
-| tar.gz | `tar czf` |
-| 7z | `7z a -mx=5` |
-| Roxify | `rox encode <dir> <output.png> -m compact` |
+| zip | `zip -r -q -9` |
+| tar/gzip | `tar -cf - \| gzip -9` |
+| 7z | `7z a -mx=9` (LZMA2 ultra) |
+| Roxify | Zstd level 19, compact mode |
 
 To reproduce:
 
 ```bash
-node test/benchmark.mjs
+node test/benchmark-detailed.cjs
 ```
 
 ---
