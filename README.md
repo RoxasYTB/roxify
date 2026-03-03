@@ -1,378 +1,514 @@
-# RoxCompressor Transform
+# Roxify
 
-> Encode binary data into PNG images and decode them back. Fast, efficient, with optional encryption and native Rust acceleration.
+> Encode binary data into PNG images and decode them back, losslessly. Roxify combines native Rust acceleration, multi-threaded Zstd compression, and AES-256-GCM encryption into a single, portable Node.js module.
 
 [![npm version](https://img.shields.io/npm/v/roxify.svg)](https://www.npmjs.com/package/roxify)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Benchmarks](#benchmarks)
+- [Installation](#installation)
+- [CLI Usage](#cli-usage)
+- [JavaScript API](#javascript-api)
+- [Encoding Modes](#encoding-modes)
+- [Encryption](#encryption)
+- [Performance Tuning](#performance-tuning)
+- [Cross-Platform Support](#cross-platform-support)
+- [Building from Source](#building-from-source)
+- [Architecture](#architecture)
+- [Error Handling](#error-handling)
+- [Security Considerations](#security-considerations)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Overview
+
+Roxify is a PNG steganography toolkit. It packs arbitrary binary data -- files, directories, or raw buffers -- into standard PNG images that can be shared, uploaded, and stored anywhere images are accepted. The data is compressed with multi-threaded Zstd, optionally encrypted with AES-256-GCM, and embedded in valid PNG structures that survive re-uploads and screenshots.
+
+The core compression and image-processing logic is written in Rust and exposed to Node.js through N-API. When the native module is unavailable, Roxify falls back to a pure TypeScript implementation transparently.
+
+---
+
 ## Features
 
-- ⚡ **Blazing Fast**: Native Rust acceleration via N-API — **1GB/s** throughput on modern hardware
-- 🚀 **Optimized Compression**: Multi-threaded Zstd compression (level 19) with parallel processing
-- 🔒 **Secure**: AES-256-GCM encryption support with PBKDF2 key derivation
-- 🎨 **Multiple modes**: Compact, chunk, pixel, and screenshot modes
-- 📦 **CLI & API**: Use as command-line tool or JavaScript library
-- 🔄 **Lossless**: Perfect roundtrip encoding/decoding
-- 📖 **Full TSDoc**: Complete TypeScript documentation
-- 🦀 **Rust Powered**: Optional native module for extreme performance (falls back to pure JS)
+- **Native Rust acceleration** via N-API with automatic fallback to pure JavaScript
+- **Multi-threaded Zstd compression** (level 19) with parallel chunk processing via Rayon
+- **AES-256-GCM encryption** with PBKDF2 key derivation (100,000 iterations)
+- **Lossless roundtrip** -- encoded data is recovered byte-for-byte
+- **Directory packing** -- encode entire directory trees into a single PNG
+- **Screenshot reconstitution** -- recover data from photographed or screenshotted PNGs
+- **CLI and programmatic API** -- use from the terminal or import as a library
+- **Cross-platform** -- prebuilt binaries for Linux x64, macOS x64/ARM64, and Windows x64
+- **Full TypeScript support** with exported types and TSDoc annotations
+- **mimalloc allocator** for reduced memory fragmentation under heavy workloads
 
-## Real-world benchmarks 🔧
+---
 
-**Highlights**
+## Benchmarks
 
-- Practical benchmarks on large codebase datasets showing significant compression and high throughput while handling many small files efficiently.
+All measurements were taken on Linux x64 with Node.js v20. Each tool was run with default settings (zip deflate, gzip via `tar czf`, 7z LZMA2 at level 5, Roxify in compact mode with Zstd level 19). Roxify produces a valid PNG file rather than a raw archive.
 
-**Results**
+### Compression Ratio and Speed
 
-| Dataset  |   Files | Original | Compressed |     Ratio |   Time | Throughput | Notes                                       |
-| -------- | ------: | -------: | ---------: | --------: | -----: | ---------: | ------------------------------------------- |
-| 4,000 MB | 731,340 |  3.93 GB |  111.42 MB |  **2.8%** | 26.9 s | 149.4 MB/s | gzip: 2.26 GB (57.5%); 7z: 1.87 GB (47.6%)  |
-| 1,000 MB | 141,522 |  1.03 GB |     205 MB | **19.4%** | ~6.2 s |  ≈170 MB/s | shows benefits for many-small-file datasets |
+| Dataset | Files | Original | zip | tar.gz | 7z | Roxify (PNG) |
+|---|---:|---|---|---|---|---|
+| Text files (1 MB) | 128 | 1.00 MB | 259 KB (25.3%) 52 ms | 196 KB (19.2%) 78 ms | 162 KB (15.8%) 347 ms | 203 KB (19.9%) 534 ms |
+| JSON files (1 MB) | 1 183 | 1.00 MB | 700 KB (68.3%) 78 ms | 270 KB (26.4%) 43 ms | 212 KB (20.7%) 191 ms | 339 KB (33.0%) 766 ms |
+| Binary (random, 1 MB) | 33 | 1.00 MB | 1.00 MB (100.5%) 29 ms | 1.00 MB (100.4%) 47 ms | 1.00 MB (100.1%) 128 ms | 1.00 MB (100.5%) 689 ms |
+| Mixed (text+JSON+bin, 5 MB) | 2 241 | 5.00 MB | 3.26 MB (65.2%) 253 ms | 2.43 MB (48.7%) 228 ms | 2.27 MB (45.5%) 1.21 s | 2.59 MB (51.7%) 2.04 s |
+| Text files (10 MB) | 1 285 | 10.00 MB | 2.54 MB (25.4%) 357 ms | 1.91 MB (19.1%) 657 ms | 1.53 MB (15.3%) 4.70 s | 1.98 MB (19.8%) 2.15 s |
+| Mixed (text+JSON+bin, 10 MB) | 4 467 | 10.00 MB | 6.52 MB (65.2%) 461 ms | 4.86 MB (48.6%) 452 ms | 4.54 MB (45.4%) 2.51 s | 5.16 MB (51.6%) 3.77 s |
+
+### Key Observations
+
+- **On compressible data** (text, JSON), Roxify achieves ratios comparable to tar.gz (19--33%) while producing a standard PNG image instead of an archive file. The output can be shared on platforms that only accept images.
+- **On incompressible data** (random bytes), all tools converge to approximately 100% as expected. No compression algorithm can shrink truly random data.
+- **7z (LZMA2)** achieves the best ratios overall but is significantly slower. Roxify finishes faster than 7z on the 10 MB text dataset (2.15 s vs 4.70 s).
+- **zip** is the fastest tool but offers the weakest compression, especially on many small files (68.3% on JSON vs Roxify's 33.0%).
+- The overhead of PNG framing and Zstd's higher compression level adds latency on small datasets. On larger inputs, Roxify's multi-threaded pipeline narrows the gap.
 
 ### Methodology
 
-- Compression: multithreaded Zstd (level 19) and Brotli (configurable).
-- Setup: parallel I/O and multithreaded compression on modern SSD-backed systems.
-- Measurements: wall-clock time; throughput = original size / time; comparisons against gzip and 7z with typical defaults.
-- Reproducibility: full benchmark details, commands and raw data are available in `docs/BENCHMARK_FINAL_REPORT.md`.
+Benchmarks were generated using `test/benchmark.mjs`. Datasets consist of procedurally generated text, JSON, and random binary files. Each tool was invoked via its standard CLI with default or documented settings:
 
-These results demonstrate Roxify's strength for packaging large codebases and many-small-file archives where speed and a good compression/throughput trade-off matter.
+| Tool | Command |
+|---|---|
+| zip | `zip -r -q` |
+| tar.gz | `tar czf` |
+| 7z | `7z a -mx=5` |
+| Roxify | `rox encode <dir> <output.png> -m compact` |
 
-## Documentation
+To reproduce:
 
-- 📘 **[CLI Documentation](./docs/CLI.md)** - Complete command-line usage guide
-- 📗 **[JavaScript SDK](./docs/JAVASCRIPT_SDK.md)** - Programmatic API reference with examples
-- 📙 **[Quick Start](#quick-start)** - Get started in 2 minutes
+```bash
+node test/benchmark.mjs
+```
+
+---
 
 ## Installation
 
-### As CLI tool (npx)
-
-No installation needed! Use directly with npx:
+### As a CLI tool (no installation required)
 
 ```bash
-  npx rox encode input.zip output.png
-  npx rox decode output.png original.zip
+npx rox encode input.zip output.png
+npx rox decode output.png original.zip
 ```
 
-### As library
+### As a library
 
 ```bash
 npm install roxify
 ```
 
+### Global installation
+
+```bash
+npm install -g roxify
+rox encode input.zip output.png
+```
+
+---
+
 ## CLI Usage
 
-### Quick Start
+### Encoding
 
 ```bash
-# Encode a file
-  npx rox encode document.pdf document.png
-
-# Decode it back
-  npx rox decode document.png document.pdf
-
-# With encryption
-  npx rox encode secret.zip secret.png -p mypassword
-  npx rox decode secret.png secret.zip -p mypassword
+rox encode <input> [output] [options]
 ```
 
-### CLI Commands
+| Option | Description | Default |
+|---|---|---|
+| `-p, --passphrase <pass>` | Encrypt with AES-256-GCM | none |
+| `-m, --mode <mode>` | Encoding mode: `screenshot`, `compact` | `screenshot` |
+| `-q, --quality <0-11>` | Compression effort (0 = fastest, 11 = smallest) | `1` |
+| `-e, --encrypt <type>` | Encryption method: `auto`, `aes`, `xor`, `none` | `aes` if passphrase is set |
+| `--no-compress` | Disable compression entirely | false |
+| `-o, --output <path>` | Explicit output file path | auto-generated |
 
-#### `encode` - Encode file to PNG
+### Decoding
 
 ```bash
-  npx rox encode <input> [output] [options]
+rox decode <input> [output] [options]
 ```
 
-**Options:**
+| Option | Description | Default |
+|---|---|---|
+| `-p, --passphrase <pass>` | Decryption passphrase | none |
+| `-o, --output <path>` | Output file path | auto-detected from metadata |
+| `--dict <file>` | Zstd dictionary for improved decompression | none |
 
-- `-p, --passphrase <pass>` - Encrypt with passphrase (AES-256-GCM)
-- `-m, --mode <mode>` - Encoding mode: `compact|chunk|pixel|screenshot` (default: `screenshot`)
-- `-q, --quality <0-11>` - Brotli compression quality (default: `1`)
-  - `0` = fastest, largest
-  - `11` = slowest, smallest
-- `-e, --encrypt <type>` - Encryption: `auto|aes|xor|none` (default: `aes` if passphrase)
-- `--no-compress` - Disable compression
-- `-o, --output <path>` - Output file path
-
-**Examples:**
+### Examples
 
 ```bash
-# Basic encoding
-  npx rox encode data.bin output.png
+# Encode a single file
+rox encode document.pdf document.png
+
+# Encode with encryption
+rox encode secret.zip secret.png -p "strong passphrase"
+
+# Decode back to original
+rox decode secret.png secret.zip -p "strong passphrase"
 
 # Fast compression for large files
-  npx rox encode large-video.mp4 output.png -q 0
+rox encode video.mp4 output.png -q 0
 
-# High compression for small files
-  npx rox encode config.json output.png -q 11
+# Best compression for small files
+rox encode config.json output.png -q 11 -m compact
 
-# With encryption
-  npx rox encode secret.pdf secure.png -p "my secure password"
-
-# Compact mode (smallest PNG)
-  npx rox encode data.bin tiny.png -m compact
-
-# Screenshot mode (recommended, looks like a real image)
-  npx rox encode archive.tar.gz screenshot.png -m screenshot
+# Encode an entire directory
+rox encode ./my-project project.png
 ```
 
-#### `decode` - Decode PNG to file
-
-```bash
-  npx rox decode <input> [output] [options]
-```
-
-**Options:**
-
-- `-p, --passphrase <pass>` - Decryption passphrase
-- `-o, --output <path>` - Output file path (auto-detected from metadata if not provided)
-- `--dict <file>` - Optional zstd dictionary file; improves compression on many small similar files
-
-**Examples:**
-
-```bash
-# Basic decoding
-  npx rox decode encoded.png output.bin
-
-# Auto-detect filename from metadata
-  npx rox decode encoded.png
-
-# With decryption
-  npx rox decode encrypted.png output.pdf -p "my secure password"
-```
+---
 
 ## JavaScript API
 
-### Basic Usage
+### Basic Encode and Decode
 
 ```typescript
 import { encodeBinaryToPng, decodePngToBinary } from 'roxify';
 import { readFileSync, writeFileSync } from 'fs';
 
-const input = readFileSync('input.zip');
-const png = await encodeBinaryToPng(input, {
-  mode: 'screenshot',
-  name: 'input.zip',
-});
-writeFileSync('output.png', png);
+// Encode
+const input = readFileSync('document.pdf');
+const png = await encodeBinaryToPng(input, { name: 'document.pdf' });
+writeFileSync('document.png', png);
 
-const encoded = readFileSync('output.png');
+// Decode
+const encoded = readFileSync('document.png');
 const result = await decodePngToBinary(encoded);
 writeFileSync(result.meta?.name || 'output.bin', result.buf);
 ```
 
-### With Encryption
+### Encrypted Roundtrip
 
 ```typescript
 const png = await encodeBinaryToPng(input, {
-  mode: 'screenshot',
-  passphrase: 'my-secret-password',
+  passphrase: 'my-secret',
   encrypt: 'aes',
-  name: 'secret.zip',
+  name: 'confidential.pdf',
 });
 
-const result = await decodePngToBinary(encoded, {
-  passphrase: 'my-secret-password',
+const result = await decodePngToBinary(png, {
+  passphrase: 'my-secret',
 });
 ```
 
-### Fast Compression
+### Directory Packing
+
+```typescript
+import { packPaths, unpackBuffer } from 'roxify';
+
+// Pack files into a buffer
+const { buf, list } = packPaths(['./src', './README.md'], process.cwd());
+
+// Encode the packed buffer into a PNG
+const png = await encodeBinaryToPng(buf, { name: 'project.tar' });
+
+// Later: decode and unpack
+const decoded = await decodePngToBinary(png);
+const unpacked = unpackBuffer(decoded.buf);
+for (const file of unpacked.files) {
+  console.log(file.name, file.buf.length);
+}
+```
+
+### Progress Reporting
 
 ```typescript
 const png = await encodeBinaryToPng(largeBuffer, {
-  mode: 'screenshot',
-  brQuality: 0,
   name: 'large-file.bin',
-});
-
-const png = await encodeBinaryToPng(smallBuffer, {
-  mode: 'compact',
-  brQuality: 11,
-  name: 'config.json',
+  onProgress: ({ phase, loaded, total }) => {
+    console.log(`${phase}: ${loaded}/${total}`);
+  },
 });
 ```
 
-### Encoding Modes
-
-#### `screenshot` (Recommended)
-
-Encodes data as RGB pixel values, optimized for screenshot-like appearance. Best balance of size and compatibility.
-
-```typescript
-const png = await encodeBinaryToPng(data, { mode: 'screenshot' });
-```
-
-#### `compact` (Smallest)
-
-Minimal 1x1 PNG with data in custom chunk. Fastest and smallest.
-
-```typescript
-const png = await encodeBinaryToPng(data, { mode: 'compact' });
-```
-
-#### `pixel`
-
-Encodes data as RGB pixel values without screenshot optimization.
-
-```typescript
-const png = await encodeBinaryToPng(data, { mode: 'pixel' });
-```
-
-#### `chunk`
-
-Standard PNG with data in custom rXDT chunk.
-
-```typescript
-const png = await encodeBinaryToPng(data, { mode: 'chunk' });
-```
-
-## API Reference
-
-### `encodeBinaryToPng(input, options)`
-
-Encodes binary data into a PNG image.
-
-**Parameters:**
-
-- `input: Buffer` - The binary data to encode
-- `options?: EncodeOptions` - Encoding options
-
-**Returns:** `Promise<Buffer>` - The encoded PNG
-
-**Options:**
+### EncodeOptions
 
 ```typescript
 interface EncodeOptions {
-  compression?: 'br' | 'none';
-
-  passphrase?: string;
-
-  name?: string;
-
-  mode?: 'compact' | 'chunk' | 'pixel' | 'screenshot';
-
+  compression?: 'zstd';           // Compression algorithm
+  compressionLevel?: number;       // Zstd compression level (0-19)
+  passphrase?: string;             // Encryption passphrase
+  dict?: Buffer;                   // Zstd dictionary for improved ratios
+  name?: string;                   // Original filename stored in metadata
+  mode?: 'screenshot';             // Encoding mode
   encrypt?: 'auto' | 'aes' | 'xor' | 'none';
-
-  output?: 'auto' | 'png' | 'rox';
-
-  includeName?: boolean;
-
-  brQuality?: number;
+  output?: 'auto' | 'png' | 'rox'; // Output format
+  includeName?: boolean;           // Include filename in PNG metadata
+  includeFileList?: boolean;       // Include file manifest in PNG
+  fileList?: Array<string | { name: string; size: number }>;
+  skipOptimization?: boolean;      // Skip PNG optimization pass
+  onProgress?: (info: ProgressInfo) => void;
+  showProgress?: boolean;
+  verbose?: boolean;
 }
 ```
 
-### `decodePngToBinary(pngBuf, options)`
-
-Decodes a PNG image back to binary data.
-
-**Parameters:**
-
-- `pngBuf: Buffer` - The PNG image to decode
-- `options?: DecodeOptions` - Decoding options
-
-**Returns:** `Promise<DecodeResult>` - The decoded data and metadata
-
-**Options:**
+### DecodeOptions
 
 ```typescript
 interface DecodeOptions {
-  passphrase?: string;
+  passphrase?: string;             // Decryption passphrase
+  outPath?: string;                // Output directory for unpacked files
+  files?: string[];                // Extract only specific files from archive
+  onProgress?: (info: ProgressInfo) => void;
+  showProgress?: boolean;
+  verbose?: boolean;
 }
 ```
 
-**Result:**
+### DecodeResult
 
 ```typescript
 interface DecodeResult {
-  buf: Buffer;
-
-  meta?: {
-    name?: string;
-  };
+  buf?: Buffer;                    // Decoded binary payload
+  meta?: { name?: string };        // Metadata (original filename)
+  files?: PackedFile[];            // Unpacked directory entries, if applicable
 }
 ```
 
-## Performance Tips
+---
 
-### For Large Files (>10 MB)
+## Encoding Modes
 
-```bash
-# Use quality 0 for fastest encoding
-npx rox encode large.bin output.png -q 0
-```
+| Mode | Description | Use Case |
+|---|---|---|
+| `screenshot` | Encodes data as RGB pixels in a standard PNG. The image looks like a gradient or noise pattern and survives re-uploads and social media processing. | Sharing on image-only platforms, bypassing file-type filters |
+| `compact` | Minimal 1x1 PNG with data embedded in a custom ancillary chunk (`rXDT`). Produces the smallest possible output. | Programmatic use, archival, maximum compression ratio |
+
+---
+
+## Encryption
+
+Roxify supports two encryption methods:
+
+| Method | Algorithm | Strength | Use Case |
+|---|---|---|---|
+| `aes` | AES-256-GCM with PBKDF2 (100,000 iterations) | Cryptographically secure, authenticated | Sensitive data, confidential documents |
+| `xor` | XOR cipher with passphrase-derived key | Obfuscation only, not cryptographically secure | Casual deterrent against inspection |
+
+When `encrypt` is set to `auto` (the default when a passphrase is provided), AES is selected.
+
+---
+
+## Performance Tuning
+
+### Compression Level
+
+The `compressionLevel` option (CLI: `-q`) controls the trade-off between speed and output size:
+
+| Level | Speed | Ratio | Recommendation |
+|---|---|---|---|
+| 0 | Fastest | Largest | Files over 100 MB, real-time workflows |
+| 1 | Fast | Good | Default; general-purpose use |
+| 5 | Moderate | Better | Archival of medium-sized datasets |
+| 11 | Slowest | Smallest | Small files under 1 MB, long-term storage |
+
+### Native Module
+
+The Rust native module provides 10--50x throughput improvement over the pure JavaScript fallback. It is loaded automatically when present. To verify availability:
 
 ```typescript
-const png = await encodeBinaryToPng(largeFile, {
-  mode: 'screenshot',
-  brQuality: 0,
-});
+import { native } from 'roxify';
+console.log('Native module loaded:', !!native);
 ```
 
-### For Small Files (<1 MB)
+If the native module is not found for the current platform, Roxify falls back to TypeScript transparently. No code changes are needed.
 
-```bash
-# Use quality 11 for best compression
-npx rox encode small.json output.png -q 11 -m compact
-```
+### Zstd Dictionary
+
+For datasets consisting of many similar small files (e.g., JSON API responses, log entries), a Zstd dictionary can improve compression ratios by 20--40%:
 
 ```typescript
-const png = await encodeBinaryToPng(smallFile, {
-  mode: 'compact',
-  brQuality: 11,
-});
+import { readFileSync } from 'fs';
+
+const dict = readFileSync('my-dictionary.zdict');
+const png = await encodeBinaryToPng(data, { dict });
 ```
 
-### Benchmark Results
+---
 
-File: 3.8 MB binary
+## Cross-Platform Support
 
-- **Quality 0**: ~500-800ms, output ~1.2 MB
-- **Quality 1** (default): ~1-2s, output ~800 KB
-- **Quality 5**: ~8-12s, output ~750 KB
-- **Quality 11**: ~20-30s, output ~720 KB
+Roxify ships prebuilt native modules for the following targets:
+
+| Platform | Architecture | Binary Name |
+|---|---|---|
+| Linux | x86_64 | `libroxify_native-x86_64-unknown-linux-gnu.node` |
+| macOS | x86_64 | `libroxify_native-x86_64-apple-darwin.node` |
+| macOS | ARM64 (Apple Silicon) | `libroxify_native-aarch64-apple-darwin.node` |
+| Windows | x86_64 | `roxify_native-x86_64-pc-windows-msvc.node` |
+
+The correct binary is resolved automatically at runtime. If no binary is found for the current platform, Roxify falls back silently to the pure JavaScript implementation.
+
+### Building Native Modules for Specific Targets
+
+```bash
+# Current platform
+npm run build:native
+
+# Specific platform
+npm run build:native:linux
+npm run build:native:macos-x64
+npm run build:native:macos-arm
+npm run build:native:windows
+
+# All configured targets
+npm run build:native:targets
+```
+
+---
+
+## Building from Source
+
+### Prerequisites
+
+- Node.js 18 or later
+- Rust 1.70 or later (install via [rustup](https://rustup.rs))
+
+### Commands
+
+```bash
+# Install dependencies
+npm install
+
+# Build TypeScript only
+npm run build
+
+# Build native Rust module
+npm run build:native
+
+# Build everything (Rust + TypeScript + CLI binary)
+npm run build:all
+
+# Run the full test suite
+npm test
+```
+
+### Project Structure
+
+```
+roxify/
+  native/         Rust source code (N-API module and CLI binary)
+  src/            TypeScript source code (library and CLI entry point)
+  dist/           Compiled JavaScript output
+  test/           Test suite and benchmarks
+  docs/           Additional documentation
+  scripts/        Build, release, and CI helper scripts
+```
+
+---
+
+## Architecture
+
+Roxify is a hybrid Rust and TypeScript module. The performance-critical paths -- compression, CRC computation, pixel scanning, encryption -- are implemented in Rust and exposed through N-API bindings. The TypeScript layer handles PNG construction, CLI argument parsing, and high-level orchestration.
+
+### Compression Pipeline
+
+```
+Input --> Zstd Compress (multi-threaded, Rayon) --> AES-256-GCM Encrypt (optional) --> PNG Encode --> Output
+```
+
+### Decompression Pipeline
+
+```
+Input --> PNG Parse --> AES-256-GCM Decrypt (optional) --> Zstd Decompress --> Output
+```
+
+### Rust Modules
+
+| Module | Responsibility |
+|---|---|
+| `core.rs` | Pixel scanning, CRC32, Adler32, delta coding, Zstd compress/decompress |
+| `encoder.rs` | PNG payload encoding with marker pixels and metadata chunks |
+| `packer.rs` | Directory tree serialization and streaming deserialization |
+| `crypto.rs` | AES-256-GCM encryption and PBKDF2 key derivation |
+| `archive.rs` | Tar-based archiving with optional Zstd compression |
+| `reconstitution.rs` | Screenshot detection and automatic crop to recover encoded data |
+| `bwt.rs` | Parallel Burrows-Wheeler Transform |
+| `rans.rs` | rANS (Asymmetric Numeral Systems) entropy coder |
+| `hybrid.rs` | Block-based orchestration of BWT, context mixing, and rANS |
+| `pool.rs` | Buffer pooling and zero-copy memory management |
+| `image_utils.rs` | Image resizing, pixel format conversion, metadata extraction |
+| `png_utils.rs` | Low-level PNG chunk read/write operations |
+| `progress.rs` | Progress tracking for long-running compression/decompression |
+
+---
 
 ## Error Handling
 
+Roxify throws descriptive errors for common failure modes:
+
 ```typescript
+import { decodePngToBinary } from 'roxify';
+
 try {
-  const result = await decodePngToBinary(encoded, {
+  const result = await decodePngToBinary(pngBuffer, {
     passphrase: 'wrong-password',
   });
 } catch (err) {
   if (err.message.includes('Incorrect passphrase')) {
-    console.error('Wrong password!');
-  } else if (err.message.includes('Invalid ROX format')) {
-    console.error('Not a valid RoxCompressor PNG');
-  } else {
-    console.error('Decode failed:', err.message);
+    // Wrong decryption key
+  } else if (err.message.includes('not a valid PNG')) {
+    // Input is not a valid roxified PNG
+  } else if (err.message.includes('corrupted')) {
+    // Data integrity check failed
   }
 }
 ```
 
-## Security
+| Error | Cause |
+|---|---|
+| `Incorrect passphrase` | Wrong password provided for decryption |
+| `not a valid PNG` | Input buffer is not a PNG or lacks Roxify markers |
+| `Passphrase required` | File is encrypted but no passphrase was supplied |
+| `Image too large to decode` | PNG dimensions exceed the in-process memory limit |
 
-- **AES-256-GCM**: Authenticated encryption with 100,000 PBKDF2 iterations
-- **XOR cipher**: Simple obfuscation (not cryptographically secure)
-- **No encryption**: Data is compressed but not encrypted
+---
 
-⚠️ **Warning**: Use strong passphrases for sensitive data. The `xor` encryption mode is not secure and should only be used for obfuscation.
+## Security Considerations
 
-## License
+- **AES-256-GCM** provides authenticated encryption. Tampered ciphertext is detected and rejected.
+- **PBKDF2** with 100,000 iterations is used for key derivation, making brute-force attacks computationally expensive.
+- **XOR encryption** is not cryptographically secure. Use it only for casual obfuscation.
+- Passphrases are never stored in the output file. There is no recovery mechanism for a lost passphrase.
+- The PNG output does not visually reveal whether data is encrypted. An observer cannot distinguish an encrypted Roxify PNG from an unencrypted one by inspection.
 
-MIT © RoxCompressor
+---
 
 ## Contributing
 
-Contributions welcome! Please open an issue or PR on GitHub.
+Contributions are welcome. Please open an issue to discuss proposed changes before submitting a pull request.
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-change`)
+3. Run the test suite (`npm test`)
+4. Submit a pull request
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE) for details.
+
+---
 
 ## Links
 
-- [GitHub Repository](https://github.com/RoxasYTB/roxify)
 - [npm Package](https://www.npmjs.com/package/roxify)
-- [Report Issues](https://github.com/RoxasYTB/roxify/issues)
-
-## CI / Multi-platform builds
-
-This project runs continuous integration on Linux, Windows and macOS via GitHub Actions. Native modules are built on each platform and attached to the workflow (and release) as artifacts. On releases we also publish platform artifacts to GitHub Releases. For npm publishing, set the `NPM_TOKEN` secret in your repository settings to allow automated publishes on release.
+- [GitHub Repository](https://github.com/RoxasYTB/roxify)
+- [Issue Tracker](https://github.com/RoxasYTB/roxify/issues)
+- [CLI Documentation](./docs/CLI.md)
+- [JavaScript SDK Reference](./docs/JAVASCRIPT_SDK.md)
+- [Cross-Platform Build Guide](./docs/CROSS_PLATFORM.md)

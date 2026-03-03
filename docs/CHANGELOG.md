@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.6.6] - 2026-03-03
+
+### Maintenance, Optimization and Documentation
+
+- Merged duplicate `common.rs` into `core.rs`, eliminating ~200 lines of dead code
+- Removed unused Cargo dependencies (`flate2`, `miniz_oxide`, `adler`, `windows`)
+- Switched release profile to `lto = "fat"` for smaller, faster binaries
+- Disabled `target-cpu=native` in Cargo config for cross-platform portability
+- Fixed slow `test_extreme_deformation_and_background` test (reduced from 100 to 10 iterations)
+- Cleaned up all Rust compiler warnings (0 warnings on `cargo test`)
+- Removed `console.debug` statements from `native.ts` module loader
+- Deleted 7 orphaned test files and 2 stale compiled binaries from the workspace
+- Updated `.gitignore` and `.npmignore` for lighter npm packages
+- Added comprehensive test suite (`test/run-all-tests.cjs`) with 11 JS tests
+- Added reproducible benchmark suite (`test/benchmark.mjs`) comparing zip, tar.gz, 7z, and Roxify
+- Rewrote README with full API reference, benchmark tables, and architecture documentation
+- All 35 Rust tests and 11 JS tests passing
+
+---
+
 ## [1.4.1] - 2026-01-12
 
 ### Patch: Performance & Integrity

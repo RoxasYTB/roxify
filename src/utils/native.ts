@@ -58,7 +58,6 @@ function getNativeModule() {
       moduleDir,
       `../libroxify_native-${target}.node`,
     );
-    console.debug('[native] moduleDir', moduleDir);
     let root = moduleDir && moduleDir !== '.' ? moduleDir : process.cwd();
     while (
       root.length > 1 &&
@@ -168,13 +167,11 @@ function getNativeModule() {
             if (!existsSync(nodeAlias)) {
               require('fs').copyFileSync(c, nodeAlias);
             }
-            console.debug('[native] using node alias', nodeAlias);
             return nodeAlias;
           } catch (e) {
             return c;
           }
         }
-        console.debug('[native] using path', c);
         return c;
       } catch {}
     }

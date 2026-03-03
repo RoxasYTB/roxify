@@ -196,7 +196,6 @@ pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[Stri
 }
 
 pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, files_opt: Option<&[String]>) -> Result<Vec<String>> {
-    use std::io::Read;
     let mut written = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
     let mut pos: usize = 0;

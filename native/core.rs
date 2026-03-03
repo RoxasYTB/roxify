@@ -168,16 +168,40 @@ pub fn train_zstd_dictionary(sample_paths: &[PathBuf], dict_size: usize) -> Resu
 
 /// Compress a slice with optional zstd dictionary.
 ///
-/// If `dict` is `Some`, the provided dictionary bytes are passed to the
-/// encoder; the same dictionary will be required for decompression. When
-/// called from the CLI a small user-supplied file is read once and handed
-/// through this parameter.  The old behaviour is preserved by passing
-/// `None` (see `zstd_compress_bytes(buf, level, None)` below).
+/// When `dict` is `Some`, the dictionary is passed to the encoder (same
+/// dict required for decompression).  Pass `None` for normal compression.
+///
+/// For large buffers (>50 MiB) without a dictionary, multiple chunk sizes
+/// are benchmarked on a sample and the best is selected automatically.
 pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
+    // For large dict-free buffers, auto-select best chunk size
+    if dict.is_none() && buf.len() >= 50 * 1024 * 1024 {
+        let test_sizes = [
+            4 * 1024 * 1024,
+            8 * 1024 * 1024,
+            16 * 1024 * 1024,
+            32 * 1024 * 1024,
+        ];
+        let sample_size = (buf.len() / 5).min(100 * 1024 * 1024);
+        let sample = &buf[..sample_size];
+        let mut best_ratio = f64::MAX;
+        let mut best_chunk_size = buf.len();
+        for &chunk_size in &test_sizes {
+            if chunk_size >= sample.len() / 3 { continue; }
+            if let Ok(compressed) = compress_with_chunk_size(buf, level, chunk_size) {
+                let ratio = compressed.len() as f64 / sample.len() as f64;
+                if ratio < best_ratio && ratio < 0.99 {
+                    best_ratio = ratio;
+                    best_chunk_size = chunk_size;
+                }
+            }
+        }
+        return compress_with_chunk_size(buf, level, best_chunk_size);
+    }
+
     let actual_level = if level >= 19 { 22 } else { level };
-    // initialize encoder, optionally with dictionary
     let mut encoder = if let Some(d) = dict {
         zstd::stream::Encoder::with_dictionary(Vec::new(), actual_level, d)
             .map_err(|e| format!("zstd encoder init error: {}", e))?
@@ -218,25 +242,6 @@ pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Re
     }
 }
 
-// backwards compatibility wrapper
-
-pub fn zstd_compress_bytes_fast(buf: &[u8], level: i32) -> std::result::Result<Vec<u8>, String> {
-    use std::io::Write;
-
-    let actual_level = level.min(15);
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), actual_level)
-        .map_err(|e| format!("zstd encoder init error: {}", e))?;
-
-    let threads = num_cpus::get() as u32;
-    if threads > 1 {
-        let _ = encoder.multithread(threads);
-    }
-
-    let _ = encoder.set_pledged_src_size(Some(buf.len() as u64));
-
-    encoder.write_all(buf).map_err(|e| format!("zstd write error: {}", e))?;
-    encoder.finish().map_err(|e| format!("zstd finish error: {}", e))
-}
 
 #[cfg(test)]
 mod tests {

@@ -68,6 +68,7 @@ Options:
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
   --no-compress             Disable compression
+  --dict <file>             Use zstd dictionary when compressing
   --force-ts                Force TypeScript encoder (slower but supports encryption)
   -o, --output <path>       Output file path
   -s, --sizes               Show file sizes in 'list' output (default)
@@ -123,6 +124,10 @@ function parseArgs(args) {
                 parsed.files = args[i + 1].split(',');
                 i += 2;
             }
+            else if (key === 'dict') {
+                parsed.dict = args[i + 1];
+                i += 2;
+            }
             else {
                 const value = args[i + 1];
                 parsed[key] = value;
@@ -175,15 +180,11 @@ function parseArgs(args) {
 }
 async function encodeCommand(args) {
     const parsed = parseArgs(args);
-    const inputPaths = parsed.output
-        ? parsed._
-        : parsed._.length > 1
-            ? parsed._.slice(0, -1)
+    const inputPaths = parsed.output ? parsed._
+        : parsed._.length > 1 ? parsed._.slice(0, -1)
             : parsed._;
-    const outputPath = parsed.output
-        ? undefined
-        : parsed._.length > 1
-            ? parsed._[parsed._.length - 1]
+    const outputPath = parsed.output ? undefined
+        : parsed._.length > 1 ? parsed._[parsed._.length - 1]
             : undefined;
     const firstInput = inputPaths[0];
     if (!firstInput) {
@@ -240,7 +241,7 @@ async function encodeCommand(args) {
     catch (e) {
         anyInputDir = false;
     }
-    if (isRustBinaryAvailable() && !parsed.forceTs && !anyInputDir) {
+    if (isRustBinaryAvailable() && !parsed.forceTs) {
         try {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
             const startTime = Date.now();
@@ -290,6 +291,15 @@ async function encodeCommand(args) {
         }
     }
     let options = {};
+    if (parsed.dict) {
+        try {
+            options.dict = readFileSync(parsed.dict);
+        }
+        catch (e) {
+            console.error(`failed to read dictionary file: ${parsed.dict}`);
+            process.exit(1);
+        }
+    }
     try {
         const encodeBar = new cliProgress.SingleBar({
             format: ' {bar} {percentage}% | {step} | {elapsed}s',
@@ -347,9 +357,8 @@ async function encodeCommand(args) {
                 totalBytes = total;
             const packPct = Math.floor((readBytes / totalBytes) * 25);
             targetPct = Math.max(targetPct, packPct);
-            currentEncodeStep = currentFile
-                ? `Reading files: ${currentFile}`
-                : 'Reading files';
+            currentEncodeStep =
+                currentFile ? `Reading files: ${currentFile}` : 'Reading files';
         };
         if (inputPaths.length > 1) {
             currentEncodeStep = 'Reading files';
@@ -510,6 +519,15 @@ async function decodeCommand(args) {
         }
         if (parsed.files) {
             options.files = parsed.files;
+        }
+        if (parsed.dict) {
+            try {
+                options.dict = readFileSync(parsed.dict);
+            }
+            catch (e) {
+                console.error(`Failed to read dictionary file: ${parsed.dict}`);
+                process.exit(1);
+            }
         }
         console.log(' ');
         console.log(`Decoding...`);

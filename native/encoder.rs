@@ -383,7 +383,7 @@ mod tests {
     use crate::png_utils;
 
     #[test]
-    fn test_rXFL_chunk_present_when_file_list_provided() {
+    fn test_rxfl_chunk_present_when_file_list_provided() {
         let sample_data = b"hello world".to_vec();
         let file_list_json = Some("[{\"name\": \"a.txt\", \"size\": 11}]" as &str);
         let png = encode_to_png_with_encryption_name_and_filelist_internal(&sample_data, 3, None, None, None, file_list_json, None)

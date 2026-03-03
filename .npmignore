@@ -9,5 +9,13 @@ tsconfig.json
 test-native.cjs
 .gitignore
 .git
+.github/
+.cargo/
 node_modules/
 *.log
+*.tgz
+docs/
+scripts/
+OPTIMIZATIONS.md
+bench.sh
+*.rs

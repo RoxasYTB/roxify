@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use clap::{Parser, Subcommand};
 use std::fs::File;
 use std::io::{Read, Write};

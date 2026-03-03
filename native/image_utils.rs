@@ -1,4 +1,4 @@
-use image::{ImageBuffer, RgbImage, ImageFormat, DynamicImage};
+use image::{ImageFormat, DynamicImage};
 use std::io::Cursor;
 
 pub fn sharp_resize(

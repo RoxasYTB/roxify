@@ -13,8 +13,9 @@ yarn-error.log*
 .idea/
 test-native.cjs
 
-test/
-!test/run-all-tests.js
+test/*
+!test/run-all-tests.cjs
+!test/benchmark.mjs
 *.png
 *.tgz
 test-*
@@ -22,3 +23,8 @@ test-*
 output-tests/
 # Ignore platform-specific native artifacts
 libroxify_native-*
+# Build artifacts
+*.node
+!roxify_native.node
+# Lock files
+pnpm-lock.yaml
