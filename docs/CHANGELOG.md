@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.6.9] - 2026-03-03
+
+### Fix: Native module not found when installed globally
+
+- **Fixed**: Native `.node` module could not be found when roxify was installed globally
+  (`npm install -g roxify`). The ESM fallback used `process.cwd()` instead of the
+  actual module directory, causing all candidate paths to resolve relative to the
+  user's working directory instead of the package installation path.
+- **Fixed**: Uses `import.meta.url` + `fileURLToPath` to correctly derive `moduleDir`
+  in ESM context, ensuring the native binary is found at the package root regardless
+  of where the CLI is invoked from.
+- **Fixed**: `createRequire` now receives the actual module filename instead of
+  `process.cwd()`, fixing dynamic `require()` resolution in ESM.
+
 ## [1.6.8] - 2026-03-03
 
 ### CLI: Lossy-Resilient Options

@@ -1,21 +1,27 @@
 import { existsSync } from 'fs';
 import { createRequire } from 'module';
 import { arch, platform } from 'os';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
 function getNativeModule() {
   let moduleDir: string;
   let nativeRequire: NodeRequire;
 
+  // In ESM, __dirname is not available — derive it from import.meta.url
+  // which always points to the actual file location on disk.
+  const esmFilename = fileURLToPath(import.meta.url);
+  const esmDirname = dirname(esmFilename);
+
   if (typeof __dirname !== 'undefined') {
     moduleDir = __dirname;
     nativeRequire = require;
   } else {
-    moduleDir = process.cwd();
+    moduleDir = esmDirname;
     try {
       nativeRequire = require;
     } catch {
-      nativeRequire = createRequire(process.cwd() + '/package.json');
+      nativeRequire = createRequire(esmFilename);
     }
   }
 
