@@ -186,7 +186,7 @@ export async function parallelZstdDecompress(
   const decompressedChunks: Buffer[] = [];
   for (let i = 0; i < numChunks; i++) {
     const size = chunkSizes[i];
-    const chunk = payload.slice(offset, offset + size);
+    const chunk = payload.subarray(offset, offset + size);
     offset += size;
 
     if (!nativeZstdDecompress) {

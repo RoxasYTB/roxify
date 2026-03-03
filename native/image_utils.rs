@@ -60,9 +60,11 @@ pub fn rgb_to_png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String
     use image::ImageEncoder;
 
     let mut output = Vec::new();
+    // Data is already zstd-compressed, so PNG deflate adds overhead.
+    // Use Uncompressed (stored blocks) to avoid wasting CPU on incompressible data.
     let encoder = PngEncoder::new_with_quality(
         &mut output,
-        CompressionType::Fast,
+        CompressionType::Uncompressed,
         FilterType::NoFilter,
     );
     encoder.write_image(rgb, width, height, image::ExtendedColorType::Rgb8)

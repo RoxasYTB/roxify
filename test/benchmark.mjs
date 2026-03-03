@@ -2,8 +2,8 @@
 /**
  * Benchmark: zip vs tar.gz vs 7z vs roxify
  *
- * Generates test datasets of various sizes and types, then compresses
- * with each tool, measuring time and output size.
+ * ALL tools use MAXIMUM compression.
+ * Measures both compression and decompression time + ratio.
  */
 
 import { execSync } from 'child_process';
@@ -57,7 +57,6 @@ function clean() {
 
 function generateTextDataset(dir, sizeTarget) {
   mkdirSync(dir, { recursive: true });
-  // Generate lorem-ipsum-style text files
   const words = 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat'.split(' ');
   let written = 0;
   let idx = 0;
@@ -96,7 +95,7 @@ function generateJsonDataset(dir, sizeTarget) {
       nested: {
         description: 'A nested object with repeated structure for compression benchmarks',
         tags: ['benchmark', 'test', 'compression', 'roxify', `item${idx}`],
-        metadata: { version: '1.6.6', format: 'json', encoding: 'utf-8' },
+        metadata: { version: '1.6.7', format: 'json', encoding: 'utf-8' },
       },
     };
     const content = JSON.stringify(obj, null, 2) + '\n';
@@ -133,31 +132,55 @@ function generateMixedDataset(dir, sizeTarget) {
   return n1 + n2 + n3;
 }
 
-// ─── Compression runners ────────────────────────────────────────────────────
+// ─── Compression runners (ALL at maximum compression) ────────────────────────
 
 function benchZip(inputDir, outputFile) {
+  // -9 = maximum compression (deflate best)
   const start = process.hrtime.bigint();
-  execSync(`cd "${inputDir}" && zip -r -q "${outputFile}" .`, { stdio: 'pipe' });
+  execSync(`cd "${inputDir}" && zip -r -q -9 "${outputFile}" .`, { stdio: 'pipe' });
   const ms = hrMs(start);
   return { ms, size: statSync(outputFile).size };
+}
+
+function decompressZip(zipFile, outputDir) {
+  mkdirSync(outputDir, { recursive: true });
+  const start = process.hrtime.bigint();
+  execSync(`unzip -q -o "${zipFile}" -d "${outputDir}"`, { stdio: 'pipe' });
+  return hrMs(start);
 }
 
 function benchTarGz(inputDir, outputFile) {
+  // gzip -9 = maximum compression
   const start = process.hrtime.bigint();
-  execSync(`tar czf "${outputFile}" -C "${inputDir}" .`, { stdio: 'pipe' });
+  execSync(`tar -cf - -C "${inputDir}" . | gzip -9 > "${outputFile}"`, { stdio: 'pipe', shell: '/bin/bash' });
   const ms = hrMs(start);
   return { ms, size: statSync(outputFile).size };
+}
+
+function decompressTarGz(tgzFile, outputDir) {
+  mkdirSync(outputDir, { recursive: true });
+  const start = process.hrtime.bigint();
+  execSync(`tar xzf "${tgzFile}" -C "${outputDir}"`, { stdio: 'pipe' });
+  return hrMs(start);
 }
 
 function bench7z(inputDir, outputFile) {
+  // -mx=9 = ultra compression
   const start = process.hrtime.bigint();
-  execSync(`7z a -mx=5 -bso0 -bsp0 "${outputFile}" "${inputDir}/"*`, { stdio: 'pipe' });
+  execSync(`7z a -mx=9 -bso0 -bsp0 "${outputFile}" "${inputDir}/"*`, { stdio: 'pipe' });
   const ms = hrMs(start);
   return { ms, size: statSync(outputFile).size };
 }
 
-async function benchRoxify(inputDir, outputFile) {
-  // Use the CLI to encode the directory
+function decompress7z(szFile, outputDir) {
+  mkdirSync(outputDir, { recursive: true });
+  const start = process.hrtime.bigint();
+  execSync(`7z x -bso0 -bsp0 -o"${outputDir}" "${szFile}"`, { stdio: 'pipe' });
+  return hrMs(start);
+}
+
+function benchRoxify(inputDir, outputFile) {
+  // roxify uses zstd level 19 (near-max) by default via CLI
   const start = process.hrtime.bigint();
   execSync(`node "${join(ROOT, 'dist/cli.js')}" encode "${inputDir}" "${outputFile}" -m compact`, {
     stdio: 'pipe',
@@ -166,6 +189,17 @@ async function benchRoxify(inputDir, outputFile) {
   });
   const ms = hrMs(start);
   return { ms, size: statSync(outputFile).size };
+}
+
+function decompressRoxify(pngFile, outputDir) {
+  mkdirSync(outputDir, { recursive: true });
+  const start = process.hrtime.bigint();
+  execSync(`node "${join(ROOT, 'dist/cli.js')}" decode "${pngFile}" "${outputDir}"`, {
+    stdio: 'pipe',
+    cwd: ROOT,
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+  });
+  return hrMs(start);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -182,11 +216,12 @@ const DATASETS = [
 const TOOLS = ['zip', 'tar.gz', '7z', 'roxify'];
 
 (async () => {
-  console.log('Roxify Compression Benchmark');
-  console.log('============================\n');
+  console.log('Roxify Compression Benchmark (MAX compression for all tools)');
+  console.log('=============================================================\n');
   console.log(`Platform: ${process.platform} ${process.arch}`);
   console.log(`Node: ${process.version}`);
-  console.log(`Date: ${new Date().toISOString().split('T')[0]}\n`);
+  console.log(`Date: ${new Date().toISOString().split('T')[0]}`);
+  console.log(`Config: zip -9 | gzip -9 | 7z -mx=9 | roxify zstd-19\n`);
 
   const results = [];
 
@@ -202,32 +237,41 @@ const TOOLS = ['zip', 'tar.gz', '7z', 'roxify'];
 
     const row = { dataset: ds.name, files: fileCount, originalSize: totalSize, results: {} };
 
-    // zip
+    // zip -9
     try {
       const zipOut = join(TMP, 'out.zip');
       const r = benchZip(dataDir, zipOut);
+      const decDir = join(TMP, 'dec_zip');
+      const decMs = decompressZip(zipOut, decDir);
+      r.decMs = decMs;
       row.results.zip = r;
-      console.log(`  zip:    ${fmt(r.size)} (${pct(r.size, totalSize)}) in ${fmtTime(r.ms)}`);
+      console.log(`  zip:    ${fmt(r.size)} (${pct(r.size, totalSize)}) enc ${fmtTime(r.ms)} | dec ${fmtTime(decMs)}`);
     } catch (e) {
       console.log(`  zip:    FAILED - ${e.message}`);
     }
 
-    // tar.gz
+    // tar.gz (gzip -9)
     try {
       const tgzOut = join(TMP, 'out.tar.gz');
       const r = benchTarGz(dataDir, tgzOut);
+      const decDir = join(TMP, 'dec_tgz');
+      const decMs = decompressTarGz(tgzOut, decDir);
+      r.decMs = decMs;
       row.results['tar.gz'] = r;
-      console.log(`  tar.gz: ${fmt(r.size)} (${pct(r.size, totalSize)}) in ${fmtTime(r.ms)}`);
+      console.log(`  tar.gz: ${fmt(r.size)} (${pct(r.size, totalSize)}) enc ${fmtTime(r.ms)} | dec ${fmtTime(decMs)}`);
     } catch (e) {
       console.log(`  tar.gz: FAILED - ${e.message}`);
     }
 
-    // 7z
+    // 7z -mx=9
     try {
       const szOut = join(TMP, 'out.7z');
       const r = bench7z(dataDir, szOut);
+      const decDir = join(TMP, 'dec_7z');
+      const decMs = decompress7z(szOut, decDir);
+      r.decMs = decMs;
       row.results['7z'] = r;
-      console.log(`  7z:     ${fmt(r.size)} (${pct(r.size, totalSize)}) in ${fmtTime(r.ms)}`);
+      console.log(`  7z:     ${fmt(r.size)} (${pct(r.size, totalSize)}) enc ${fmtTime(r.ms)} | dec ${fmtTime(decMs)}`);
     } catch (e) {
       console.log(`  7z:     FAILED - ${e.message}`);
     }
@@ -235,9 +279,12 @@ const TOOLS = ['zip', 'tar.gz', '7z', 'roxify'];
     // roxify
     try {
       const roxOut = join(TMP, 'out.png');
-      const r = await benchRoxify(dataDir, roxOut);
+      const r = benchRoxify(dataDir, roxOut);
+      const decDir = join(TMP, 'dec_rox');
+      const decMs = decompressRoxify(roxOut, decDir);
+      r.decMs = decMs;
       row.results.roxify = r;
-      console.log(`  roxify: ${fmt(r.size)} (${pct(r.size, totalSize)}) in ${fmtTime(r.ms)}`);
+      console.log(`  roxify: ${fmt(r.size)} (${pct(r.size, totalSize)}) enc ${fmtTime(r.ms)} | dec ${fmtTime(decMs)}`);
     } catch (e) {
       console.log(`  roxify: FAILED - ${e.stderr?.toString() || e.message}`);
     }
@@ -248,20 +295,23 @@ const TOOLS = ['zip', 'tar.gz', '7z', 'roxify'];
 
   // Output markdown table
   console.log('\n=== Markdown Table ===\n');
-  console.log('| Dataset | Files | Original | zip | tar.gz | 7z | roxify (PNG) |');
-  console.log('|---------|------:|----------|-----|--------|----|--------------|');
+  console.log('| Dataset | Original | Tool | Compressed | Ratio | Compress | Decompress |');
+  console.log('|---------|----------|------|------------|-------|----------|------------|');
 
   for (const r of results) {
-    const cols = [r.dataset, r.files, fmt(r.originalSize)];
+    let first = true;
     for (const tool of TOOLS) {
       const t = r.results[tool];
+      const dsLabel = first ? r.dataset : '';
+      const origLabel = first ? fmt(r.originalSize) : '';
+      first = false;
       if (t) {
-        cols.push(`${fmt(t.size)} (${pct(t.size, r.originalSize)}) ${fmtTime(t.ms)}`);
+        console.log(`| ${dsLabel} | ${origLabel} | ${tool} | ${fmt(t.size)} | ${pct(t.size, r.originalSize)} | ${fmtTime(t.ms)} | ${fmtTime(t.decMs)} |`);
       } else {
-        cols.push('N/A');
+        console.log(`| ${dsLabel} | ${origLabel} | ${tool} | N/A | N/A | N/A | N/A |`);
       }
     }
-    console.log(`| ${cols.join(' | ')} |`);
+    console.log('|---|---|---|---|---|---|---|');
   }
 
   // Cleanup
