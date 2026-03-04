@@ -114,19 +114,16 @@ function getNativeModule() {
       }
     }
 
-    // --- 3. Generic fallback names (ONLY if platform-specific not found) ---
-    // These are kept last intentionally: a generic roxify_native.node
-    // could be for the WRONG platform if multiple are shipped.
-    candidates.push(
-      resolve(moduleDir, '..', 'roxify_native.node'),
-      resolve(moduleDir, '..', 'libroxify_native.node'),
-      resolve(root, 'roxify_native.node'),
-      resolve(root, 'libroxify_native.node'),
-      resolve(root, 'node_modules', 'roxify', 'roxify_native.node'),
-      resolve(root, 'node_modules', 'roxify', 'libroxify_native.node'),
-      resolve(moduleDir, '..', '..', 'roxify_native.node'),
-      resolve(moduleDir, '..', '..', 'libroxify_native.node'),
-    );
+    // --- 3. Generic fallback names ---
+    // ONLY used when a platform-specific triple file also exists next to it,
+    // or when we are on the SAME platform that built the generic file (dev mode).
+    // In production (npm install), the platform-specific files MUST exist.
+    // We do NOT blindly load roxify_native.node because it could be a Linux
+    // binary loaded on Windows (or vice-versa), causing ERR_DLOPEN_FAILED.
+    //
+    // Generic names are ONLY safe in local dev (where you just built for your
+    // own platform). We keep them but ONLY for target/release/ build outputs.
+    // The root-level roxify_native.node is intentionally excluded.
 
     // Deduplicate
     const seen = new Set<string>();

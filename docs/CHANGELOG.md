@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.2] - 2026-03-04
+
+### Fix: Windows native binary now shipped in npm package
+
+- **Fixed**: 1.7.1 npm package only contained the Linux binary — Windows still crashed with `ERR_DLOPEN_FAILED`.
+- **Added**: Cross-compiled Windows x64 binary (`roxify_native-x86_64-pc-windows-gnu.node` / `roxify_native-x86_64-pc-windows-msvc.node`) now included in the npm tarball.
+- **Fixed**: Removed dangerous generic `roxify_native.node` fallback from the module loader — it could load a Linux binary on Windows. The loader now ONLY loads platform-specific files (`roxify_native-<triple>.node`).
+
 ## [1.7.1] - 2026-03-04
 
 ### Fix: Cross-Platform Native Module Loading
