@@ -13,18 +13,48 @@ jobs:
   build-and-upload:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    env:
-      USE_SYSTEM_ZSTD: '1'
-      FAST_RELEASE: '1'
-      MAX_JOBS: '2'
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
+          # ── Linux ──
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            ext: so
+            libPrefix: true
+          - os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+            ext: so
+            libPrefix: true
+            crossPkgs: gcc-multilib g++-multilib
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: so
+            libPrefix: true
+            crossPkgs: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            crossLinker: aarch64-linux-gnu-gcc
+          # ── macOS ──
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            ext: dylib
+            libPrefix: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: dylib
+            libPrefix: true
+          # ── Windows ──
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            ext: dll
+            libPrefix: false
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            ext: dll
+            libPrefix: false
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            ext: dll
+            libPrefix: false
 
     steps:
       - uses: actions/checkout@v4
@@ -42,49 +72,49 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: 'npm'
 
       - run: npm ci
 
-      - name: Install libzstd (Linux)
-        if: runner.os == 'Linux'
+      - name: Install cross-compilation packages (Linux)
+        if: runner.os == 'Linux' && matrix.crossPkgs
         run: |
-          set -e
-          sudo apt-get update && sudo apt-get install -y libzstd-dev pkg-config || true
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.crossPkgs }} pkg-config
 
-      - name: Install zstd on Windows (choco)
-        if: runner.os == 'Windows'
-        run: choco install zstd -y || true
+      - name: Install libzstd-dev (Linux native)
+        if: runner.os == 'Linux' && !matrix.crossPkgs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzstd-dev pkg-config || true
 
-      - name: Install zstd on Windows (choco)
-        if: runner.os == 'Windows'
-        run: choco install zstd -y || true
-
-      - name: Build native (fast profile)
+      - name: Build native
         shell: bash
-        run: cargo build -p roxify_native --profile fastdev --lib --no-default-features --target ${{ matrix.target }} $([[ -n "${{ env.MAX_JOBS }}" ]] && echo "-j ${{ env.MAX_JOBS }}" || true)
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+        run: |
+          cargo build --release --lib --no-default-features --target ${{ matrix.target }}
 
       - name: Strip binary (Unix)
         if: runner.os != 'Windows'
+        shell: bash
         run: |
-          if [ "${FAST_RELEASE:-0}" = "1" ]; then pd="fastdev"; else pd="release"; fi
-          strip target/${{ matrix.target }}/${pd}/libroxify_native.* || true
+          BIN=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
+          if [ -f "$BIN" ]; then strip "$BIN" 2>/dev/null || true; fi
 
       - run: npm run build
 
-      - name: Prepare artifacts
+      - name: Prepare release artifact
         shell: bash
         run: |
           mkdir -p release
-          if [ "${FAST_RELEASE:-0}" = "1" ]; then pd="fastdev"; else pd="release"; fi
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/${{ matrix.target }}/${pd}/roxify_native.dll release/roxify_native-${{ matrix.target }}.node || true
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            cp target/${{ matrix.target }}/${pd}/libroxify_native.dylib release/roxify_native-${{ matrix.target }}.node || true
+          if [ "${{ matrix.libPrefix }}" = "true" ]; then
+            SRC=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
           else
-            cp target/${{ matrix.target }}/${pd}/libroxify_native.so release/roxify_native-${{ matrix.target }}.node || true
+            SRC=target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }}
           fi
+          cp "$SRC" release/roxify_native-${{ matrix.target }}.node
           ls -lh release/
 
       - uses: softprops/action-gh-release@v1
@@ -93,3 +123,43 @@ jobs:
           files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release/*.node
+          retention-days: 30
+
+  # ── Publish to npm with all binaries ──
+  publish:
+    name: Publish to npm
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: native-binaries
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Copy all native binaries to package root
+        run: |
+          cp native-binaries/*.node .
+          ls -lh *.node
+
+      - run: npm run build
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

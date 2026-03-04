@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.1] - 2026-03-04
+
+### Fix: Cross-Platform Native Module Loading
+
+- **Fixed**: `roxify_native.node` was always a Linux binary, causing `ERR_DLOPEN_FAILED` on Windows (`is not a valid Win32 application`) and crash on macOS.
+- **Added**: Platform-specific native binaries with target triple naming (`roxify_native-<triple>.node`), loaded automatically based on `os.platform()` + `os.arch()`.
+- **Added**: Full support for **8 targets**: Linux x64/ia32/ARM64, macOS x64/ARM64, Windows x64/ia32/ARM64.
+- **Updated**: `native.ts` module loader now detects OS+architecture via `getTargetTriples()` and prioritizes platform-specific files before falling back to generic names.
+- **Updated**: CI workflows (`build.yml`, `release.yml`) now build natively on all 3 OS runners with cross-compilation for additional architectures.
+- **Updated**: `build-native-targets.cjs`, `copy-native.js`, `build-all-platforms.js` to support all 8 targets.
+- **Updated**: `package.json` `files` field includes all platform-specific `.node` binaries for npm distribution.
+
 ## [1.7.0] - 2026-03-03
 
 ### Feature: Stretch-Resilient Decoding

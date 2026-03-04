@@ -1,15 +1,47 @@
-import { existsSync } from 'fs';
+import { copyFileSync, existsSync } from 'fs';
 import { createRequire } from 'module';
 import { arch, platform } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
+
+/**
+ * Returns the Rust target triple(s) for the current OS + architecture.
+ * Multiple triples are returned when there are alternative toolchains
+ * (e.g. windows-msvc and windows-gnu).
+ */
+function getTargetTriples(): string[] {
+  const os = platform();
+  const cpu = arch();
+
+  const map: Record<string, Record<string, string[]>> = {
+    linux: {
+      x64: ['x86_64-unknown-linux-gnu'],
+      ia32: ['i686-unknown-linux-gnu'],
+      arm64: ['aarch64-unknown-linux-gnu'],
+      arm: ['armv7-unknown-linux-gnueabihf'],
+    },
+    win32: {
+      x64: ['x86_64-pc-windows-msvc', 'x86_64-pc-windows-gnu'],
+      ia32: ['i686-pc-windows-msvc', 'i686-pc-windows-gnu'],
+      arm64: ['aarch64-pc-windows-msvc'],
+    },
+    darwin: {
+      x64: ['x86_64-apple-darwin'],
+      arm64: ['aarch64-apple-darwin'],
+    },
+  };
+
+  const archMap = map[os];
+  if (!archMap) throw new Error(`Unsupported OS: ${os}`);
+  const triples = archMap[cpu];
+  if (!triples) throw new Error(`Unsupported architecture: ${os}-${cpu}`);
+  return triples;
+}
 
 function getNativeModule() {
   let moduleDir: string;
   let nativeRequire: NodeRequire;
 
-  // In ESM, __dirname is not available — derive it from import.meta.url
-  // which always points to the actual file location on disk.
   const esmFilename = fileURLToPath(import.meta.url);
   const esmDirname = dirname(esmFilename);
 
@@ -26,44 +58,9 @@ function getNativeModule() {
   }
 
   function getNativePath(): string {
-    const platformMap: Record<string, string> = {
-      linux: 'x86_64-unknown-linux-gnu',
-      darwin:
-        arch() === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin',
-      win32: 'x86_64-pc-windows-gnu',
-    };
+    const triples = getTargetTriples();
 
-    const platformAltMap: Record<string, string> = {
-      win32: 'x86_64-pc-windows-msvc',
-    };
-
-    const extMap: Record<string, string> = {
-      linux: 'so',
-      darwin: 'dylib',
-      win32: 'node',
-    };
-
-    const currentPlatform = platform();
-    const target = platformMap[currentPlatform];
-    const targetAlt = platformAltMap[currentPlatform];
-    const ext = extMap[currentPlatform];
-
-    if (!target || !ext) {
-      throw new Error(`Unsupported platform: ${currentPlatform}`);
-    }
-
-    const prebuiltPath = join(moduleDir, '../../roxify_native.node');
-    const prebuiltLibPath = join(moduleDir, '../../libroxify_native.node');
-    const bundlePath = join(moduleDir, '../roxify_native.node');
-    const bundleLibPath = join(moduleDir, '../libroxify_native.node');
-    const bundlePathWithTarget = join(
-      moduleDir,
-      `../roxify_native-${target}.node`,
-    );
-    const bundleLibPathWithTarget = join(
-      moduleDir,
-      `../libroxify_native-${target}.node`,
-    );
+    // Walk up to find repository / package root
     let root = moduleDir && moduleDir !== '.' ? moduleDir : process.cwd();
     while (
       root.length > 1 &&
@@ -75,106 +72,84 @@ function getNativeModule() {
       root = parent;
     }
 
-    const bundleNode = resolve(moduleDir, '../roxify_native.node');
-    const bundleLibNode = resolve(moduleDir, '../libroxify_native.node');
-    const bundleNodeWithTarget = resolve(
-      moduleDir,
-      `../roxify_native-${target}.node`,
-    );
-    const bundleLibNodeWithTarget = resolve(
-      moduleDir,
-      `../libroxify_native-${target}.node`,
-    );
-    const repoNode = resolve(root, 'roxify_native.node');
-    const repoLibNode = resolve(root, 'libroxify_native.node');
-    const repoNodeWithTarget = resolve(root, `roxify_native-${target}.node`);
-    const repoLibNodeWithTarget = resolve(
-      root,
-      `libroxify_native-${target}.node`,
-    );
-    const targetNode = resolve(root, 'target/release/roxify_native.node');
-    const targetSo = resolve(root, 'target/release/roxify_native.so');
-    const targetLibSo = resolve(root, 'target/release/libroxify_native.so');
-    const nodeModulesNode = resolve(
-      root,
-      'node_modules/roxify/roxify_native.node',
-    );
-    const nodeModulesNodeWithTarget = resolve(
-      root,
-      `node_modules/roxify/roxify_native-${target}.node`,
-    );
-    const prebuiltNode = resolve(moduleDir, '../../roxify_native.node');
-    const prebuiltLibNode = resolve(moduleDir, '../../libroxify_native.node');
-    const prebuiltNodeWithTarget = resolve(
-      moduleDir,
-      `../../roxify_native-${target}.node`,
-    );
-    const prebuiltLibNodeWithTarget = resolve(
-      moduleDir,
-      `../../libroxify_native-${target}.node`,
-    );
-
-    // Support multiple possible OS triples (e.g. windows-gnu and windows-msvc)
-    const targets = targetAlt ? [target, targetAlt] : [target];
-
+    // --- 1. Platform-specific candidates (checked FIRST) ---
+    // These are the ONLY safe candidates — they match the current OS+arch.
     const candidates: string[] = [];
 
-    for (const t of targets) {
-      const bundleNodeWithT = resolve(moduleDir, `../roxify_native-${t}.node`);
-      const bundleLibNodeWithT = resolve(
-        moduleDir,
-        `../libroxify_native-${t}.node`,
-      );
-      const repoNodeWithT = resolve(root, `roxify_native-${t}.node`);
-      const repoLibNodeWithT = resolve(root, `libroxify_native-${t}.node`);
-      const nodeModulesNodeWithT = resolve(
-        root,
-        `node_modules/roxify/roxify_native-${t}.node`,
-      );
-      const prebuiltNodeWithT = resolve(
-        moduleDir,
-        `../../roxify_native-${t}.node`,
-      );
-      const prebuiltLibNodeWithT = resolve(
-        moduleDir,
-        `../../libroxify_native-${t}.node`,
-      );
+    for (const triple of triples) {
+      const name = `roxify_native-${triple}.node`;
+      const libName = `libroxify_native-${triple}.node`;
 
       candidates.push(
-        bundleLibNodeWithT,
-        bundleNodeWithT,
-        repoLibNodeWithT,
-        repoNodeWithT,
-        nodeModulesNodeWithT,
-        prebuiltLibNodeWithT,
-        prebuiltNodeWithT,
+        // dist/ sibling (npm-installed package)
+        resolve(moduleDir, '..', name),
+        resolve(moduleDir, '..', libName),
+        // package root
+        resolve(root, name),
+        resolve(root, libName),
+        // node_modules/roxify/
+        resolve(root, 'node_modules', 'roxify', name),
+        resolve(root, 'node_modules', 'roxify', libName),
+        // two levels up (global npm install)
+        resolve(moduleDir, '..', '..', name),
+        resolve(moduleDir, '..', '..', libName),
       );
     }
 
+    // --- 2. Build output candidates (local dev) ---
+    for (const triple of triples) {
+      for (const profile of ['release', 'fastdev']) {
+        // Unix: libroxify_native.so / .dylib → renamed to .node
+        candidates.push(resolve(root, 'target', triple, profile, 'libroxify_native.so'));
+        candidates.push(resolve(root, 'target', triple, profile, 'libroxify_native.dylib'));
+        // Windows: roxify_native.dll
+        candidates.push(resolve(root, 'target', triple, profile, 'roxify_native.dll'));
+      }
+      // Default (non-cross-compiled) output
+      for (const profile of ['release', 'fastdev']) {
+        candidates.push(resolve(root, 'target', profile, 'libroxify_native.so'));
+        candidates.push(resolve(root, 'target', profile, 'libroxify_native.dylib'));
+        candidates.push(resolve(root, 'target', profile, 'roxify_native.dll'));
+        candidates.push(resolve(root, 'target', profile, 'roxify_native.node'));
+      }
+    }
+
+    // --- 3. Generic fallback names (ONLY if platform-specific not found) ---
+    // These are kept last intentionally: a generic roxify_native.node
+    // could be for the WRONG platform if multiple are shipped.
     candidates.push(
-      bundleLibNode,
-      bundleNode,
-      repoLibNode,
-      repoNode,
-      targetNode,
-      targetLibSo,
-      targetSo,
-      nodeModulesNode,
-      prebuiltLibNode,
-      prebuiltNode,
+      resolve(moduleDir, '..', 'roxify_native.node'),
+      resolve(moduleDir, '..', 'libroxify_native.node'),
+      resolve(root, 'roxify_native.node'),
+      resolve(root, 'libroxify_native.node'),
+      resolve(root, 'node_modules', 'roxify', 'roxify_native.node'),
+      resolve(root, 'node_modules', 'roxify', 'libroxify_native.node'),
+      resolve(moduleDir, '..', '..', 'roxify_native.node'),
+      resolve(moduleDir, '..', '..', 'libroxify_native.node'),
     );
 
+    // Deduplicate
+    const seen = new Set<string>();
+    const unique: string[] = [];
     for (const c of candidates) {
+      if (!seen.has(c)) {
+        seen.add(c);
+        unique.push(c);
+      }
+    }
+
+    for (const c of unique) {
       try {
         if (!existsSync(c)) continue;
-        if (c.endsWith('.so')) {
-          const nodeAlias = c.replace(/\.so$/, '.node');
+        // .so/.dylib/.dll files need to be aliased as .node for require()
+        if (c.endsWith('.so') || c.endsWith('.dylib') || c.endsWith('.dll')) {
+          const nodeAlias = c.replace(/\.(so|dylib|dll)$/, '.node');
           try {
             if (!existsSync(nodeAlias)) {
-              require('fs').copyFileSync(c, nodeAlias);
+              copyFileSync(c, nodeAlias);
             }
             return nodeAlias;
-          } catch (e) {
+          } catch {
             return c;
           }
         }
@@ -183,9 +158,7 @@ function getNativeModule() {
     }
 
     throw new Error(
-      `Native module not found for ${currentPlatform}-${arch()}. Checked: ${candidates.join(
-        ' ',
-      )}`,
+      `Native module not found for ${platform()}-${arch()} (triples: ${triples.join(', ')}). Searched ${unique.length} paths:\n${unique.join('\n')}`,
     );
   }
 
