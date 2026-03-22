@@ -373,9 +373,31 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = RgbaImage::from_pixel(best_logical_w, best_logical_h, Rgba([0, 0, 0, 255]));
     for ly in 0..best_logical_h {
         for lx in 0..best_logical_w {
-            let px = (sx as f64 + (lx as f64 + 0.5) * scale_x) as u32;
-            let py = (sy as f64 + (ly as f64 + 0.5) * scale_y) as u32;
-            out.put_pixel(lx, ly, Rgba(get_pixel(min(px, width - 1), min(py, height - 1))));
+            let bx0 = (sx as f64 + lx as f64 * scale_x).round() as u32;
+            let bx1 = (sx as f64 + (lx + 1) as f64 * scale_x).round() as u32;
+            let by0 = (sy as f64 + ly as f64 * scale_y).round() as u32;
+            let by1 = (sy as f64 + (ly + 1) as f64 * scale_y).round() as u32;
+            let bx0 = min(bx0, width - 1);
+            let bx1 = min(bx1, width).max(bx0 + 1);
+            let by0 = min(by0, height - 1);
+            let by1 = min(by1, height).max(by0 + 1);
+
+            let mut rs: Vec<u8> = Vec::new();
+            let mut gs: Vec<u8> = Vec::new();
+            let mut bs: Vec<u8> = Vec::new();
+            for py in by0..by1 {
+                for px in bx0..bx1 {
+                    let p = get_pixel(px, py);
+                    rs.push(p[0]);
+                    gs.push(p[1]);
+                    bs.push(p[2]);
+                }
+            }
+            rs.sort_unstable();
+            gs.sort_unstable();
+            bs.sort_unstable();
+            let mid = rs.len() / 2;
+            out.put_pixel(lx, ly, Rgba([rs[mid], gs[mid], bs[mid], 255]));
         }
     }
 
