@@ -229,6 +229,15 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            let png_data = std::fs::read(&input)?;
+            match png_utils::extract_file_list_from_pixels(&png_data) {
+                Ok(json) => {
+                    println!("{}", json);
+                    return Ok(());
+                }
+                Err(_) => {}
+            }
+
             eprintln!("No file list found in PNG");
             std::process::exit(1);
         }

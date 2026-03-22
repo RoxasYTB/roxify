@@ -190,3 +190,38 @@ fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
     let payload = raw[idx..end].to_vec();
     Ok(payload)
 }
+
+pub fn extract_file_list_from_pixels(png_data: &[u8]) -> Result<String, String> {
+    let raw = match decode_to_rgb(png_data) {
+        Ok(r) => r,
+        Err(_) => {
+            let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
+            decode_to_rgb(&reconst)?
+        }
+    };
+    let pos = find_pixel_header(&raw)?;
+    let mut idx = pos + 4;
+    if idx + 2 > raw.len() { return Err("Truncated header".to_string()); }
+    idx += 1;
+    let name_len = raw[idx] as usize; idx += 1;
+    if idx + name_len > raw.len() { return Err("Truncated name".to_string()); }
+    idx += name_len;
+    if idx + 4 > raw.len() { return Err("Truncated payload length".to_string()); }
+    let payload_len = ((raw[idx] as u32) << 24)
+        | ((raw[idx+1] as u32) << 16)
+        | ((raw[idx+2] as u32) << 8)
+        | (raw[idx+3] as u32);
+    idx += 4;
+    idx += payload_len as usize;
+    if idx + 8 > raw.len() { return Err("No file list in pixel data".to_string()); }
+    if &raw[idx..idx + 4] != b"rXFL" { return Err("No rXFL marker in pixel data".to_string()); }
+    idx += 4;
+    let json_len = ((raw[idx] as u32) << 24)
+        | ((raw[idx+1] as u32) << 16)
+        | ((raw[idx+2] as u32) << 8)
+        | (raw[idx+3] as u32);
+    idx += 4;
+    let json_end = idx + json_len as usize;
+    if json_end > raw.len() { return Err("Truncated file list JSON".to_string()); }
+    String::from_utf8(raw[idx..json_end].to_vec()).map_err(|e| format!("Invalid UTF-8 in file list: {}", e))
+}
