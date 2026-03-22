@@ -76,11 +76,6 @@ function getNativeModule() {
     // These are the ONLY safe candidates — they match the current OS+arch.
     const candidates: string[] = [];
 
-    candidates.push(
-      resolve(root, 'roxify_native.node'),
-      resolve(moduleDir, '..', 'roxify_native.node'),
-    );
-
     for (const triple of triples) {
       const name = `roxify_native-${triple}.node`;
       const libName = `libroxify_native-${triple}.node`;
@@ -152,7 +147,7 @@ function getNativeModule() {
           }
         }
         return c;
-      } catch {}
+      } catch { }
     }
 
     throw new Error(
