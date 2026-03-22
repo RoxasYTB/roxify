@@ -376,6 +376,7 @@ mod stream_tests {
         let compressed = encoder.finish().map_err(|e| anyhow::anyhow!(e))?;
 
         let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(compressed.clone())).map_err(|e| anyhow::anyhow!(e))?;
+        dec.window_log_max(31).map_err(|e| anyhow::anyhow!(e))?;
 
                 let mut all = Vec::new();
         dec.read_to_end(&mut all).map_err(|e| anyhow::anyhow!(e))?;
@@ -383,6 +384,7 @@ mod stream_tests {
         assert_eq!(&all[..], &parts[..]);
 
                 let mut dec2 = zstd::stream::Decoder::new(std::io::Cursor::new(compressed)).map_err(|e| anyhow::anyhow!(e))?;
+        dec2.window_log_max(31).map_err(|e| anyhow::anyhow!(e))?;
 
                 let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
         let tmpdir = std::env::temp_dir().join(format!("rox_unpack_test_{}", ms));
@@ -424,6 +426,7 @@ mod stream_tests {
         assert_eq!(first, 0x00u8);
         let compressed = payload[1..].to_vec();
         let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(compressed)).map_err(|e| anyhow::anyhow!(e))?;
+        dec.window_log_max(31).map_err(|e| anyhow::anyhow!(e))?;
 
                 let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
         let tmpdir = std::env::temp_dir().join(format!("rox_unpack_png_test_{}", ms));

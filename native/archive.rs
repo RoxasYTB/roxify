@@ -157,7 +157,7 @@ mod tests {
         encoder.write_all(&tar_data).unwrap();
         let compressed = encoder.finish().unwrap();
 
-        let decompressed = zstd::stream::decode_all(std::io::Cursor::new(&compressed)).unwrap();
+        let decompressed = crate::core::zstd_decompress_bytes(&compressed, None).unwrap();
         assert!(is_tar(&decompressed));
 
         let out = std::env::temp_dir().join("rox_tar_zstd_test_out");
