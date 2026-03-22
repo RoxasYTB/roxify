@@ -25,7 +25,7 @@ import {
   isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
-const VERSION = '1.6.1';
+const VERSION = '1.8.0';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
@@ -38,10 +38,10 @@ function getDirectorySize(dirPath: string): number {
       } else if (entry.isFile()) {
         try {
           totalSize += statSync(fullPath).size;
-        } catch (e) {}
+        } catch (e) { }
       }
     }
-  } catch (e) {}
+  } catch (e) { }
   return totalSize;
 }
 
@@ -250,12 +250,12 @@ async function encodeCommand(args: string[]) {
   const parsed = parseArgs(args);
   const inputPaths =
     parsed.output ? parsed._
-    : parsed._.length > 1 ? parsed._.slice(0, -1)
-    : parsed._;
+      : parsed._.length > 1 ? parsed._.slice(0, -1)
+        : parsed._;
   const outputPath =
     parsed.output ? undefined
-    : parsed._.length > 1 ? parsed._[parsed._.length - 1]
-    : undefined;
+      : parsed._.length > 1 ? parsed._[parsed._.length - 1]
+        : undefined;
   const firstInput = inputPaths[0];
 
   if (!firstInput) {
@@ -303,7 +303,7 @@ async function encodeCommand(args: string[]) {
       const { index } = await packPathsGenerator(
         inputPaths,
         undefined,
-        () => {},
+        () => { },
       );
       if (!index || index.length === 0) {
         console.log(' ');
@@ -311,7 +311,7 @@ async function encodeCommand(args: string[]) {
         process.exit(1);
       }
     }
-  } catch (e) {}
+  } catch (e) { }
 
   let anyInputDir = false;
   try {
@@ -450,7 +450,7 @@ async function encodeCommand(args: string[]) {
       mode,
       name: parsed.outputName || 'archive',
       skipOptimization: false,
-      compressionLevel: 19,
+      compressionLevel: 6,
       outputFormat: 'auto',
       container: containerMode,
     });
@@ -882,9 +882,9 @@ async function listCommand(args: string[]) {
             }
           }
           return;
-        } catch (e) {}
+        } catch (e) { }
       }
-    } catch (err: any) {}
+    } catch (err: any) { }
   }
 
   try {

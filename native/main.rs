@@ -46,6 +46,9 @@ enum Commands {
     List {
         input: PathBuf,
     },
+    Havepassphrase {
+        input: PathBuf,
+    },
     Scan {
         input: PathBuf,
         #[arg(short, long, value_name = "FILE")]
@@ -197,8 +200,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::List { input } => {
-            let buf = read_all(&input)?;
-            let chunks = png_utils::extract_png_chunks(&buf).map_err(|e| anyhow::anyhow!(e))?;
+            let mut file = File::open(&input)?;
+            let chunks = png_utils::extract_png_chunks_streaming(&mut file).map_err(|e| anyhow::anyhow!(e))?;
 
             if let Some(rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
                 println!("{}", String::from_utf8_lossy(&rxfl_chunk.data));
@@ -228,6 +231,24 @@ fn main() -> anyhow::Result<()> {
 
             eprintln!("No file list found in PNG");
             std::process::exit(1);
+        }
+        Commands::Havepassphrase { input } => {
+            let buf = read_all(&input)?;
+            let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+            if is_png {
+                let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
+                if !payload.is_empty() && (payload[0] == 0x01 || payload[0] == 0x02) {
+                    println!("Passphrase detected.");
+                } else {
+                    println!("No passphrase detected.");
+                }
+            } else {
+                if !buf.is_empty() && (buf[0] == 0x01 || buf[0] == 0x02) {
+                    println!("Passphrase detected.");
+                } else {
+                    println!("No passphrase detected.");
+                }
+            }
         }
         Commands::Scan { input, channels, markers } => {
             let buf = read_all(&input)?;
@@ -397,7 +418,8 @@ fn main() -> anyhow::Result<()> {
                         .map_err(|e| anyhow::anyhow!(e))?;
                     println!("Unpacked {} files (TAR) to {:?}", written.len(), out_dir);
                 } else if out_bytes.len() >= 4
-                    && u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5850u32
+                    && (u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5850u32
+                        || u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5849u32)
                 {
                     let out_dir = if dest.extension().is_none() || dest.is_dir() {
                         dest

@@ -96,12 +96,22 @@ jobs:
         run: |
           cargo build --release --lib --no-default-features --target ${{ matrix.target }}
 
+      - name: Build CLI binary
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'x86_64-apple-darwin' || matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+        run: |
+          cargo build --release --bin roxify_native --target ${{ matrix.target }} || true
+
       - name: Strip binary (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           BIN=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
           if [ -f "$BIN" ]; then strip "$BIN" 2>/dev/null || true; fi
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then strip "$CLI" 2>/dev/null || true; fi
 
       - run: npm run build
 
@@ -115,6 +125,14 @@ jobs:
             SRC=target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }}
           fi
           cp "$SRC" release/roxify_native-${{ matrix.target }}.node
+          # Copy CLI binary if it exists
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CLI=target/${{ matrix.target }}/release/roxify_native.exe
+            if [ -f "$CLI" ]; then cp "$CLI" release/roxify_native-${{ matrix.target }}.exe; fi
+          else
+            CLI=target/${{ matrix.target }}/release/roxify_native
+            if [ -f "$CLI" ]; then cp "$CLI" release/roxify_native-${{ matrix.target }}; fi
+          fi
           ls -lh release/
 
       - uses: softprops/action-gh-release@v1
@@ -127,7 +145,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: release/*.node
+          path: release/*
           retention-days: 30
 
   # ── Publish to npm with all binaries ──
@@ -154,8 +172,18 @@ jobs:
 
       - name: Copy all native binaries to package root
         run: |
-          cp native-binaries/*.node .
-          ls -lh *.node
+          cp native-binaries/*.node . 2>/dev/null || true
+          mkdir -p dist
+          # Copy Windows CLI binary
+          if [ -f native-binaries/roxify_native-x86_64-pc-windows-msvc.exe ]; then
+            cp native-binaries/roxify_native-x86_64-pc-windows-msvc.exe dist/roxify_native.exe
+          fi
+          # Copy Linux CLI binary
+          if [ -f native-binaries/roxify_native-x86_64-unknown-linux-gnu ]; then
+            cp native-binaries/roxify_native-x86_64-unknown-linux-gnu dist/roxify_native
+            chmod +x dist/roxify_native
+          fi
+          ls -lh *.node dist/
 
       - run: npm run build
 

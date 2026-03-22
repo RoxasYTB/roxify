@@ -99,16 +99,12 @@ pub fn delta_encode_bytes(buf: &[u8]) -> Vec<u8> {
     if len == 0 {
         return Vec::new();
     }
-    (0..len)
-        .into_par_iter()
-        .map(|i| {
-            if i == 0 {
-                buf[0]
-            } else {
-                buf[i].wrapping_sub(buf[i - 1])
-            }
-        })
-        .collect()
+    let mut out = vec![0u8; len];
+    out[0] = buf[0];
+    for i in 1..len {
+        out[i] = buf[i].wrapping_sub(buf[i - 1]);
+    }
+    out
 }
 
 pub fn delta_decode_bytes(buf: &[u8]) -> Vec<u8> {
@@ -179,34 +175,6 @@ pub fn train_zstd_dictionary(sample_paths: &[PathBuf], dict_size: usize) -> Resu
 pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
-    // For large dict-free buffers, auto-select best chunk size
-    // by benchmarking on a 20% sample (not the full buffer).
-    if dict.is_none() && buf.len() >= 50 * 1024 * 1024 {
-        let test_sizes = [
-            4 * 1024 * 1024,
-            8 * 1024 * 1024,
-            16 * 1024 * 1024,
-            32 * 1024 * 1024,
-        ];
-        let sample_size = (buf.len() / 5).min(100 * 1024 * 1024);
-        let sample = &buf[..sample_size];
-        let mut best_ratio = f64::MAX;
-        let mut best_chunk_size = buf.len(); // default: single pass
-        for &chunk_size in &test_sizes {
-            if chunk_size >= sample.len() / 3 { continue; }
-            // Benchmark on the SAMPLE only, not the full buffer
-            if let Ok(compressed) = compress_with_chunk_size(sample, level, chunk_size) {
-                let ratio = compressed.len() as f64 / sample.len() as f64;
-                if ratio < best_ratio && ratio < 0.99 {
-                    best_ratio = ratio;
-                    best_chunk_size = chunk_size;
-                }
-            }
-        }
-        return compress_with_chunk_size(buf, level, best_chunk_size);
-    }
-
-    // Allow ultra levels (20-22) for maximum compression
     let actual_level = level.min(22).max(1);
     let mut encoder = if let Some(d) = dict {
         zstd::stream::Encoder::with_dictionary(Vec::new(), actual_level, d)
@@ -218,7 +186,6 @@ pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::
 
     let threads = num_cpus::get() as u32;
     if threads > 1 {
-        // Ultra levels (>=20) use much more memory per thread; limit to 4
         let max_threads = if actual_level >= 20 { threads.min(4) } else { threads };
         let _ = encoder.multithread(max_threads);
     }
