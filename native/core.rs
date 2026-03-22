@@ -206,15 +206,19 @@ pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::
 
 pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Read;
+    let mut out = Vec::new();
     if let Some(d) = dict {
         let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(buf), d)
             .map_err(|e| format!("zstd decoder init error: {}", e))?;
-        let mut out = Vec::new();
+        decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max error: {}", e))?;
         decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
-        Ok(out)
     } else {
-        zstd::stream::decode_all(buf).map_err(|e| format!("zstd decompress error: {}", e))
+        let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(buf))
+            .map_err(|e| format!("zstd decoder init error: {}", e))?;
+        decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max error: {}", e))?;
+        decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
     }
+    Ok(out)
 }
 
 

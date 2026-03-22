@@ -338,7 +338,8 @@ fn main() -> anyhow::Result<()> {
                                                 let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
                     Box::new(Cursor::new(normalized[4..].to_vec()))
                 } else {
-                    let dec = zstd::stream::Decoder::new(Cursor::new(normalized)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                    let mut dec = zstd::stream::Decoder::new(Cursor::new(normalized)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                    dec.window_log_max(31).map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
                     Box::new(dec)
                 };
 
