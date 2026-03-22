@@ -106,7 +106,7 @@ function ensureCliBinary() {
       if (existing && existing !== dest) {
             copyFileSync(existing, dest);
             if (platform() !== 'win32') {
-                  try { require('fs').chmodSync(dest, 0o755); } catch {}
+                  try { require('fs').chmodSync(dest, 0o755); } catch { }
             }
             console.log(`roxify: Copied CLI binary from ${existing}`);
             return;
@@ -119,7 +119,7 @@ function ensureCliBinary() {
             if (existsSync(built)) {
                   copyFileSync(built, dest);
                   if (platform() !== 'win32') {
-                        try { require('fs').chmodSync(dest, 0o755); } catch {}
+                        try { require('fs').chmodSync(dest, 0o755); } catch { }
                   }
                   console.log('roxify: CLI binary built and copied to dist/');
             }

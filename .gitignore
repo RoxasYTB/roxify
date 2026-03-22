@@ -28,3 +28,4 @@ libroxify_native-*
 !roxify_native.node
 # Lock files
 pnpm-lock.yaml
+.npmrc

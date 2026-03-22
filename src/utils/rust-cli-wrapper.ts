@@ -61,7 +61,7 @@ function findRustBinary(): string | null {
           }
         }
       }
-    } catch {}
+    } catch { }
   }
 
   try {
@@ -70,12 +70,12 @@ function findRustBinary(): string | null {
       try {
         const out = execSync('where rox', { encoding: 'utf-8', timeout: 5000 }).trim();
         if (out) paths = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-      } catch {}
+      } catch { }
     } else {
       try {
         const out = execSync('which rox', { encoding: 'utf-8', timeout: 5000 }).trim();
         if (out) paths = [out.trim()];
-      } catch {}
+      } catch { }
     }
 
     for (const p of paths) {
@@ -94,9 +94,9 @@ function findRustBinary(): string | null {
             if (existsSync(candidate)) return candidate;
           }
         }
-      } catch {}
+      } catch { }
     }
-  } catch {}
+  } catch { }
 
   for (const name of binNames) {
     const parentParentLocal = join(baseDir, '..', '..', name);
@@ -150,7 +150,7 @@ export async function encodeWithRustCLI(
     writeFileSync(dest, buf);
     try {
       chmodSync(dest, 0o755);
-    } catch (e) {}
+    } catch (e) { }
     return dest;
   }
 
@@ -217,7 +217,7 @@ export async function encodeWithRustCLI(
         if (tempExe) {
           try {
             unlinkSync(tempExe);
-          } catch (e) {}
+          } catch (e) { }
         }
         if (code === 0) {
           resolve();
