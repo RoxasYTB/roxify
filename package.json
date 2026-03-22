@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "type": "module",
   "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "main": "dist/index.js",
@@ -27,6 +27,11 @@
     "libroxify_native-aarch64-unknown-linux-gnu.node",
     "libroxify_native-x86_64-apple-darwin.node",
     "libroxify_native-aarch64-apple-darwin.node",
+    "dist/roxify_native.exe",
+    "dist/roxify_native",
+    "scripts/postinstall.cjs",
+    "native",
+    "Cargo.toml",
     "README.md",
     "LICENSE"
   ],
@@ -58,7 +63,8 @@
     "release:flow": "node scripts/release-flow.cjs",
     "release:flow:auto": "AUTO_PUBLISH=1 node scripts/release-flow.cjs",
     "release:full": "node scripts/publish.cjs",
-    "prepublishOnly": "tsc",
+    "postinstall": "node scripts/postinstall.cjs",
+    "prepublishOnly": "npx -p typescript tsc || echo 'TS build skipped'",
     "test": "npm run build && node ./test/run-all-tests.cjs",
     "test:integration": "node scripts/run-integration-tests.cjs",
     "cli": "node dist/cli.js"

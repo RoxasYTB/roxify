@@ -152,6 +152,13 @@ pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[Stri
 
     if buf.len() < 8 { return Err(anyhow::anyhow!("Buffer too small")); }
     let magic = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+
+    if magic == 0x524f5849u32 {
+        let index_len = u32::from_be_bytes(buf[4..8].try_into().unwrap()) as usize;
+        pos = 8 + index_len;
+        return unpack_entries_sequential(buf, pos, out_dir, files_opt);
+    }
+
     if magic != 0x524f5850u32 { return Err(anyhow::anyhow!("Invalid pack magic")); }
     pos += 4;
     let file_count = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap()) as usize; pos += 4;
@@ -175,6 +182,59 @@ pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[Stri
         if should_write {
             let content = &buf[pos..pos+size];
                         let p = Path::new(&name);
+            let mut safe = std::path::PathBuf::new();
+            for comp in p.components() {
+                if let std::path::Component::Normal(osstr) = comp {
+                    safe.push(osstr);
+                }
+            }
+            let dest = out_dir.join(&safe);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+            }
+            std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+            written.push(safe.to_string_lossy().to_string());
+        }
+
+        pos += size;
+    }
+
+    Ok(written)
+}
+
+fn unpack_entries_sequential(buf: &[u8], start: usize, out_dir: &Path, files_opt: Option<&[String]>) -> Result<Vec<String>> {
+    let mut written = Vec::new();
+    let mut pos = start;
+    let files_filter: Option<std::collections::HashSet<String>> = files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+
+    while pos + 2 < buf.len() {
+        let magic = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap_or([0;4]));
+        if magic == 0x524f5849u32 {
+            if pos + 8 > buf.len() { break; }
+            let index_len = u32::from_be_bytes(buf[pos+4..pos+8].try_into().unwrap()) as usize;
+            pos += 8 + index_len;
+            continue;
+        }
+
+        if pos + 2 > buf.len() { break; }
+        let name_len = u16::from_be_bytes(buf[pos..pos+2].try_into().unwrap()) as usize;
+        pos += 2;
+        if pos + name_len > buf.len() { break; }
+        let name = String::from_utf8_lossy(&buf[pos..pos+name_len]).to_string();
+        pos += name_len;
+        if pos + 8 > buf.len() { break; }
+        let size = u64::from_be_bytes(buf[pos..pos+8].try_into().unwrap()) as usize;
+        pos += 8;
+        if pos + size > buf.len() { break; }
+
+        let should_write = match &files_filter {
+            Some(set) => set.contains(&name),
+            None => true,
+        };
+
+        if should_write {
+            let content = &buf[pos..pos+size];
+            let p = Path::new(&name);
             let mut safe = std::path::PathBuf::new();
             for comp in p.components() {
                 if let std::path::Component::Normal(osstr) = comp {

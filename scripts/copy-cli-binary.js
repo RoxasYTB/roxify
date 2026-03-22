@@ -1,33 +1,49 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync, mkdirSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
+const distDir = join(rootDir, 'dist');
 
-const windowsBinary = join(
-  rootDir,
-  'target',
-  'x86_64-pc-windows-gnu',
-  'release',
-  'roxify_native.exe',
-);
+if (!existsSync(distDir)) mkdirSync(distDir, { recursive: true });
 
-const destBinary = join(rootDir, 'dist', 'roxify_native.exe');
+const targets = [
+  { platform: 'win32', triple: 'x86_64-pc-windows-gnu', name: 'roxify_native.exe' },
+  { platform: 'win32', triple: 'x86_64-pc-windows-msvc', name: 'roxify_native.exe' },
+  { platform: 'linux', triple: 'x86_64-unknown-linux-gnu', name: 'roxify_native' },
+  { platform: 'darwin', triple: 'x86_64-apple-darwin', name: 'roxify_native' },
+  { platform: 'darwin', triple: 'aarch64-apple-darwin', name: 'roxify_native' },
+];
 
-const distDir = dirname(destBinary);
-if (!existsSync(distDir)) {
-  mkdirSync(distDir, { recursive: true });
+let copied = false;
+
+for (const t of targets) {
+  const src = join(rootDir, 'target', t.triple, 'release', t.name);
+  if (!existsSync(src)) continue;
+  const dest = join(distDir, t.name);
+  copyFileSync(src, dest);
+  if (t.platform !== 'win32') {
+    try { chmodSync(dest, 0o755); } catch { }
+  }
+  console.log(`Copied CLI binary: ${src} -> ${dest}`);
+  copied = true;
 }
 
-if (existsSync(windowsBinary)) {
-  copyFileSync(windowsBinary, destBinary);
-  console.log(`✓ Copied Windows CLI binary: ${windowsBinary} → ${destBinary}`);
-} else {
-  console.warn(`⚠ Windows CLI binary not found: ${windowsBinary}`);
-  console.log(
-    'Build it first with: cargo build --release --bin roxify_native --target x86_64-pc-windows-gnu',
-  );
+const hostBinName = process.platform === 'win32' ? 'roxify_native.exe' : 'roxify_native';
+const hostRelease = join(rootDir, 'target', 'release', hostBinName);
+if (!copied && existsSync(hostRelease)) {
+  const dest = join(distDir, hostBinName);
+  copyFileSync(hostRelease, dest);
+  if (process.platform !== 'win32') {
+    try { chmodSync(dest, 0o755); } catch { }
+  }
+  console.log(`Copied host CLI binary: ${hostRelease} -> ${dest}`);
+  copied = true;
+}
+
+if (!copied) {
+  console.warn('No CLI binary found. Build with: cargo build --release --bin roxify_native');
 }

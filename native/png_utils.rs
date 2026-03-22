@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use std::io::{Read, Seek, SeekFrom};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -18,6 +19,42 @@ fn read_u32_be(data: &[u8]) -> u32 {
 
 fn write_u32_be(val: u32) -> [u8; 4] {
     val.to_be_bytes()
+}
+
+pub fn extract_png_chunks_streaming<R: Read + Seek>(reader: &mut R) -> Result<Vec<PngChunk>, String> {
+    let mut sig = [0u8; 8];
+    reader.read_exact(&mut sig).map_err(|e| format!("read sig: {}", e))?;
+    if sig != PNG_SIG.0 {
+        return Err("Invalid PNG signature".to_string());
+    }
+
+    let mut chunks = Vec::new();
+    let mut header = [0u8; 8];
+
+    loop {
+        if reader.read_exact(&mut header).is_err() {
+            break;
+        }
+
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let chunk_type = [header[4], header[5], header[6], header[7]];
+        let name = String::from_utf8_lossy(&chunk_type).to_string();
+
+        if name == "IDAT" {
+            reader.seek(SeekFrom::Current(length as i64 + 4)).map_err(|e| format!("seek: {}", e))?;
+        } else {
+            let mut data = vec![0u8; length];
+            reader.read_exact(&mut data).map_err(|e| format!("read chunk {}: {}", name, e))?;
+            reader.seek(SeekFrom::Current(4)).map_err(|e| format!("seek crc: {}", e))?;
+            chunks.push(PngChunk { name: name.clone(), data });
+        }
+
+        if &chunk_type == b"IEND" {
+            break;
+        }
+    }
+
+    Ok(chunks)
 }
 
 pub fn extract_png_chunks(png_data: &[u8]) -> Result<Vec<PngChunk>, String> {
