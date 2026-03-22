@@ -1,12 +1,17 @@
 import { execSync, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 let moduleDir: string;
 if (typeof __dirname !== 'undefined') {
   moduleDir = __dirname;
 } else {
-  moduleDir = process.cwd();
+  try {
+    moduleDir = dirname(fileURLToPath(import.meta.url));
+  } catch {
+    moduleDir = process.cwd();
+  }
 }
 
 function findRustBinary(): string | null {
@@ -15,7 +20,16 @@ function findRustBinary(): string | null {
       ? ['roxify_native.exe', 'roxify-cli.exe', 'roxify_cli.exe']
       : ['roxify_native', 'roxify-cli', 'roxify_cli'];
 
-  const baseDir = typeof moduleDir !== 'undefined' ? moduleDir : process.cwd();
+  const baseDir = moduleDir;
+
+  for (const name of binNames) {
+    const sameDirPath = join(baseDir, name);
+    if (existsSync(sameDirPath)) return sameDirPath;
+    const parentPath = join(baseDir, '..', name);
+    if (existsSync(parentPath)) return parentPath;
+    const parentDistPath = join(baseDir, '..', 'dist', name);
+    if (existsSync(parentDistPath)) return parentDistPath;
+  }
 
   if ((process as any).pkg) {
     const snapshotPaths = [
@@ -27,9 +41,7 @@ function findRustBinary(): string | null {
     for (const basePath of snapshotPaths) {
       for (const name of binNames) {
         const binPath = join(basePath, name);
-        if (existsSync(binPath)) {
-          return binPath;
-        }
+        if (existsSync(binPath)) return binPath;
       }
     }
 
@@ -41,36 +53,29 @@ function findRustBinary(): string | null {
           join(execDir, 'tools', 'roxify'),
           join(execDir, '..', 'tools', 'roxify', 'dist'),
           join(execDir, '..', 'tools', 'roxify'),
-          join(execDir, 'tools', 'roxify', 'roxify_native.exe'),
         ];
         for (const c of execCandidates) {
           for (const name of binNames) {
-            const p = c.endsWith(name) ? c : join(c, name);
-            if (existsSync(p)) {
-              return p;
-            }
+            const p = join(c, name);
+            if (existsSync(p)) return p;
           }
         }
       }
-    } catch (e) {}
+    } catch {}
   }
 
   try {
     let paths: string[] = [];
     if (process.platform === 'win32') {
       try {
-        const out = execSync('where rox', { encoding: 'utf-8' }).trim();
-        if (out)
-          paths = out
-            .split(/\r?\n/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-      } catch (e) {}
+        const out = execSync('where rox', { encoding: 'utf-8', timeout: 5000 }).trim();
+        if (out) paths = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      } catch {}
     } else {
       try {
-        const out = execSync('which rox', { encoding: 'utf-8' }).trim();
+        const out = execSync('which rox', { encoding: 'utf-8', timeout: 5000 }).trim();
         if (out) paths = [out.trim()];
-      } catch (e) {}
+      } catch {}
     }
 
     for (const p of paths) {
@@ -81,44 +86,29 @@ function findRustBinary(): string | null {
           join(d, 'dist'),
           join(d, '..', 'dist'),
           join(d, '..'),
+          join(d, 'node_modules', 'roxify', 'dist'),
         ];
         for (const c of candidates) {
           for (const name of binNames) {
             const candidate = join(c, name);
-            if (existsSync(candidate)) {
-              return candidate;
-            }
+            if (existsSync(candidate)) return candidate;
           }
         }
-      } catch (e) {}
+      } catch {}
     }
-  } catch (e) {}
+  } catch {}
 
   for (const name of binNames) {
-    const local = join(baseDir, name);
-    if (existsSync(local)) {
-      return local;
-    }
-    const parentLocal = join(baseDir, '..', name);
-    if (existsSync(parentLocal)) {
-      return parentLocal;
-    }
     const parentParentLocal = join(baseDir, '..', '..', name);
-    if (existsSync(parentParentLocal)) {
-      return parentParentLocal;
-    }
+    if (existsSync(parentParentLocal)) return parentParentLocal;
     const nodeModulesPath = join(baseDir, '..', '..', '..', '..', name);
-    if (existsSync(nodeModulesPath)) {
-      return nodeModulesPath;
-    }
+    if (existsSync(nodeModulesPath)) return nodeModulesPath;
   }
 
   const targetRelease = join(baseDir, '..', '..', 'target', 'release');
   for (const name of binNames) {
     const targetPath = join(targetRelease, name);
-    if (existsSync(targetPath)) {
-      return targetPath;
-    }
+    if (existsSync(targetPath)) return targetPath;
   }
 
   return null;
