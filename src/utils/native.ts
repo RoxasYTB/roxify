@@ -76,21 +76,22 @@ function getNativeModule() {
     // These are the ONLY safe candidates — they match the current OS+arch.
     const candidates: string[] = [];
 
+    candidates.push(
+      resolve(root, 'roxify_native.node'),
+      resolve(moduleDir, '..', 'roxify_native.node'),
+    );
+
     for (const triple of triples) {
       const name = `roxify_native-${triple}.node`;
       const libName = `libroxify_native-${triple}.node`;
 
       candidates.push(
-        // dist/ sibling (npm-installed package)
         resolve(moduleDir, '..', name),
         resolve(moduleDir, '..', libName),
-        // package root
         resolve(root, name),
         resolve(root, libName),
-        // node_modules/roxify/
         resolve(root, 'node_modules', 'roxify', name),
         resolve(root, 'node_modules', 'roxify', libName),
-        // two levels up (global npm install)
         resolve(moduleDir, '..', '..', name),
         resolve(moduleDir, '..', '..', libName),
       );
