@@ -160,6 +160,14 @@ fn decode_to_rgb(png_data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 pub fn extract_name_from_png(png_data: &[u8]) -> Option<String> {
+    if let Some(name) = extract_name_direct(png_data) {
+        return Some(name);
+    }
+    let reconst = crate::reconstitution::crop_and_reconstitute(png_data).ok()?;
+    extract_name_direct(&reconst)
+}
+
+fn extract_name_direct(png_data: &[u8]) -> Option<String> {
     let raw = decode_to_rgb(png_data).ok()?;
     let pos = find_pixel_header(&raw).ok()?;
     let mut idx = pos + 4;
@@ -192,13 +200,15 @@ fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 pub fn extract_file_list_from_pixels(png_data: &[u8]) -> Result<String, String> {
-    let raw = match decode_to_rgb(png_data) {
-        Ok(r) => r,
-        Err(_) => {
-            let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
-            decode_to_rgb(&reconst)?
-        }
-    };
+    if let Ok(result) = extract_file_list_direct(png_data) {
+        return Ok(result);
+    }
+    let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
+    extract_file_list_direct(&reconst)
+}
+
+fn extract_file_list_direct(png_data: &[u8]) -> Result<String, String> {
+    let raw = decode_to_rgb(png_data)?;
     let pos = find_pixel_header(&raw)?;
     let mut idx = pos + 4;
     if idx + 2 > raw.len() { return Err("Truncated header".to_string()); }
