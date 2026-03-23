@@ -3,7 +3,7 @@
 > Encode binary data into PNG images and decode them back, losslessly. Roxify combines native Rust acceleration, multi-threaded Zstd compression, and AES-256-GCM encryption into a single, portable Node.js module.
 
 [![npm version](https://img.shields.io/npm/v/roxify.svg)](https://www.npmjs.com/package/roxify)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: RPOSL](https://img.shields.io/badge/License-RPOSL-red.svg)](LICENSE)
 
 ---
 
@@ -60,34 +60,34 @@ All measurements were taken on Linux x64 (Intel i7-6700K @ 4.0 GHz, 32 GB RAM) w
 
 ### Compression Ratio (Maximum Compression for All Tools)
 
-| Dataset | Original | zip -9 | gzip -9 | 7z LZMA2 -9 | Roxify PNG | Roxify WAV |
-|---|---|---|---|---|---|---|
-| Text 1 MB | 1.00 MB | 219 KB (21.4%) | 219 KB (21.4%) | 187 KB (18.3%) | **188 KB (18.3%)** | **187 KB (18.3%)** |
-| JSON 1 MB | 1.00 MB | 263 KB (25.7%) | 263 KB (25.7%) | 225 KB (22.0%) | **220 KB (21.5%)** | **219 KB (21.4%)** |
-| Binary 1 MB | 1.00 MB | 1.00 MB (100%) | 1.00 MB (100%) | 1.00 MB (100%) | 1.00 MB (100%) | 1.00 MB (100%) |
-| Mixed 5 MB | 5.00 MB | 2.45 MB (49.0%) | 2.45 MB (49.1%) | 2.33 MB (46.6%) | 2.38 MB (47.6%) | 2.38 MB (47.6%) |
-| Text 10 MB | 10.00 MB | 2.13 MB (21.3%) | 2.13 MB (21.3%) | 1.71 MB (17.1%) | **1.71 MB (17.1%)** | **1.70 MB (17.0%)** |
-| Mixed 10 MB | 10.00 MB | 4.90 MB (49.0%) | 4.90 MB (49.0%) | 4.65 MB (46.5%) | 4.73 MB (47.3%) | 4.73 MB (47.3%) |
+| Dataset     | Original | zip -9          | gzip -9         | 7z LZMA2 -9     | Roxify PNG          | Roxify WAV          |
+| ----------- | -------- | --------------- | --------------- | --------------- | ------------------- | ------------------- |
+| Text 1 MB   | 1.00 MB  | 219 KB (21.4%)  | 219 KB (21.4%)  | 187 KB (18.3%)  | **188 KB (18.3%)**  | **187 KB (18.3%)**  |
+| JSON 1 MB   | 1.00 MB  | 263 KB (25.7%)  | 263 KB (25.7%)  | 225 KB (22.0%)  | **220 KB (21.5%)**  | **219 KB (21.4%)**  |
+| Binary 1 MB | 1.00 MB  | 1.00 MB (100%)  | 1.00 MB (100%)  | 1.00 MB (100%)  | 1.00 MB (100%)      | 1.00 MB (100%)      |
+| Mixed 5 MB  | 5.00 MB  | 2.45 MB (49.0%) | 2.45 MB (49.1%) | 2.33 MB (46.6%) | 2.38 MB (47.6%)     | 2.38 MB (47.6%)     |
+| Text 10 MB  | 10.00 MB | 2.13 MB (21.3%) | 2.13 MB (21.3%) | 1.71 MB (17.1%) | **1.71 MB (17.1%)** | **1.70 MB (17.0%)** |
+| Mixed 10 MB | 10.00 MB | 4.90 MB (49.0%) | 4.90 MB (49.0%) | 4.65 MB (46.5%) | 4.73 MB (47.3%)     | 4.73 MB (47.3%)     |
 
 > **Roxify matches 7z LZMA2 ultra-compression on text** (18.3% for both at 1 MB) and **beats LZMA2 on JSON** (21.4% vs 22.0%). On mixed data, Roxify is within 1 percentage point of LZMA2 while producing a shareable PNG/WAV instead of an archive.
 
 ### Encode and Decode Speed (CLI)
 
-| Dataset | Tool | Encode | Decode | Enc Throughput | Dec Throughput |
-|---|---|---|---|---|---|
-| Text 1 MB | zip -9 | 112 ms | 36 ms | 8.9 MB/s | 27.6 MB/s |
-| | gzip -9 | 146 ms | 38 ms | 6.9 MB/s | 26.0 MB/s |
-| | 7z LZMA -9 | 303 ms | 21 ms | 3.3 MB/s | 46.6 MB/s |
-| | **Roxify PNG** | **859 ms** | **577 ms** | **1.2 MB/s** | **1.7 MB/s** |
-| | **Roxify WAV** | **794 ms** | **480 ms** | **1.3 MB/s** | **2.1 MB/s** |
-| JSON 1 MB | zip -9 | 79 ms | 20 ms | 12.7 MB/s | 50.5 MB/s |
-| | 7z LZMA -9 | 197 ms | 26 ms | 5.1 MB/s | 37.9 MB/s |
-| | **Roxify PNG** | **1.14 s** | **755 ms** | **0.9 MB/s** | **1.3 MB/s** |
-| | **Roxify WAV** | **1.49 s** | **518 ms** | **0.7 MB/s** | **1.9 MB/s** |
-| Text 10 MB | zip -9 | 1.21 s | 70 ms | 8.2 MB/s | 143.8 MB/s |
-| | 7z LZMA -9 | 5.05 s | 99 ms | 2.0 MB/s | 100.8 MB/s |
-| | **Roxify PNG** | **9.05 s** | **4.53 s** | **1.1 MB/s** | **2.2 MB/s** |
-| | **Roxify WAV** | **9.22 s** | **2.59 s** | **1.1 MB/s** | **3.9 MB/s** |
+| Dataset    | Tool           | Encode     | Decode     | Enc Throughput | Dec Throughput |
+| ---------- | -------------- | ---------- | ---------- | -------------- | -------------- |
+| Text 1 MB  | zip -9         | 112 ms     | 36 ms      | 8.9 MB/s       | 27.6 MB/s      |
+|            | gzip -9        | 146 ms     | 38 ms      | 6.9 MB/s       | 26.0 MB/s      |
+|            | 7z LZMA -9     | 303 ms     | 21 ms      | 3.3 MB/s       | 46.6 MB/s      |
+|            | **Roxify PNG** | **859 ms** | **577 ms** | **1.2 MB/s**   | **1.7 MB/s**   |
+|            | **Roxify WAV** | **794 ms** | **480 ms** | **1.3 MB/s**   | **2.1 MB/s**   |
+| JSON 1 MB  | zip -9         | 79 ms      | 20 ms      | 12.7 MB/s      | 50.5 MB/s      |
+|            | 7z LZMA -9     | 197 ms     | 26 ms      | 5.1 MB/s       | 37.9 MB/s      |
+|            | **Roxify PNG** | **1.14 s** | **755 ms** | **0.9 MB/s**   | **1.3 MB/s**   |
+|            | **Roxify WAV** | **1.49 s** | **518 ms** | **0.7 MB/s**   | **1.9 MB/s**   |
+| Text 10 MB | zip -9         | 1.21 s     | 70 ms      | 8.2 MB/s       | 143.8 MB/s     |
+|            | 7z LZMA -9     | 5.05 s     | 99 ms      | 2.0 MB/s       | 100.8 MB/s     |
+|            | **Roxify PNG** | **9.05 s** | **4.53 s** | **1.1 MB/s**   | **2.2 MB/s**   |
+|            | **Roxify WAV** | **9.22 s** | **2.59 s** | **1.1 MB/s**   | **3.9 MB/s**   |
 
 > Roxify CLI includes Node.js startup overhead (~400 ms). In the JS API (below), the same operations are significantly faster. WAV decode is consistently faster than PNG decode due to simpler container parsing.
 
@@ -95,69 +95,69 @@ All measurements were taken on Linux x64 (Intel i7-6700K @ 4.0 GHz, 32 GB RAM) w
 
 Direct API calls (no CLI startup overhead):
 
-| Size | Container | Encode | Decode | Enc Throughput | Dec Throughput | Output | Ratio | Integrity |
-|---|---|---|---|---|---|---|---|---|
-| 1 KB | PNG | 9 ms | 12 ms | 0.1 MB/s | 0.1 MB/s | 1.14 KB | 114.3% | ✓ |
-| 10 KB | PNG | 18 ms | 34 ms | 0.5 MB/s | 0.3 MB/s | 10.32 KB | 103.2% | ✓ |
-| 100 KB | PNG | 52 ms | 109 ms | 1.9 MB/s | 0.9 MB/s | 100.52 KB | 100.5% | ✓ |
-| 500 KB | PNG | 339 ms | 541 ms | 1.4 MB/s | 0.9 MB/s | 502.64 KB | 100.5% | ✓ |
-| 1 MB | PNG | 875 ms | 1.24 s | 1.1 MB/s | 0.8 MB/s | 1.00 MB | 100.3% | ✓ |
-| 5 MB | PNG | 3.39 s | 4.12 s | 1.5 MB/s | 1.2 MB/s | 5.01 MB | 100.2% | ✓ |
-| 10 MB | PNG | 6.84 s | 12.28 s | 1.5 MB/s | 0.8 MB/s | 10.01 MB | 100.1% | ✓ |
-| 1 KB | WAV | 2 ms | 2 ms | 0.6 MB/s | 0.6 MB/s | 1.08 KB | 107.5% | ✓ |
-| 10 KB | WAV | 4 ms | 5 ms | 2.3 MB/s | 1.8 MB/s | 10.08 KB | 100.8% | ✓ |
-| 100 KB | WAV | 39 ms | 28 ms | 2.5 MB/s | 3.5 MB/s | 100.08 KB | 100.1% | ✓ |
-| 500 KB | WAV | 172 ms | 190 ms | 2.8 MB/s | 2.6 MB/s | 500.09 KB | 100.0% | ✓ |
-| 1 MB | WAV | 452 ms | 276 ms | 2.2 MB/s | 3.6 MB/s | 1.00 MB | 100.0% | ✓ |
-| 5 MB | WAV | 2.70 s | 1.65 s | 1.8 MB/s | 3.0 MB/s | 5.00 MB | 100.0% | ✓ |
-| 10 MB | WAV | 4.81 s | 2.56 s | 2.1 MB/s | 3.9 MB/s | 10.00 MB | 100.0% | ✓ |
+| Size   | Container | Encode | Decode  | Enc Throughput | Dec Throughput | Output    | Ratio  | Integrity |
+| ------ | --------- | ------ | ------- | -------------- | -------------- | --------- | ------ | --------- |
+| 1 KB   | PNG       | 9 ms   | 12 ms   | 0.1 MB/s       | 0.1 MB/s       | 1.14 KB   | 114.3% | ✓         |
+| 10 KB  | PNG       | 18 ms  | 34 ms   | 0.5 MB/s       | 0.3 MB/s       | 10.32 KB  | 103.2% | ✓         |
+| 100 KB | PNG       | 52 ms  | 109 ms  | 1.9 MB/s       | 0.9 MB/s       | 100.52 KB | 100.5% | ✓         |
+| 500 KB | PNG       | 339 ms | 541 ms  | 1.4 MB/s       | 0.9 MB/s       | 502.64 KB | 100.5% | ✓         |
+| 1 MB   | PNG       | 875 ms | 1.24 s  | 1.1 MB/s       | 0.8 MB/s       | 1.00 MB   | 100.3% | ✓         |
+| 5 MB   | PNG       | 3.39 s | 4.12 s  | 1.5 MB/s       | 1.2 MB/s       | 5.01 MB   | 100.2% | ✓         |
+| 10 MB  | PNG       | 6.84 s | 12.28 s | 1.5 MB/s       | 0.8 MB/s       | 10.01 MB  | 100.1% | ✓         |
+| 1 KB   | WAV       | 2 ms   | 2 ms    | 0.6 MB/s       | 0.6 MB/s       | 1.08 KB   | 107.5% | ✓         |
+| 10 KB  | WAV       | 4 ms   | 5 ms    | 2.3 MB/s       | 1.8 MB/s       | 10.08 KB  | 100.8% | ✓         |
+| 100 KB | WAV       | 39 ms  | 28 ms   | 2.5 MB/s       | 3.5 MB/s       | 100.08 KB | 100.1% | ✓         |
+| 500 KB | WAV       | 172 ms | 190 ms  | 2.8 MB/s       | 2.6 MB/s       | 500.09 KB | 100.0% | ✓         |
+| 1 MB   | WAV       | 452 ms | 276 ms  | 2.2 MB/s       | 3.6 MB/s       | 1.00 MB   | 100.0% | ✓         |
+| 5 MB   | WAV       | 2.70 s | 1.65 s  | 1.8 MB/s       | 3.0 MB/s       | 5.00 MB   | 100.0% | ✓         |
+| 10 MB  | WAV       | 4.81 s | 2.56 s  | 2.1 MB/s       | 3.9 MB/s       | 10.00 MB  | 100.0% | ✓         |
 
 > WAV container is **2–4× faster** than PNG for decoding at large sizes, and produces slightly smaller output thanks to simpler framing.
 
 ### Reed-Solomon ECC Throughput
 
-| Size | Encode | Decode | Enc Throughput | Dec Throughput | Overhead |
-|---|---|---|---|---|---|
-| 1 KB | 6 ms | 4 ms | 0.2 MB/s | 0.2 MB/s | 125.7% |
-| 10 KB | 7 ms | 6 ms | 1.3 MB/s | 1.5 MB/s | 119.6% |
-| 100 KB | 49 ms | 45 ms | 2.0 MB/s | 2.1 MB/s | 118.8% |
-| 1 MB | 483 ms | 377 ms | 2.1 MB/s | 2.7 MB/s | 118.6% |
+| Size   | Encode | Decode | Enc Throughput | Dec Throughput | Overhead |
+| ------ | ------ | ------ | -------------- | -------------- | -------- |
+| 1 KB   | 6 ms   | 4 ms   | 0.2 MB/s       | 0.2 MB/s       | 125.7%   |
+| 10 KB  | 7 ms   | 6 ms   | 1.3 MB/s       | 1.5 MB/s       | 119.6%   |
+| 100 KB | 49 ms  | 45 ms  | 2.0 MB/s       | 2.1 MB/s       | 118.8%   |
+| 1 MB   | 483 ms | 377 ms | 2.1 MB/s       | 2.7 MB/s       | 118.6%   |
 
 ### Lossy-Resilient Encoding
 
 #### Robust Image (QR-code-style, block size 4×4)
 
 | Data Size | Encode Time | Output (PNG) |
-|---|---|---|
-| 32 B | 32 ms | 122 KB |
-| 128 B | 39 ms | 122 KB |
-| 512 B | 76 ms | 316 KB |
-| 1 KB | 139 ms | 508 KB |
-| 2 KB | 251 ms | 986 KB |
+| --------- | ----------- | ------------ |
+| 32 B      | 32 ms       | 122 KB       |
+| 128 B     | 39 ms       | 122 KB       |
+| 512 B     | 76 ms       | 316 KB       |
+| 1 KB      | 139 ms      | 508 KB       |
+| 2 KB      | 251 ms      | 986 KB       |
 
 #### Robust Audio (MFSK 8-channel, medium ECC)
 
 | Data Size | Encode | Decode | Output (WAV) | Integrity |
-|---|---|---|---|---|
-| 10 B | 33 ms | 44 ms | 1.35 MB | ✓ |
-| 32 B | 19 ms | 31 ms | 1.35 MB | ✓ |
-| 64 B | 22 ms | 24 ms | 1.35 MB | ✓ |
-| 128 B | 21 ms | 28 ms | 1.35 MB | ✓ |
-| 256 B | 40 ms | 45 ms | 2.59 MB | ✓ |
+| --------- | ------ | ------ | ------------ | --------- |
+| 10 B      | 33 ms  | 44 ms  | 1.35 MB      | ✓         |
+| 32 B      | 19 ms  | 31 ms  | 1.35 MB      | ✓         |
+| 64 B      | 22 ms  | 24 ms  | 1.35 MB      | ✓         |
+| 128 B     | 21 ms  | 28 ms  | 1.35 MB      | ✓         |
+| 256 B     | 40 ms  | 45 ms  | 2.59 MB      | ✓         |
 
 ### Data Integrity Verification
 
 All encode/decode roundtrips produce bit-exact output, verified by SHA-256:
 
-| Test Case | PNG | WAV |
-|---|---|---|
-| Empty buffer (0 B) | ✓ | ✓ |
-| Single byte (1 B) | ✓ | ✓ |
-| All byte values (256 B) | ✓ | ✓ |
-| 1 KB text | ✓ | ✓ |
-| 100 KB random | ✓ | ✓ |
-| 1 MB random | ✓ | ✓ |
-| 5 MB random | ✓ | ✓ |
+| Test Case               | PNG | WAV |
+| ----------------------- | --- | --- |
+| Empty buffer (0 B)      | ✓   | ✓   |
+| Single byte (1 B)       | ✓   | ✓   |
+| All byte values (256 B) | ✓   | ✓   |
+| 1 KB text               | ✓   | ✓   |
+| 100 KB random           | ✓   | ✓   |
+| 1 MB random             | ✓   | ✓   |
+| 5 MB random             | ✓   | ✓   |
 
 **14 / 14 integrity tests passed** across both containers.
 
@@ -175,12 +175,12 @@ All encode/decode roundtrips produce bit-exact output, verified by SHA-256:
 
 Benchmarks were generated using `test/benchmark-detailed.cjs`. Datasets consist of procedurally generated text, JSON, and random binary data. Each tool was invoked with its maximum compression setting:
 
-| Tool | Command / Setting |
-|---|---|
-| zip | `zip -r -q -9` |
-| tar/gzip | `tar -cf - \| gzip -9` |
-| 7z | `7z a -mx=9` (LZMA2 ultra) |
-| Roxify | Zstd level 19, compact mode |
+| Tool     | Command / Setting           |
+| -------- | --------------------------- |
+| zip      | `zip -r -q -9`              |
+| tar/gzip | `tar -cf - \| gzip -9`      |
+| 7z       | `7z a -mx=9` (LZMA2 ultra)  |
+| Roxify   | Zstd level 19, compact mode |
 
 To reproduce:
 
@@ -222,14 +222,14 @@ rox encode input.zip output.png
 rox encode <input> [output] [options]
 ```
 
-| Option | Description | Default |
-|---|---|---|
-| `-p, --passphrase <pass>` | Encrypt with AES-256-GCM | none |
-| `-m, --mode <mode>` | Encoding mode: `screenshot`, `compact` | `screenshot` |
-| `-q, --quality <0-11>` | Compression effort (0 = fastest, 11 = smallest) | `1` |
-| `-e, --encrypt <type>` | Encryption method: `auto`, `aes`, `xor`, `none` | `aes` if passphrase is set |
-| `--no-compress` | Disable compression entirely | false |
-| `-o, --output <path>` | Explicit output file path | auto-generated |
+| Option                    | Description                                     | Default                    |
+| ------------------------- | ----------------------------------------------- | -------------------------- |
+| `-p, --passphrase <pass>` | Encrypt with AES-256-GCM                        | none                       |
+| `-m, --mode <mode>`       | Encoding mode: `screenshot`, `compact`          | `screenshot`               |
+| `-q, --quality <0-11>`    | Compression effort (0 = fastest, 11 = smallest) | `1`                        |
+| `-e, --encrypt <type>`    | Encryption method: `auto`, `aes`, `xor`, `none` | `aes` if passphrase is set |
+| `--no-compress`           | Disable compression entirely                    | false                      |
+| `-o, --output <path>`     | Explicit output file path                       | auto-generated             |
 
 ### Decoding
 
@@ -237,11 +237,11 @@ rox encode <input> [output] [options]
 rox decode <input> [output] [options]
 ```
 
-| Option | Description | Default |
-|---|---|---|
-| `-p, --passphrase <pass>` | Decryption passphrase | none |
-| `-o, --output <path>` | Output file path | auto-detected from metadata |
-| `--dict <file>` | Zstd dictionary for improved decompression | none |
+| Option                    | Description                                | Default                     |
+| ------------------------- | ------------------------------------------ | --------------------------- |
+| `-p, --passphrase <pass>` | Decryption passphrase                      | none                        |
+| `-o, --output <path>`     | Output file path                           | auto-detected from metadata |
+| `--dict <file>`           | Zstd dictionary for improved decompression | none                        |
 
 ### Examples
 
@@ -334,22 +334,22 @@ const png = await encodeBinaryToPng(largeBuffer, {
 
 ```typescript
 interface EncodeOptions {
-  compression?: 'zstd';           // Compression algorithm
-  compressionLevel?: number;       // Zstd compression level (0-19)
-  passphrase?: string;             // Encryption passphrase
-  dict?: Buffer;                   // Zstd dictionary for improved ratios
-  name?: string;                   // Original filename stored in metadata
-  mode?: 'screenshot';             // Encoding mode
+  compression?: 'zstd'; // Compression algorithm
+  compressionLevel?: number; // Zstd compression level (0-19)
+  passphrase?: string; // Encryption passphrase
+  dict?: Buffer; // Zstd dictionary for improved ratios
+  name?: string; // Original filename stored in metadata
+  mode?: 'screenshot'; // Encoding mode
   encrypt?: 'auto' | 'aes' | 'xor' | 'none';
   output?: 'auto' | 'png' | 'rox'; // Output format
-  includeName?: boolean;           // Include filename in PNG metadata
-  includeFileList?: boolean;       // Include file manifest in PNG
+  includeName?: boolean; // Include filename in PNG metadata
+  includeFileList?: boolean; // Include file manifest in PNG
   fileList?: Array<string | { name: string; size: number }>;
-  skipOptimization?: boolean;      // Skip PNG optimization pass
-  lossyResilient?: boolean;       // Enable lossy-resilient encoding (RS ECC)
-  eccLevel?: EccLevel;             // 'low' | 'medium' | 'quartile' | 'high'
-  robustBlockSize?: number;        // 2–8 pixels per data block (lossy image)
-  container?: 'image' | 'sound';   // Output container format
+  skipOptimization?: boolean; // Skip PNG optimization pass
+  lossyResilient?: boolean; // Enable lossy-resilient encoding (RS ECC)
+  eccLevel?: EccLevel; // 'low' | 'medium' | 'quartile' | 'high'
+  robustBlockSize?: number; // 2–8 pixels per data block (lossy image)
+  container?: 'image' | 'sound'; // Output container format
   onProgress?: (info: ProgressInfo) => void;
   showProgress?: boolean;
   verbose?: boolean;
@@ -360,9 +360,9 @@ interface EncodeOptions {
 
 ```typescript
 interface DecodeOptions {
-  passphrase?: string;             // Decryption passphrase
-  outPath?: string;                // Output directory for unpacked files
-  files?: string[];                // Extract only specific files from archive
+  passphrase?: string; // Decryption passphrase
+  outPath?: string; // Output directory for unpacked files
+  files?: string[]; // Extract only specific files from archive
   onProgress?: (info: ProgressInfo) => void;
   showProgress?: boolean;
   verbose?: boolean;
@@ -373,10 +373,10 @@ interface DecodeOptions {
 
 ```typescript
 interface DecodeResult {
-  buf?: Buffer;                    // Decoded binary payload
-  meta?: { name?: string };        // Metadata (original filename)
-  files?: PackedFile[];            // Unpacked directory entries, if applicable
-  correctedErrors?: number;        // RS errors corrected (lossy-resilient mode)
+  buf?: Buffer; // Decoded binary payload
+  meta?: { name?: string }; // Metadata (original filename)
+  files?: PackedFile[]; // Unpacked directory entries, if applicable
+  correctedErrors?: number; // RS errors corrected (lossy-resilient mode)
 }
 ```
 
@@ -384,10 +384,10 @@ interface DecodeResult {
 
 ## Encoding Modes
 
-| Mode | Description | Use Case |
-|---|---|---|
+| Mode         | Description                                                                                                                                         | Use Case                                                     |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `screenshot` | Encodes data as RGB pixels in a standard PNG. The image looks like a gradient or noise pattern and survives re-uploads and social media processing. | Sharing on image-only platforms, bypassing file-type filters |
-| `compact` | Minimal 1x1 PNG with data embedded in a custom ancillary chunk (`rXDT`). Produces the smallest possible output. | Programmatic use, archival, maximum compression ratio |
+| `compact`    | Minimal 1x1 PNG with data embedded in a custom ancillary chunk (`rXDT`). Produces the smallest possible output.                                     | Programmatic use, archival, maximum compression ratio        |
 
 ### Stretch-Resilient Decoding
 
@@ -410,10 +410,10 @@ rox decode zoomed-screenshot.png -o output/
 
 Roxify supports two encryption methods:
 
-| Method | Algorithm | Strength | Use Case |
-|---|---|---|---|
-| `aes` | AES-256-GCM with PBKDF2 (100,000 iterations) | Cryptographically secure, authenticated | Sensitive data, confidential documents |
-| `xor` | XOR cipher with passphrase-derived key | Obfuscation only, not cryptographically secure | Casual deterrent against inspection |
+| Method | Algorithm                                    | Strength                                       | Use Case                               |
+| ------ | -------------------------------------------- | ---------------------------------------------- | -------------------------------------- |
+| `aes`  | AES-256-GCM with PBKDF2 (100,000 iterations) | Cryptographically secure, authenticated        | Sensitive data, confidential documents |
+| `xor`  | XOR cipher with passphrase-derived key       | Obfuscation only, not cryptographically secure | Casual deterrent against inspection    |
 
 When `encrypt` is set to `auto` (the default when a passphrase is provided), AES is selected.
 
@@ -432,12 +432,12 @@ Enable `lossyResilient: true` to produce output that survives lossy compression.
 
 ### Error Correction Levels
 
-| Level | Parity Symbols | Overhead | Correctable Errors |
-|-------|---------------:|---------:|-------------------:|
-| `low` | 20 / block | ~10% | ~4% |
-| `medium` | 40 / block | ~19% | ~9% |
-| `quartile` | 64 / block | ~33% | ~15% |
-| `high` | 128 / block | ~100% | ~25% |
+| Level      | Parity Symbols | Overhead | Correctable Errors |
+| ---------- | -------------: | -------: | -----------------: |
+| `low`      |     20 / block |     ~10% |                ~4% |
+| `medium`   |     40 / block |     ~19% |                ~9% |
+| `quartile` |     64 / block |     ~33% |               ~15% |
+| `high`     |    128 / block |    ~100% |               ~25% |
 
 ### Example
 
@@ -446,7 +446,7 @@ Enable `lossyResilient: true` to produce output that survives lossy compression.
 const png = await encodeBinaryToPng(data, {
   lossyResilient: true,
   eccLevel: 'quartile',
-  robustBlockSize: 4,   // 4×4 pixels per data bit
+  robustBlockSize: 4, // 4×4 pixels per data bit
 });
 
 // Audio that survives MP3 compression
@@ -498,12 +498,12 @@ const wav = await encodeBinaryToPng(data, {
 
 The `compressionLevel` option (CLI: `-q`) controls the trade-off between speed and output size:
 
-| Level | Speed | Ratio | Recommendation |
-|---|---|---|---|
-| 0 | Fastest | Largest | Files over 100 MB, real-time workflows |
-| 1 | Fast | Good | Default; general-purpose use |
-| 5 | Moderate | Better | Archival of medium-sized datasets |
-| 11 | Slowest | Smallest | Small files under 1 MB, long-term storage |
+| Level | Speed    | Ratio    | Recommendation                            |
+| ----- | -------- | -------- | ----------------------------------------- |
+| 0     | Fastest  | Largest  | Files over 100 MB, real-time workflows    |
+| 1     | Fast     | Good     | Default; general-purpose use              |
+| 5     | Moderate | Better   | Archival of medium-sized datasets         |
+| 11    | Slowest  | Smallest | Small files under 1 MB, long-term storage |
 
 ### Native Module
 
@@ -533,12 +533,12 @@ const png = await encodeBinaryToPng(data, { dict });
 
 Roxify ships prebuilt native modules for the following targets:
 
-| Platform | Architecture | Binary Name |
-|---|---|---|
-| Linux | x86_64 | `libroxify_native-x86_64-unknown-linux-gnu.node` |
-| macOS | x86_64 | `libroxify_native-x86_64-apple-darwin.node` |
-| macOS | ARM64 (Apple Silicon) | `libroxify_native-aarch64-apple-darwin.node` |
-| Windows | x86_64 | `roxify_native-x86_64-pc-windows-msvc.node` |
+| Platform | Architecture          | Binary Name                                      |
+| -------- | --------------------- | ------------------------------------------------ |
+| Linux    | x86_64                | `libroxify_native-x86_64-unknown-linux-gnu.node` |
+| macOS    | x86_64                | `libroxify_native-x86_64-apple-darwin.node`      |
+| macOS    | ARM64 (Apple Silicon) | `libroxify_native-aarch64-apple-darwin.node`     |
+| Windows  | x86_64                | `roxify_native-x86_64-pc-windows-msvc.node`      |
 
 The correct binary is resolved automatically at runtime. If no binary is found for the current platform, Roxify falls back silently to the pure JavaScript implementation.
 
@@ -630,35 +630,35 @@ Input --> Detect Format --> Demodulate/Read Blocks --> De-interleave --> RS ECC 
 
 ### Rust Modules
 
-| Module | Responsibility |
-|---|---|
-| `core.rs` | Pixel scanning, CRC32, Adler32, delta coding, Zstd compress/decompress |
-| `encoder.rs` | PNG payload encoding with marker pixels and metadata chunks |
-| `packer.rs` | Directory tree serialization and streaming deserialization |
-| `crypto.rs` | AES-256-GCM encryption and PBKDF2 key derivation |
-| `archive.rs` | Tar-based archiving with optional Zstd compression |
-| `reconstitution.rs` | Screenshot detection and automatic crop to recover encoded data |
-| `audio.rs` | WAV container encoding and decoding (PCM byte packing) |
-| `bwt.rs` | Parallel Burrows-Wheeler Transform |
-| `rans.rs` | rANS (Asymmetric Numeral Systems) entropy coder |
-| `hybrid.rs` | Block-based orchestration of BWT, context mixing, and rANS |
-| `pool.rs` | Buffer pooling and zero-copy memory management |
-| `image_utils.rs` | Image resizing, pixel format conversion, metadata extraction |
-| `png_utils.rs` | Low-level PNG chunk read/write operations |
-| `progress.rs` | Progress tracking for long-running compression/decompression |
+| Module              | Responsibility                                                         |
+| ------------------- | ---------------------------------------------------------------------- |
+| `core.rs`           | Pixel scanning, CRC32, Adler32, delta coding, Zstd compress/decompress |
+| `encoder.rs`        | PNG payload encoding with marker pixels and metadata chunks            |
+| `packer.rs`         | Directory tree serialization and streaming deserialization             |
+| `crypto.rs`         | AES-256-GCM encryption and PBKDF2 key derivation                       |
+| `archive.rs`        | Tar-based archiving with optional Zstd compression                     |
+| `reconstitution.rs` | Screenshot detection and automatic crop to recover encoded data        |
+| `audio.rs`          | WAV container encoding and decoding (PCM byte packing)                 |
+| `bwt.rs`            | Parallel Burrows-Wheeler Transform                                     |
+| `rans.rs`           | rANS (Asymmetric Numeral Systems) entropy coder                        |
+| `hybrid.rs`         | Block-based orchestration of BWT, context mixing, and rANS             |
+| `pool.rs`           | Buffer pooling and zero-copy memory management                         |
+| `image_utils.rs`    | Image resizing, pixel format conversion, metadata extraction           |
+| `png_utils.rs`      | Low-level PNG chunk read/write operations                              |
+| `progress.rs`       | Progress tracking for long-running compression/decompression           |
 
 ### TypeScript Modules
 
-| Module | Responsibility |
-|---|---|
-| `ecc.ts` | Reed-Solomon GF(256) codec, block ECC, interleaving |
+| Module            | Responsibility                                                        |
+| ----------------- | --------------------------------------------------------------------- |
+| `ecc.ts`          | Reed-Solomon GF(256) codec, block ECC, interleaving                   |
 | `robust-audio.ts` | MFSK audio modulation/demodulation, Goertzel detection, sync preamble |
-| `robust-image.ts` | QR-code-like block encoding, finder patterns, majority voting |
-| `encoder.ts` | High-level encoding orchestration (standard + lossy-resilient) |
-| `decoder.ts` | High-level decoding with automatic format detection |
-| `audio.ts` | Standard WAV container (8-bit PCM) |
-| `helpers.ts` | Delta coding, XOR cipher, palette generation |
-| `zstd.ts` | Parallel Zstd compression via native module |
+| `robust-image.ts` | QR-code-like block encoding, finder patterns, majority voting         |
+| `encoder.ts`      | High-level encoding orchestration (standard + lossy-resilient)        |
+| `decoder.ts`      | High-level decoding with automatic format detection                   |
+| `audio.ts`        | Standard WAV container (8-bit PCM)                                    |
+| `helpers.ts`      | Delta coding, XOR cipher, palette generation                          |
+| `zstd.ts`         | Parallel Zstd compression via native module                           |
 
 ---
 
@@ -684,11 +684,11 @@ try {
 }
 ```
 
-| Error | Cause |
-|---|---|
-| `Incorrect passphrase` | Wrong password provided for decryption |
-| `not a valid PNG` | Input buffer is not a PNG or lacks Roxify markers |
-| `Passphrase required` | File is encrypted but no passphrase was supplied |
+| Error                       | Cause                                             |
+| --------------------------- | ------------------------------------------------- |
+| `Incorrect passphrase`      | Wrong password provided for decryption            |
+| `not a valid PNG`           | Input buffer is not a PNG or lacks Roxify markers |
+| `Passphrase required`       | File is encrypted but no passphrase was supplied  |
 | `Image too large to decode` | PNG dimensions exceed the in-process memory limit |
 
 ---
@@ -716,7 +716,7 @@ Contributions are welcome. Please open an issue to discuss proposed changes befo
 
 ## License
 
-MIT. See [LICENSE](LICENSE) for details.
+This project is licensed under the **Roxify Proprietary Open Source License (RPOSL)**. The source code is freely available for personal, educational, and research use. All commercial rights are exclusively reserved to the author. See [LICENSE](LICENSE) for details.
 
 ---
 
