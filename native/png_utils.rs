@@ -149,11 +149,25 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
                 return Ok(payload);
             }
         }
+        if let Ok(unstretched) = crate::reconstitution::unstretch_nn(&reconst) {
+            if let Ok(payload) = extract_payload_direct(&unstretched) {
+                if validate_payload_deep(&payload) {
+                    return Ok(payload);
+                }
+            }
+        }
     }
-    let unstretched = crate::reconstitution::unstretch_nn(png_data)?;
-    let payload = extract_payload_direct(&unstretched)?;
-    if validate_payload_deep(&payload) {
-        return Ok(payload);
+    if let Ok(unstretched) = crate::reconstitution::unstretch_nn(png_data) {
+        if let Ok(payload) = extract_payload_direct(&unstretched) {
+            if validate_payload_deep(&payload) {
+                return Ok(payload);
+            }
+        }
+    }
+    if let Ok(payload) = extract_payload_from_embedded_nn(png_data) {
+        if validate_payload_deep(&payload) {
+            return Ok(payload);
+        }
     }
     Err("No valid payload found after all extraction attempts".to_string())
 }
@@ -185,6 +199,191 @@ fn decode_to_rgb(png_data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(img.to_rgb8().into_raw())
 }
 
+fn decode_to_rgba_grid(png_data: &[u8]) -> Result<(Vec<[u8; 4]>, u32, u32), String> {
+    let mut reader = ImageReader::new(Cursor::new(png_data))
+        .with_guessed_format()
+        .map_err(|e| format!("format guess error: {}", e))?;
+    reader.no_limits();
+    let img = reader.decode().map_err(|e| format!("image decode error: {}", e))?;
+    let rgba = img.to_rgba8();
+    let w = rgba.width();
+    let h = rgba.height();
+    let pixels: Vec<[u8; 4]> = rgba.pixels().map(|p| [p[0], p[1], p[2], p[3]]).collect();
+    Ok((pixels, w, h))
+}
+
+fn reconstruct_logical_pixels_from_nn(
+    pixels: &[[u8; 4]], width: u32, height: u32
+) -> Result<Vec<u8>, String> {
+    let w = width as usize;
+    let h = height as usize;
+    let get = |x: usize, y: usize| -> [u8; 4] { pixels[y * w + x] };
+
+    let magic = [b'P', b'X', b'L', b'1'];
+
+    let mut header_row = None;
+    let mut header_col = None;
+    'outer: for y in 0..h {
+        for x in 0..w.saturating_sub(1) {
+            let p0 = get(x, y);
+            let p1 = get(x + 1, y);
+            let seq = [p0[0], p0[1], p0[2], p1[0], p1[1], p1[2]];
+            for start in 0..3 {
+                if start + 4 <= 6 && seq[start] == magic[0] && seq[start+1] == magic[1]
+                    && seq[start+2] == magic[2] && seq[start+3] == magic[3]
+                {
+                    header_row = Some(y);
+                    header_col = Some(x);
+                    break 'outer;
+                }
+            }
+        }
+    }
+    let header_row = header_row.ok_or("PXL1 not found in 2D pixel scan")?;
+    let header_col = header_col.ok_or("PXL1 column not found")?;
+
+    let mut scale_y = 1usize;
+    for dy in 1..h - header_row {
+        let y2 = header_row + dy;
+        let mut same = true;
+        for x in header_col..(header_col + 4).min(w) {
+            if get(x, y2) != get(x, header_row) { same = false; break; }
+        }
+        if same { scale_y += 1; } else { break; }
+    }
+
+    let cur = get(header_col, header_row);
+    let mut block_start = header_col;
+    while block_start > 0 && get(block_start - 1, header_row) == cur {
+        block_start -= 1;
+    }
+    let mut block_end = header_col + 1;
+    while block_end < w && get(block_end, header_row) == cur {
+        block_end += 1;
+    }
+    let scale_x = block_end - block_start;
+    if scale_x < 2 {
+        return Err("Could not determine NN scale_x".to_string());
+    }
+
+    let ref_y = header_row;
+    let mut embed_left = block_start;
+    loop {
+        if embed_left < scale_x { break; }
+        let candidate = embed_left - scale_x;
+        let c0 = get(candidate, ref_y);
+        let mut is_block = true;
+        for dx in 1..scale_x {
+            if candidate + dx >= w || get(candidate + dx, ref_y) != c0 {
+                is_block = false;
+                break;
+            }
+        }
+        if !is_block { break; }
+        if candidate + scale_x < w && get(candidate + scale_x, ref_y) == c0 {
+            break;
+        }
+        embed_left = candidate;
+    }
+
+    let mut embed_top = header_row;
+    loop {
+        if embed_top < scale_y { break; }
+        let candidate = embed_top - scale_y;
+        let mut is_block = true;
+        for dy in 0..scale_y {
+            if candidate + dy >= h { is_block = false; break; }
+            if dy > 0 && get(embed_left, candidate + dy) != get(embed_left, candidate) {
+                is_block = false;
+                break;
+            }
+        }
+        if !is_block { break; }
+        embed_top = candidate;
+    }
+
+    let mut logical_cols: Vec<usize> = Vec::new();
+    let mut x = embed_left;
+    while x < w {
+        logical_cols.push(x);
+        let c = get(x, ref_y);
+        let mut nx = x + 1;
+        while nx < w && get(nx, ref_y) == c {
+            nx += 1;
+        }
+        if nx >= w { break; }
+        let blk = nx - x;
+        if blk < scale_x.saturating_sub(2) || blk > scale_x + 2 {
+            break;
+        }
+        x = nx;
+    }
+
+    let mut logical_rows: Vec<usize> = Vec::new();
+    let mut y = embed_top;
+    while y < h {
+        logical_rows.push(y);
+        let c = get(embed_left, y);
+        let mut ny = y + 1;
+        while ny < h && get(embed_left, ny) == c {
+            ny += 1;
+        }
+        if ny >= h { break; }
+        let blk = ny - y;
+        if blk < scale_y.saturating_sub(2) || blk > scale_y + 2 {
+            break;
+        }
+        y = ny;
+    }
+
+    if logical_cols.len() < 3 || logical_rows.len() < 3 {
+        return Err("Embedded region too small".to_string());
+    }
+
+    let img_w = logical_cols.len();
+    let mut logical_rgb = Vec::with_capacity(img_w * logical_rows.len() * 3);
+    for &ry in &logical_rows {
+        for &cx in &logical_cols {
+            let p = get(cx, ry);
+            logical_rgb.push(p[0]);
+            logical_rgb.push(p[1]);
+            logical_rgb.push(p[2]);
+        }
+    }
+    Ok(logical_rgb)
+}
+
+fn extract_payload_from_embedded_nn(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    let (pixels, width, height) = decode_to_rgba_grid(png_data)?;
+    let logical_rgb = reconstruct_logical_pixels_from_nn(&pixels, width, height)?;
+    let pos = {
+        let magic = b"PXL1";
+        let mut found = None;
+        for i in 0..logical_rgb.len().saturating_sub(4) {
+            if &logical_rgb[i..i+4] == magic {
+                found = Some(i);
+                break;
+            }
+        }
+        found.ok_or("PXL1 not found in reconstructed pixels")?
+    };
+    let mut idx = pos + 4;
+    if idx + 2 > logical_rgb.len() { return Err("Truncated header in embedded NN".to_string()); }
+    let _version = logical_rgb[idx]; idx += 1;
+    let name_len = logical_rgb[idx] as usize; idx += 1;
+    if idx + name_len > logical_rgb.len() { return Err("Truncated name in embedded NN".to_string()); }
+    idx += name_len;
+    if idx + 4 > logical_rgb.len() { return Err("Truncated payload length in embedded NN".to_string()); }
+    let payload_len = ((logical_rgb[idx] as u32) << 24)
+        | ((logical_rgb[idx+1] as u32) << 16)
+        | ((logical_rgb[idx+2] as u32) << 8)
+        | (logical_rgb[idx+3] as u32);
+    idx += 4;
+    let end = idx + (payload_len as usize);
+    if end > logical_rgb.len() { return Err("Truncated payload in embedded NN".to_string()); }
+    Ok(logical_rgb[idx..end].to_vec())
+}
+
 pub fn extract_name_from_png(png_data: &[u8]) -> Option<String> {
     if let Some(name) = extract_name_direct(png_data) {
         return Some(name);
@@ -193,9 +392,21 @@ pub fn extract_name_from_png(png_data: &[u8]) -> Option<String> {
         if let Some(name) = extract_name_direct(&reconst) {
             return Some(name);
         }
+        if let Ok(unstretched) = crate::reconstitution::unstretch_nn(&reconst) {
+            if let Some(name) = extract_name_direct(&unstretched) {
+                return Some(name);
+            }
+        }
     }
-    let unstretched = crate::reconstitution::unstretch_nn(png_data).ok()?;
-    extract_name_direct(&unstretched)
+    if let Ok(unstretched) = crate::reconstitution::unstretch_nn(png_data) {
+        if let Some(name) = extract_name_direct(&unstretched) {
+            return Some(name);
+        }
+    }
+    if let Ok(name) = extract_name_from_embedded_nn(png_data) {
+        return Some(name);
+    }
+    None
 }
 
 fn extract_name_direct(png_data: &[u8]) -> Option<String> {
@@ -207,6 +418,18 @@ fn extract_name_direct(png_data: &[u8]) -> Option<String> {
     let name_len = raw[idx] as usize; idx += 1;
     if name_len == 0 || idx + name_len > raw.len() { return None; }
     String::from_utf8(raw[idx..idx + name_len].to_vec()).ok()
+}
+
+fn extract_name_from_embedded_nn(png_data: &[u8]) -> Result<String, String> {
+    let (pixels, width, height) = decode_to_rgba_grid(png_data)?;
+    let logical_rgb = reconstruct_logical_pixels_from_nn(&pixels, width, height)?;
+    let pos = find_pixel_header(&logical_rgb)?;
+    let mut idx = pos + 4;
+    if idx + 2 > logical_rgb.len() { return Err("Truncated".to_string()); }
+    idx += 1;
+    let name_len = logical_rgb[idx] as usize; idx += 1;
+    if name_len == 0 || idx + name_len > logical_rgb.len() { return Err("Truncated name".to_string()); }
+    String::from_utf8(logical_rgb[idx..idx + name_len].to_vec()).map_err(|e| e.to_string())
 }
 
 fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
@@ -238,9 +461,51 @@ pub fn extract_file_list_from_pixels(png_data: &[u8]) -> Result<String, String> 
         if let Ok(result) = extract_file_list_direct(&reconst) {
             return Ok(result);
         }
+        if let Ok(unstretched) = crate::reconstitution::unstretch_nn(&reconst) {
+            if let Ok(result) = extract_file_list_direct(&unstretched) {
+                return Ok(result);
+            }
+        }
     }
-    let unstretched = crate::reconstitution::unstretch_nn(png_data)?;
-    extract_file_list_direct(&unstretched)
+    if let Ok(unstretched) = crate::reconstitution::unstretch_nn(png_data) {
+        if let Ok(result) = extract_file_list_direct(&unstretched) {
+            return Ok(result);
+        }
+    }
+    if let Ok(result) = extract_file_list_from_embedded_nn(png_data) {
+        return Ok(result);
+    }
+    Err("No file list found after all extraction attempts".to_string())
+}
+
+fn extract_file_list_from_embedded_nn(png_data: &[u8]) -> Result<String, String> {
+    let (pixels, width, height) = decode_to_rgba_grid(png_data)?;
+    let logical_rgb = reconstruct_logical_pixels_from_nn(&pixels, width, height)?;
+    let pos = find_pixel_header(&logical_rgb)?;
+    let mut idx = pos + 4;
+    if idx + 2 > logical_rgb.len() { return Err("Truncated".to_string()); }
+    idx += 1;
+    let name_len = logical_rgb[idx] as usize; idx += 1;
+    if idx + name_len > logical_rgb.len() { return Err("Truncated".to_string()); }
+    idx += name_len;
+    if idx + 4 > logical_rgb.len() { return Err("Truncated".to_string()); }
+    let payload_len = ((logical_rgb[idx] as u32) << 24)
+        | ((logical_rgb[idx+1] as u32) << 16)
+        | ((logical_rgb[idx+2] as u32) << 8)
+        | (logical_rgb[idx+3] as u32);
+    idx += 4;
+    idx += payload_len as usize;
+    if idx + 8 > logical_rgb.len() { return Err("No file list in embedded NN".to_string()); }
+    if &logical_rgb[idx..idx + 4] != b"rXFL" { return Err("No rXFL marker in embedded NN".to_string()); }
+    idx += 4;
+    let json_len = ((logical_rgb[idx] as u32) << 24)
+        | ((logical_rgb[idx+1] as u32) << 16)
+        | ((logical_rgb[idx+2] as u32) << 8)
+        | (logical_rgb[idx+3] as u32);
+    idx += 4;
+    let json_end = idx + json_len as usize;
+    if json_end > logical_rgb.len() { return Err("Truncated file list in embedded NN".to_string()); }
+    String::from_utf8(logical_rgb[idx..json_end].to_vec()).map_err(|e| format!("Invalid UTF-8: {}", e))
 }
 
 fn extract_file_list_direct(png_data: &[u8]) -> Result<String, String> {
