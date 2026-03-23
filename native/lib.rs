@@ -389,6 +389,13 @@ pub fn crop_and_reconstitute(png_buffer: Buffer) -> Result<Vec<u8>> {
         .map_err(|e| Error::from_reason(e))
 }
 
+#[cfg(not(test))]
+#[napi]
+pub fn extract_file_list_from_pixels(png_buffer: Buffer) -> Result<String> {
+    png_utils::extract_file_list_from_pixels(&png_buffer)
+        .map_err(|e| Error::from_reason(e))
+}
+
 // ─── WAV container NAPI exports ──────────────────────────────────────────────
 
 #[cfg(not(test))]

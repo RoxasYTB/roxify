@@ -184,8 +184,13 @@ pub fn extract_name_from_png(png_data: &[u8]) -> Option<String> {
     if let Some(name) = extract_name_direct(png_data) {
         return Some(name);
     }
-    let reconst = crate::reconstitution::crop_and_reconstitute(png_data).ok()?;
-    extract_name_direct(&reconst)
+    if let Ok(reconst) = crate::reconstitution::crop_and_reconstitute(png_data) {
+        if let Some(name) = extract_name_direct(&reconst) {
+            return Some(name);
+        }
+    }
+    let unstretched = crate::reconstitution::unstretch_nn(png_data).ok()?;
+    extract_name_direct(&unstretched)
 }
 
 fn extract_name_direct(png_data: &[u8]) -> Option<String> {
@@ -224,8 +229,13 @@ pub fn extract_file_list_from_pixels(png_data: &[u8]) -> Result<String, String> 
     if let Ok(result) = extract_file_list_direct(png_data) {
         return Ok(result);
     }
-    let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
-    extract_file_list_direct(&reconst)
+    if let Ok(reconst) = crate::reconstitution::crop_and_reconstitute(png_data) {
+        if let Ok(result) = extract_file_list_direct(&reconst) {
+            return Ok(result);
+        }
+    }
+    let unstretched = crate::reconstitution::unstretch_nn(png_data)?;
+    extract_file_list_direct(&unstretched)
 }
 
 fn extract_file_list_direct(png_data: &[u8]) -> Result<String, String> {

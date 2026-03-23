@@ -141,6 +141,13 @@ export async function listFilesInPng(
     }
   } catch (e) { }
 
+  try {
+    const json = native.extractFileListFromPixels(pngBuf);
+    if (json) {
+      return parseFileList(JSON.parse(json));
+    }
+  } catch (e) { }
+
   return null;
 }
 
