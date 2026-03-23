@@ -6,18 +6,18 @@ import { join } from 'path';
 import { unpackBuffer } from '../pack.js';
 import { isWav, wavToBytes } from './audio.js';
 import {
-    CHUNK_TYPE,
-    MAGIC,
-    MARKER_END,
-    MARKER_START,
-    PIXEL_MAGIC,
-    PIXEL_MAGIC_BLOCK,
-    PNG_HEADER,
+  CHUNK_TYPE,
+  MAGIC,
+  MARKER_END,
+  MARKER_START,
+  PIXEL_MAGIC,
+  PIXEL_MAGIC_BLOCK,
+  PNG_HEADER,
 } from './constants.js';
 import {
-    DataFormatError,
-    IncorrectPassphraseError,
-    PassphraseRequiredError,
+  DataFormatError,
+  IncorrectPassphraseError,
+  PassphraseRequiredError,
 } from './errors.js';
 import { colorsToBytes, deltaDecode, tryDecryptIfNeeded } from './helpers.js';
 import { native } from './native.js';
@@ -102,8 +102,8 @@ export function unstretchImage(
     }
     return (
       Math.abs(buf[i1] - buf[i2]) +
-        Math.abs(buf[i1 + 1] - buf[i2 + 1]) +
-        Math.abs(buf[i1 + 2] - buf[i2 + 2]) <=
+      Math.abs(buf[i1 + 1] - buf[i2 + 1]) +
+      Math.abs(buf[i1 + 2] - buf[i2 + 2]) <=
       tolerance
     );
   };
@@ -257,7 +257,7 @@ function convertToPng(buf: Buffer, format: 'webp' | 'jxl'): Buffer {
   } finally {
     try {
       rmSync(tempDir, { recursive: true, force: true });
-    } catch (e) {}
+    } catch (e) { }
   }
 }
 
@@ -311,9 +311,9 @@ export async function decodePngToBinary(
   let progressBar: any = null;
   if (opts.showProgress) {
     progressBar = {
-      start: () => {},
-      update: () => {},
-      stop: () => {},
+      start: () => { },
+      update: () => { },
+      stop: () => { },
     };
     const startTime = Date.now();
     if (!opts.onProgress) {
@@ -369,7 +369,7 @@ export async function decodePngToBinary(
         if (unpack && unpack.files && unpack.files.length > 0) {
           return { files: unpack.files, correctedErrors: result.correctedErrors };
         }
-      } catch (e) {}
+      } catch (e) { }
 
       return { buf: result.data, correctedErrors: result.correctedErrors };
     } catch (e) {
@@ -399,7 +399,7 @@ export async function decodePngToBinary(
       // Check for rXFL file list after payload
       let fileListJson: string | undefined;
       if (idx + 8 < pcmData.length &&
-          pcmData.subarray(idx, idx + 4).toString('utf8') === 'rXFL') {
+        pcmData.subarray(idx, idx + 4).toString('utf8') === 'rXFL') {
         idx += 4;
         const jsonLen = pcmData.readUInt32BE(idx);
         idx += 4;
@@ -440,7 +440,7 @@ export async function decodePngToBinary(
         if (unpack && unpack.files && unpack.files.length > 0) {
           return { files: unpack.files, meta: { name } };
         }
-      } catch (e) {}
+      } catch (e) { }
 
       return { buf: payload, meta: { name } };
     }
@@ -458,7 +458,7 @@ export async function decodePngToBinary(
         if (unpack && unpack.files && unpack.files.length > 0) {
           return { files: unpack.files, correctedErrors: result.correctedErrors };
         }
-      } catch (e) {}
+      } catch (e) { }
 
       return { buf: result.data, correctedErrors: result.correctedErrors };
     }
@@ -824,7 +824,7 @@ export async function decodePngToBinary(
         if (version === 3) {
           payload = deltaDecode(payload);
         }
-      } catch (e) {}
+      } catch (e) { }
 
       if (!payload.slice(0, MAGIC.length).equals(MAGIC)) {
         throw new DataFormatError(
@@ -977,8 +977,7 @@ export async function decodePngToBinary(
           for (let i = 0; i < Math.min(20, totalPixels); i++) {
             const offset = i * 3;
             first20.push(
-              `(${logicalData[offset]},${logicalData[offset + 1]},${
-                logicalData[offset + 2]
+              `(${logicalData[offset]},${logicalData[offset + 1]},${logicalData[offset + 2]
               })`,
             );
           }
@@ -1091,8 +1090,7 @@ export async function decodePngToBinary(
         ) {
           const offset = i * 3;
           lastLinePixels.push(
-            `(${logicalData[offset]},${logicalData[offset + 1]},${
-              logicalData[offset + 2]
+            `(${logicalData[offset]},${logicalData[offset + 1]},${logicalData[offset + 2]
             })`,
           );
         }
@@ -1221,8 +1219,8 @@ export async function decodePngToBinary(
           if (opts.passphrase)
             throw new IncorrectPassphraseError(
               `Incorrect passphrase (screenshot mode, zstd failed: ` +
-                errMsg +
-                ')',
+              errMsg +
+              ')',
             );
 
           try {
