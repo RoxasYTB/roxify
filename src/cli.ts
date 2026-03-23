@@ -613,7 +613,7 @@ async function encodeCommand(args: string[]) {
 
     console.log(`\nSuccess!`);
     console.log(`  Input:  ${inputSize} MB`);
-    console.log(`  Output: ${outputSize} MB (${saved}% saved)`);    console.log(`  Time:   ${encodeTime}ms`);
+    console.log(`  Output: ${outputSize} MB (${saved}% saved)`); console.log(`  Time:   ${encodeTime}ms`);
     console.log(`  Saved:  ${resolvedOutput}`);
 
     console.log(' ');
