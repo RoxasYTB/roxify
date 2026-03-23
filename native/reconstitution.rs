@@ -1,5 +1,14 @@
-use image::{Rgba, RgbaImage};
+use image::{Rgba, RgbaImage, DynamicImage, ImageReader};
 use std::cmp::min;
+use std::io::Cursor;
+
+fn load_image_no_limits(data: &[u8]) -> Result<DynamicImage, String> {
+    let mut reader = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|e| format!("format guess error: {}", e))?;
+    reader.no_limits();
+    reader.decode().map_err(|e| format!("image decode error: {}", e))
+}
 
 fn color_dist(a: [u8; 4], b: [u8; 4]) -> i32 {
     (a[0] as i32 - b[0] as i32).abs() +
@@ -77,7 +86,7 @@ fn intra_block_transitions_v(
 }
 
 pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
-    let img = image::load_from_memory(png_data).unwrap();
+    let img = load_image_no_limits(png_data)?;
     let rgba = img.to_rgba8();
     let width = rgba.width();
     let height = rgba.height();
@@ -411,13 +420,13 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     let mut output = Vec::new();
-    out.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Png).unwrap();
+    out.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG write error: {}", e))?;
     Ok(output)
 }
 
 pub fn unstretch_nn(png_data: &[u8]) -> Result<Vec<u8>, String> {
-    let img = image::load_from_memory(png_data)
-        .map_err(|e| format!("image load error: {}", e))?;
+    let img = load_image_no_limits(png_data)?;
     let rgba = img.to_rgba8();
     let width = rgba.width() as usize;
     let height = rgba.height() as usize;
