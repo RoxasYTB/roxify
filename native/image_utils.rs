@@ -1,5 +1,13 @@
-use image::{ImageFormat, DynamicImage};
+use image::{ImageFormat, DynamicImage, ImageReader};
 use std::io::Cursor;
+
+fn load_no_limits(input: &[u8]) -> Result<DynamicImage, String> {
+    let mut reader = ImageReader::new(Cursor::new(input))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to guess format: {}", e))?;
+    reader.no_limits();
+    reader.decode().map_err(|e| format!("Failed to load image: {}", e))
+}
 
 pub fn sharp_resize(
     input: &[u8],
@@ -7,8 +15,7 @@ pub fn sharp_resize(
     height: u32,
     kernel: &str,
 ) -> Result<Vec<u8>, String> {
-    let img = image::load_from_memory(input)
-        .map_err(|e| format!("Failed to load image: {}", e))?;
+    let img = load_no_limits(input)?;
 
     let filter = match kernel {
         "nearest" => image::imageops::FilterType::Nearest,
@@ -28,8 +35,7 @@ pub fn sharp_resize(
 }
 
 pub fn sharp_raw_pixels(input: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
-    let img = image::load_from_memory(input)
-        .map_err(|e| format!("Failed to load image: {}", e))?;
+    let img = load_no_limits(input)?;
 
     let rgb = img.to_rgb8();
     let width = rgb.width();
@@ -40,8 +46,7 @@ pub fn sharp_raw_pixels(input: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
 }
 
 pub fn sharp_metadata(input: &[u8]) -> Result<(u32, u32, String), String> {
-    let img = image::load_from_memory(input)
-        .map_err(|e| format!("Failed to load image: {}", e))?;
+    let img = load_no_limits(input)?;
 
     let width = img.width();
     let height = img.height();

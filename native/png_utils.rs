@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use std::io::{Read, Seek, SeekFrom};
+use image::ImageReader;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -176,7 +177,11 @@ fn find_pixel_header(raw: &[u8]) -> Result<usize, String> {
 }
 
 fn decode_to_rgb(png_data: &[u8]) -> Result<Vec<u8>, String> {
-    let img = image::load_from_memory(png_data).map_err(|e| format!("image load error: {}", e))?;
+    let mut reader = ImageReader::new(Cursor::new(png_data))
+        .with_guessed_format()
+        .map_err(|e| format!("format guess error: {}", e))?;
+    reader.no_limits();
+    let img = reader.decode().map_err(|e| format!("image decode error: {}", e))?;
     Ok(img.to_rgb8().into_raw())
 }
 
