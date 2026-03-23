@@ -327,10 +327,10 @@ async function encodeCommand(args) {
                 inputSize = fstatSync(resolvedInputs[0]).size;
             }
             const outputSize = fstatSync(resolvedOutput).size;
-            const ratio = ((outputSize / inputSize) * 100).toFixed(1);
+            const saved = (100 - (outputSize / inputSize) * 100).toFixed(1);
             console.log(`\nSuccess!`);
             console.log(`  Input:  ${(inputSize / 1024 / 1024).toFixed(2)} MB`);
-            console.log(`  Output: ${(outputSize / 1024 / 1024).toFixed(2)} MB (${ratio}% of original)`);
+            console.log(`  Output: ${(outputSize / 1024 / 1024).toFixed(2)} MB (${saved}% saved)`);
             console.log(`  Time:   ${encodeTime}ms`);
             console.log(`  Saved:  ${resolvedOutput}`);
             console.log(' ');
@@ -541,10 +541,10 @@ async function encodeCommand(args) {
         writeFileSync(resolvedOutput, output);
         const outputSize = (output.length / 1024 / 1024).toFixed(2);
         const inputSize = (inputSizeVal / 1024 / 1024).toFixed(2);
-        const ratio = ((output.length / inputSizeVal) * 100).toFixed(1);
+        const saved = (100 - (output.length / inputSizeVal) * 100).toFixed(1);
         console.log(`\nSuccess!`);
         console.log(`  Input:  ${inputSize} MB`);
-        console.log(`  Output: ${outputSize} MB (${ratio}% of original)`);
+        console.log(`  Output: ${outputSize} MB (${saved}% saved)`);
         console.log(`  Time:   ${encodeTime}ms`);
         console.log(`  Saved:  ${resolvedOutput}`);
         console.log(' ');

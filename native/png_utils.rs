@@ -142,8 +142,19 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
             return Ok(payload);
         }
     }
-    let reconst = crate::reconstitution::crop_and_reconstitute(png_data)?;
-    extract_payload_direct(&reconst)
+    if let Ok(reconst) = crate::reconstitution::crop_and_reconstitute(png_data) {
+        if let Ok(payload) = extract_payload_direct(&reconst) {
+            if validate_payload_deep(&payload) {
+                return Ok(payload);
+            }
+        }
+    }
+    let unstretched = crate::reconstitution::unstretch_nn(png_data)?;
+    let payload = extract_payload_direct(&unstretched)?;
+    if validate_payload_deep(&payload) {
+        return Ok(payload);
+    }
+    Err("No valid payload found after all extraction attempts".to_string())
 }
 
 fn validate_payload_deep(payload: &[u8]) -> bool {

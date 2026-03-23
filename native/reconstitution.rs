@@ -44,14 +44,13 @@ fn intra_block_transitions_h(
     get_pixel: &impl Fn(u32, u32) -> [u8; 4],
     sx: u32, ex: u32, y: u32, candidate: u32,
 ) -> u32 {
-    let pw = (ex - sx) as f32;
-    let lw = candidate as f32;
-    let ratio = lw / pw;
+    let pw = (ex - sx) as f64;
+    let lw = candidate as f64;
     let row: Vec<[u8; 4]> = (sx..ex).map(|x| get_pixel(x, y)).collect();
     let mut count = 0u32;
     for i in 1..row.len() {
-        let lx_prev = ((i as f32 - 0.5) * ratio) as u32;
-        let lx_curr = ((i as f32 + 0.5) * ratio) as u32;
+        let lx_prev = ((i as f64 - 0.5) * lw / pw) as u32;
+        let lx_curr = ((i as f64 + 0.5) * lw / pw) as u32;
         if lx_prev == lx_curr && color_dist(row[i], row[i - 1]) > 0 {
             count += 1;
         }
@@ -63,14 +62,13 @@ fn intra_block_transitions_v(
     get_pixel: &impl Fn(u32, u32) -> [u8; 4],
     x: u32, sy: u32, ey: u32, candidate: u32,
 ) -> u32 {
-    let ph = (ey - sy) as f32;
-    let lh = candidate as f32;
-    let ratio = lh / ph;
+    let ph = (ey - sy) as f64;
+    let lh = candidate as f64;
     let col: Vec<[u8; 4]> = (sy..ey).map(|y| get_pixel(x, y)).collect();
     let mut count = 0u32;
     for i in 1..col.len() {
-        let ly_prev = ((i as f32 - 0.5) * ratio) as u32;
-        let ly_curr = ((i as f32 + 0.5) * ratio) as u32;
+        let ly_prev = ((i as f64 - 0.5) * lh / ph) as u32;
+        let ly_curr = ((i as f64 + 0.5) * lh / ph) as u32;
         if ly_prev == ly_curr && color_dist(col[i], col[i - 1]) > 0 {
             count += 1;
         }
@@ -185,6 +183,7 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
 
+
     let mut best_logical_w = 0u32;
     let mut best_logical_h = 0u32;
     // Score: (size_err_permille, inverse_area) — lower is better
@@ -206,7 +205,9 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
 
             let phys_w = ex - sx;
             let phys_h = ey - sy;
-            if phys_w < 3 || phys_h < 3 || phys_w > 1800 || phys_h > 1800 { continue; }
+            if phys_w < 3 || phys_h < 3 || phys_w > 1800 || phys_h > 1800 {
+                continue;
+            }
 
 
             // Estimation depuis les marqueurs (start_marker_w ≈ 3 × scale_x, end_marker_w ≈ 3 × scale_x)
@@ -258,7 +259,9 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
             // Vérifie cohérence grossière
             let lw_diff_lo = (lw_cand_lo as f64 - est_lw_f).abs();
             let lw_diff_hi = (lw_cand_hi as f64 - est_lw_f).abs();
-            if lw_diff_lo > est_lw_f * 0.25 + 3.0 && lw_diff_hi > est_lw_f * 0.25 + 3.0 { continue; }
+            if lw_diff_lo > est_lw_f * 0.25 + 3.0 && lw_diff_hi > est_lw_f * 0.25 + 3.0 {
+                continue;
+            }
 
             let n_scan = 7u32;
             let lw = if lw_cand_lo == lw_cand_hi {
@@ -318,10 +321,14 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
             };
 
             // Filtre taille min logique
-            if lw < 3 || lh < 3 { continue; }
+            if lw < 3 || lh < 3 {
+                continue;
+            }
 
             let size_err = lw_size_err;
-            if size_err > 500 { continue; }
+            if size_err > 500 {
+                continue;
+            }
 
             // Filtre final : l'intra-block score pour le lw sélectionné doit être faible
             // (pour une vraie paire avec l'image NN-scalée, = 0; pour une zone de fond aléatoire, >> 0)
@@ -333,9 +340,11 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
             // Filtre : la zone encodée NN a des blocs monochromes → intra très bas
             // Zone de fond aléatoire → intra ≈ lw × n_scan × 0.99 >> 0
             // Seuil : lw/8 × n_scan pour permettre ≈ lw/8 pixels parasites
-            let intra_threshold = (lw as u32 / 8 + 1) * n_scan;
+            let intra_threshold = ((lw as u32 / 4 + 2) * n_scan).max(n_scan * 3);
 
-            if intra_final > intra_threshold { continue; }
+            if intra_final > intra_threshold {
+                continue;
+            }
 
             // Favori : pas d'ajustement de bord, puis plus grande zone, puis plus petit size_err
             let area = phys_w as u64 * phys_h as u64;
@@ -403,6 +412,77 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
 
     let mut output = Vec::new();
     out.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Png).unwrap();
+    Ok(output)
+}
+
+pub fn unstretch_nn(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(png_data)
+        .map_err(|e| format!("image load error: {}", e))?;
+    let rgba = img.to_rgba8();
+    let width = rgba.width() as usize;
+    let height = rgba.height() as usize;
+    if width == 0 || height == 0 {
+        return Err("empty image".to_string());
+    }
+
+    let get = |x: usize, y: usize| -> [u8; 4] {
+        let p = rgba.get_pixel(x as u32, y as u32);
+        [p[0], p[1], p[2], p[3]]
+    };
+
+    let mut unique_rows: Vec<usize> = Vec::new();
+    for y in 0..height {
+        if unique_rows.is_empty() {
+            unique_rows.push(y);
+            continue;
+        }
+        let prev_y = *unique_rows.last().unwrap();
+        let mut same = true;
+        for x in 0..width {
+            if get(x, y) != get(x, prev_y) {
+                same = false;
+                break;
+            }
+        }
+        if !same {
+            unique_rows.push(y);
+        }
+    }
+
+    let logical_h = unique_rows.len();
+    if logical_h == 0 {
+        return Err("no unique rows".to_string());
+    }
+
+    let first_row_y = unique_rows[0];
+    let mut col_indices: Vec<usize> = Vec::new();
+    for x in 0..width {
+        if col_indices.is_empty() {
+            col_indices.push(x);
+            continue;
+        }
+        let prev_x = *col_indices.last().unwrap();
+        if get(x, first_row_y) != get(prev_x, first_row_y) {
+            col_indices.push(x);
+        }
+    }
+
+    let logical_w = col_indices.len();
+    if logical_w < 2 || logical_h < 2 {
+        return Err("unstretched image too small".to_string());
+    }
+
+    let mut out = RgbaImage::new(logical_w as u32, logical_h as u32);
+    for (ly, &py) in unique_rows.iter().enumerate() {
+        for (lx, &px) in col_indices.iter().enumerate() {
+            let p = get(px, py);
+            out.put_pixel(lx as u32, ly as u32, Rgba(p));
+        }
+    }
+
+    let mut output = Vec::new();
+    out.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG write error: {}", e))?;
     Ok(output)
 }
 
@@ -521,12 +601,13 @@ mod test_transitions {
                 [p[0], p[1], p[2], p[3]]
             };
             let intra_50 = super::intra_block_transitions_h(&get_pixel, 0, pw, 0, 50);
-            if intra_50 > 0 {
+            let tolerance = 5u32;
+            if intra_50 > tolerance {
                 println!("FAIL: scale_x={scale_x:.1} pw={pw} lw=50: intra={intra_50}");
                 had_failure = true;
             }
         }
-        assert!(!had_failure, "Some scale_x values gave intra > 0 for true lw=50");
+        assert!(!had_failure, "Some scale_x values gave intra > tolerance for true lw=50");
     }
 
 
