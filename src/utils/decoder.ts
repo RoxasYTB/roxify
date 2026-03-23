@@ -1510,6 +1510,31 @@ export async function decodePngToBinary(
     ) {
       throw e;
     }
+
+    try {
+      const rawPayload = Buffer.from(native.extractPayloadFromPng(processedBuf));
+      let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
+      payload = await tryDecompress(payload, (info) => {
+        if (opts.onProgress) opts.onProgress(info);
+      });
+      if (!payload.slice(0, MAGIC.length).equals(MAGIC)) {
+        throw new DataFormatError('Missing ROX1 magic after native extraction');
+      }
+      payload = payload.slice(MAGIC.length);
+      const nameFromPng = native.extractNameFromPng
+        ? (() => { try { return native.extractNameFromPng(processedBuf); } catch { return undefined; } })()
+        : undefined;
+      return { buf: payload, meta: { name: nameFromPng } };
+    } catch (nativeErr) {
+      if (
+        nativeErr instanceof PassphraseRequiredError ||
+        nativeErr instanceof IncorrectPassphraseError ||
+        nativeErr instanceof DataFormatError
+      ) {
+        throw nativeErr;
+      }
+    }
+
     const errMsg = e instanceof Error ? e.message : String(e);
     throw new Error('Failed to decode PNG: ' + errMsg);
   }

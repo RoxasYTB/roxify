@@ -391,6 +391,20 @@ pub fn crop_and_reconstitute(png_buffer: Buffer) -> Result<Vec<u8>> {
 
 #[cfg(not(test))]
 #[napi]
+pub fn unstretch_nn(png_buffer: Buffer) -> Result<Vec<u8>> {
+    reconstitution::unstretch_nn(&png_buffer)
+        .map_err(|e| Error::from_reason(e))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn extract_payload_from_png(png_buffer: Buffer) -> Result<Vec<u8>> {
+    png_utils::extract_payload_from_png(&png_buffer)
+        .map_err(|e| Error::from_reason(e))
+}
+
+#[cfg(not(test))]
+#[napi]
 pub fn extract_file_list_from_pixels(png_buffer: Buffer) -> Result<String> {
     png_utils::extract_file_list_from_pixels(&png_buffer)
         .map_err(|e| Error::from_reason(e))
