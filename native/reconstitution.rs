@@ -349,7 +349,7 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
             // Filtre : la zone encodée NN a des blocs monochromes → intra très bas
             // Zone de fond aléatoire → intra ≈ lw × n_scan × 0.99 >> 0
             // Seuil : lw/8 × n_scan pour permettre ≈ lw/8 pixels parasites
-            let intra_threshold = ((lw as u32 / 4 + 2) * n_scan).max(n_scan * 3);
+            let intra_threshold = ((lw as u32 / 2 + 3) * n_scan).max(n_scan * 3);
 
             if intra_final > intra_threshold {
                 continue;
