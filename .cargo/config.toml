@@ -1,6 +1,8 @@
 [build]
 target-dir = "target"
 
-# Use target-cpu=native only for local dev builds.
-# For release/distribution builds, omit this or use a portable target.
-# rustflags = ["-C", "target-cpu=native"]
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
