@@ -96,6 +96,15 @@ jobs:
         run: |
           cargo build --release --lib --no-default-features --target ${{ matrix.target }}
 
+      # ── Build CLI binary (macOS + Linux x64) ──
+      - name: Build CLI binary
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-apple-darwin' || matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+        run: |
+          cargo build --release --bin roxify_native --target ${{ matrix.target }} || true
+
       # ── Strip (Unix only) ──
       - name: Strip binary
         if: runner.os != 'Windows'
@@ -104,6 +113,10 @@ jobs:
           BIN=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
           if [ -f "$BIN" ]; then
             strip "$BIN" 2>/dev/null || true
+          fi
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            strip "$CLI" 2>/dev/null || true
           fi
 
       # ── Prepare artifacts ──
@@ -118,8 +131,23 @@ jobs:
           fi
           DEST=artifacts/roxify_native-${{ matrix.target }}.node
           cp "$SRC" "$DEST"
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            cp "$CLI" artifacts/roxify_native-${{ matrix.target }}
+          fi
           ls -lh artifacts/
           echo "Built $DEST ($(wc -c < "$DEST") bytes)"
+
+      - name: Smoke test CLI (macOS)
+        if: runner.os == 'macOS' && (matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-apple-darwin')
+        shell: bash
+        run: |
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            chmod +x "$CLI"
+            "$CLI" --help
+            echo "CLI smoke test passed for ${{ matrix.target }}"
+          fi
 
       - name: Run smoke tests (native only, skip cross-compiled)
         if: matrix.crossPkgs == ''
@@ -132,7 +160,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
-          path: artifacts/*.node
+          path: artifacts/*
           retention-days: 30
 
   # ── Merge all artifacts into a single download ──
