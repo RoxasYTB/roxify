@@ -146,23 +146,27 @@ jobs:
             echo "CLI smoke test passed for ${{ matrix.target }}"
           fi
 
-      - uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: release/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
           path: release/*
           retention-days: 30
 
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          for f in release/*; do
+            gh release upload "${{ github.event.release.tag_name }}" "$f" --clobber || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ── Create macOS universal binary ──
   universal-macos:
     name: Create macOS Universal Binary
     needs: build-and-upload
+    if: always() && !cancelled()
     runs-on: macos-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -208,25 +212,28 @@ jobs:
             echo "Universal CLI smoke test passed"
           fi
 
-      - uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: release/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: actions/upload-artifact@v4
         with:
           name: release-universal-apple-darwin
           path: release/*
           retention-days: 30
 
+      - name: Upload universal binary to GitHub Release
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          for f in release/*; do
+            gh release upload "${{ github.event.release.tag_name }}" "$f" --clobber || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ── Publish to npm with all binaries ──
   publish:
     name: Publish to npm
     needs: [build-and-upload, universal-macos]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: always() && !cancelled() && github.event_name == 'release'
     steps:
       - uses: actions/checkout@v4
 
