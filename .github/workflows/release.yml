@@ -135,6 +135,17 @@ jobs:
           fi
           ls -lh release/
 
+      - name: Smoke test CLI (macOS)
+        if: runner.os == 'macOS' && (matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-apple-darwin')
+        shell: bash
+        run: |
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            chmod +x "$CLI"
+            "$CLI" --help
+            echo "CLI smoke test passed for ${{ matrix.target }}"
+          fi
+
       - uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
@@ -148,10 +159,72 @@ jobs:
           path: release/*
           retention-days: 30
 
+  # ── Create macOS universal binary ──
+  universal-macos:
+    name: Create macOS Universal Binary
+    needs: build-and-upload
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-aarch64-apple-darwin
+          path: macos-bins
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-x86_64-apple-darwin
+          path: macos-bins
+
+      - name: Create universal CLI binary
+        run: |
+          mkdir -p release
+          ARM=macos-bins/roxify_native-aarch64-apple-darwin
+          X86=macos-bins/roxify_native-x86_64-apple-darwin
+          if [ -f "$ARM" ] && [ -f "$X86" ]; then
+            lipo -create -output release/rox-macos-universal "$ARM" "$X86"
+            chmod +x release/rox-macos-universal
+            file release/rox-macos-universal
+            cp release/rox-macos-universal release/roxify_native-universal-apple-darwin
+            chmod +x release/roxify_native-universal-apple-darwin
+            echo "Universal binary created successfully"
+          else
+            echo "Warning: one or both macOS CLI binaries not found, skipping universal"
+            ls -lhR macos-bins/
+          fi
+
+      - name: Create universal .node module
+        run: |
+          ARM_NODE=macos-bins/roxify_native-aarch64-apple-darwin.node
+          X86_NODE=macos-bins/roxify_native-x86_64-apple-darwin.node
+          if [ -f "$ARM_NODE" ] && [ -f "$X86_NODE" ]; then
+            lipo -create -output release/roxify_native-universal-apple-darwin.node "$ARM_NODE" "$X86_NODE"
+            echo "Universal .node module created"
+          fi
+
+      - name: Smoke test universal binary
+        run: |
+          if [ -f release/rox-macos-universal ]; then
+            ./release/rox-macos-universal --help
+            echo "Universal CLI smoke test passed"
+          fi
+
+      - uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-universal-apple-darwin
+          path: release/*
+          retention-days: 30
+
   # ── Publish to npm with all binaries ──
   publish:
     name: Publish to npm
-    needs: build-and-upload
+    needs: [build-and-upload, universal-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -170,18 +243,34 @@ jobs:
           pattern: release-*
           merge-multiple: true
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-universal-apple-darwin
+          path: native-binaries
+        continue-on-error: true
+
       - name: Copy all native binaries to package root
         run: |
           cp native-binaries/*.node . 2>/dev/null || true
           mkdir -p dist
-          # Copy Windows CLI binary
           if [ -f native-binaries/roxify_native-x86_64-pc-windows-msvc.exe ]; then
             cp native-binaries/roxify_native-x86_64-pc-windows-msvc.exe dist/roxify_native.exe
           fi
-          # Copy Linux CLI binary
           if [ -f native-binaries/roxify_native-x86_64-unknown-linux-gnu ]; then
             cp native-binaries/roxify_native-x86_64-unknown-linux-gnu dist/roxify_native
             chmod +x dist/roxify_native
+          fi
+          if [ -f native-binaries/roxify_native-aarch64-apple-darwin ]; then
+            cp native-binaries/roxify_native-aarch64-apple-darwin dist/roxify_native-macos-arm64
+            chmod +x dist/roxify_native-macos-arm64
+          fi
+          if [ -f native-binaries/roxify_native-x86_64-apple-darwin ]; then
+            cp native-binaries/roxify_native-x86_64-apple-darwin dist/roxify_native-macos-x64
+            chmod +x dist/roxify_native-macos-x64
+          fi
+          if [ -f native-binaries/rox-macos-universal ]; then
+            cp native-binaries/rox-macos-universal dist/rox-macos-universal
+            chmod +x dist/rox-macos-universal
           fi
           ls -lh *.node dist/
 

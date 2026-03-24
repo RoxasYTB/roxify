@@ -43,5 +43,25 @@ for (const t of targets) {
   }
 }
 
+const cliBinaries = [
+  { triple: 'x86_64-unknown-linux-gnu', bin: 'roxify_native' },
+  { triple: 'x86_64-apple-darwin', bin: 'roxify_native' },
+  { triple: 'aarch64-apple-darwin', bin: 'roxify_native' },
+  { triple: 'x86_64-pc-windows-msvc', bin: 'roxify_native.exe' },
+];
+
+for (const c of cliBinaries) {
+  const src = join(root, 'target', c.triple, profile, c.bin);
+  const dest = join(releaseDir, `roxify_native-${c.triple}${c.bin.endsWith('.exe') ? '.exe' : ''}`);
+  try {
+    if (existsSync(src)) {
+      copyFileSync(src, dest);
+      console.log(`✓ CLI ${src} → ${dest}`);
+    }
+  } catch (e) {
+    console.error('CLI copy error:', e.message || e);
+  }
+}
+
 console.log('\nRelease artifacts prepared in release/');
 process.exit(0);

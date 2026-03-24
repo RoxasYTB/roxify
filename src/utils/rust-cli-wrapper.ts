@@ -15,10 +15,12 @@ if (typeof __dirname !== 'undefined') {
 }
 
 function findRustBinary(): string | null {
-  const binNames =
-    process.platform === 'win32'
-      ? ['roxify_native.exe', 'roxify-cli.exe', 'roxify_cli.exe']
-      : ['roxify_native', 'roxify-cli', 'roxify_cli'];
+  const platformBins: Record<string, string[]> = {
+    win32: ['roxify_native.exe', 'roxify-cli.exe', 'roxify_cli.exe'],
+    darwin: ['rox-macos-universal', 'roxify_native-macos-arm64', 'roxify_native-macos-x64', 'roxify_native', 'roxify-cli', 'roxify_cli'],
+    linux: ['roxify_native', 'roxify-cli', 'roxify_cli'],
+  };
+  const binNames = platformBins[process.platform] || platformBins.linux;
 
   const baseDir = moduleDir;
 
