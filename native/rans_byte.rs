@@ -106,10 +106,10 @@ impl SymbolStats {
     }
 }
 
+#[inline(always)]
 fn rans_enc_put(state: &mut u32, buf: &mut Vec<u8>, start: u32, freq: u32) {
-    let x = *state;
     let x_max = ((RANS_BYTE_L >> PROB_BITS) << 8) * freq;
-    let mut x = x;
+    let mut x = *state;
     while x >= x_max {
         buf.push((x & 0xFF) as u8);
         x >>= 8;
@@ -117,7 +117,22 @@ fn rans_enc_put(state: &mut u32, buf: &mut Vec<u8>, start: u32, freq: u32) {
     *state = ((x / freq) << PROB_BITS) + (x % freq) + start;
 }
 
-fn rans_dec_init(data: &[u8], pos: &mut usize) -> u32 {
+#[inline(always)]
+fn rans_dec_renorm(state: &mut u32, data: &[u8], pos: &mut usize) {
+    while *state < RANS_BYTE_L && *pos < data.len() {
+        *state = (*state << 8) | (data[*pos] as u32);
+        *pos += 1;
+    }
+}
+
+fn write_state(out: &mut Vec<u8>, state: u32) {
+    out.push((state >> 24) as u8);
+    out.push(((state >> 16) & 0xFF) as u8);
+    out.push(((state >> 8) & 0xFF) as u8);
+    out.push((state & 0xFF) as u8);
+}
+
+fn read_state(data: &[u8], pos: &mut usize) -> u32 {
     let s = (data[*pos] as u32) << 24
         | (data[*pos + 1] as u32) << 16
         | (data[*pos + 2] as u32) << 8
@@ -126,18 +141,48 @@ fn rans_dec_init(data: &[u8], pos: &mut usize) -> u32 {
     s
 }
 
-fn rans_dec_renorm(state: &mut u32, data: &[u8], pos: &mut usize) {
-    while *state < RANS_BYTE_L && *pos < data.len() {
-        *state = (*state << 8) | (data[*pos] as u32);
-        *pos += 1;
-    }
-}
-
 pub fn rans_encode_block(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     if data.is_empty() {
         return Vec::new();
     }
 
+    if data.len() < 8 {
+        return rans_encode_single(data, stats);
+    }
+
+    let mut s0: u32 = RANS_BYTE_L;
+    let mut s1: u32 = RANS_BYTE_L;
+    let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 32);
+
+    let len = data.len();
+    let even_start = if len % 2 == 0 { len } else { len - 1 };
+
+    if len % 2 != 0 {
+        let sym = data[len - 1] as usize;
+        rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym]);
+    }
+
+    let mut i = even_start;
+    while i >= 2 {
+        i -= 2;
+        let sym1 = data[i + 1] as usize;
+        rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym1], stats.freqs[sym1]);
+        let sym0 = data[i] as usize;
+        rans_enc_put(&mut s0, &mut rev_bytes, stats.cum_freqs[sym0], stats.freqs[sym0]);
+    }
+
+    let mut output = Vec::with_capacity(9 + rev_bytes.len());
+    output.push(1);
+    write_state(&mut output, s0);
+    write_state(&mut output, s1);
+
+    for &b in rev_bytes.iter().rev() {
+        output.push(b);
+    }
+    output
+}
+
+fn rans_encode_single(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     let mut state: u32 = RANS_BYTE_L;
     let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 16);
 
@@ -146,11 +191,9 @@ pub fn rans_encode_block(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
         rans_enc_put(&mut state, &mut rev_bytes, stats.cum_freqs[s], stats.freqs[s]);
     }
 
-    let mut output = Vec::with_capacity(4 + rev_bytes.len());
-    output.push((state >> 24) as u8);
-    output.push(((state >> 16) & 0xFF) as u8);
-    output.push(((state >> 8) & 0xFF) as u8);
-    output.push((state & 0xFF) as u8);
+    let mut output = Vec::with_capacity(5 + rev_bytes.len());
+    output.push(0);
+    write_state(&mut output, state);
 
     for &b in rev_bytes.iter().rev() {
         output.push(b);
@@ -159,19 +202,30 @@ pub fn rans_encode_block(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
 }
 
 pub fn rans_decode_block(encoded: &[u8], stats: &SymbolStats, output_len: usize) -> Result<Vec<u8>> {
-    if encoded.len() < 4 {
+    if encoded.is_empty() {
         return Err(anyhow::anyhow!("Data too short"));
     }
 
-    let mut cum2sym = vec![0u8; PROB_SCALE as usize];
+    let mut cum2sym = [0u8; PROB_SCALE as usize];
     for s in 0..256usize {
-        for slot in (stats.cum_freqs[s] as usize)..(stats.cum_freqs[s + 1] as usize) {
-            cum2sym[slot] = s as u8;
+        let start = stats.cum_freqs[s] as usize;
+        let end = stats.cum_freqs[s + 1] as usize;
+        if end > start {
+            cum2sym[start..end].fill(s as u8);
         }
     }
 
-    let mut pos = 0usize;
-    let mut state = rans_dec_init(encoded, &mut pos);
+    let mode = encoded[0];
+    let mut pos = 1usize;
+
+    if mode == 1 && output_len >= 8 {
+        return rans_decode_interleaved(encoded, &cum2sym, stats, output_len, &mut pos);
+    }
+
+    if pos + 4 > encoded.len() {
+        return Err(anyhow::anyhow!("Data too short"));
+    }
+    let mut state = read_state(encoded, &mut pos);
     let mut output = Vec::with_capacity(output_len);
 
     for _ in 0..output_len {
@@ -184,6 +238,48 @@ pub fn rans_decode_block(encoded: &[u8], stats: &SymbolStats, output_len: usize)
         state = freq * (state >> PROB_BITS) + slot - start;
 
         rans_dec_renorm(&mut state, encoded, &mut pos);
+    }
+
+    Ok(output)
+}
+
+fn rans_decode_interleaved(
+    encoded: &[u8],
+    cum2sym: &[u8; PROB_SCALE as usize],
+    stats: &SymbolStats,
+    output_len: usize,
+    pos: &mut usize,
+) -> Result<Vec<u8>> {
+    if *pos + 8 > encoded.len() {
+        return Err(anyhow::anyhow!("Data too short for interleaved"));
+    }
+    let mut s0 = read_state(encoded, pos);
+    let mut s1 = read_state(encoded, pos);
+    let mut output = Vec::with_capacity(output_len);
+
+    let pairs = output_len / 2;
+    for _ in 0..pairs {
+        let slot0 = s0 & (PROB_SCALE - 1);
+        let sym0 = cum2sym[slot0 as usize];
+        output.push(sym0);
+        let freq0 = stats.freqs[sym0 as usize];
+        let start0 = stats.cum_freqs[sym0 as usize];
+        s0 = freq0 * (s0 >> PROB_BITS) + slot0 - start0;
+        rans_dec_renorm(&mut s0, encoded, pos);
+
+        let slot1 = s1 & (PROB_SCALE - 1);
+        let sym1 = cum2sym[slot1 as usize];
+        output.push(sym1);
+        let freq1 = stats.freqs[sym1 as usize];
+        let start1 = stats.cum_freqs[sym1 as usize];
+        s1 = freq1 * (s1 >> PROB_BITS) + slot1 - start1;
+        rans_dec_renorm(&mut s1, encoded, pos);
+    }
+
+    if output_len % 2 != 0 {
+        let slot = s1 & (PROB_SCALE - 1);
+        let sym = cum2sym[slot as usize];
+        output.push(sym);
     }
 
     Ok(output)
