@@ -1,0 +1,111 @@
+name: Release macOS CLI Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload binaries to (e.g. v1.11.0)'
+        required: true
+        default: 'v1.11.0'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-macos-cli:
+    name: Build CLI ${{ matrix.target }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-cli-${{ matrix.target }}
+
+      - name: Build CLI binary
+        run: |
+          cargo build --release --bin roxify_native --target ${{ matrix.target }}
+          CLI="target/${{ matrix.target }}/release/roxify_native"
+          if [ ! -f "$CLI" ]; then
+            echo "ERROR: CLI binary not found at $CLI"
+            exit 1
+          fi
+          strip "$CLI"
+          chmod +x "$CLI"
+          file "$CLI"
+
+      - name: Smoke test
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          target/${{ matrix.target }}/release/roxify_native --help
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p release
+          cp "target/${{ matrix.target }}/release/roxify_native" "release/roxify_native-${{ matrix.target }}"
+          chmod +x "release/roxify_native-${{ matrix.target }}"
+          ls -lh release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-cli-${{ matrix.target }}
+          path: release/*
+          retention-days: 30
+
+  universal-and-upload:
+    name: Create Universal & Upload to Release
+    needs: build-macos-cli
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-cli-aarch64-apple-darwin
+          path: bins
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-cli-x86_64-apple-darwin
+          path: bins
+
+      - name: Create universal binary
+        run: |
+          mkdir -p release
+          ARM="bins/roxify_native-aarch64-apple-darwin"
+          X86="bins/roxify_native-x86_64-apple-darwin"
+          chmod +x "$ARM" "$X86"
+          lipo -create -output release/roxify_native-universal-apple-darwin "$ARM" "$X86"
+          chmod +x release/roxify_native-universal-apple-darwin
+          file release/roxify_native-universal-apple-darwin
+          cp "$ARM" release/
+          cp "$X86" release/
+          ls -lh release/
+
+      - name: Upload to GitHub Release
+        shell: bash
+        run: |
+          for f in release/*; do
+            echo "Uploading $f to ${{ github.event.inputs.tag }}..."
+            gh release upload "${{ github.event.inputs.tag }}" "$f" --clobber || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

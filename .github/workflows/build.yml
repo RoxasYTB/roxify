@@ -103,7 +103,7 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
         run: |
-          cargo build --release --bin roxify_native --target ${{ matrix.target }} || true
+          cargo build --release --bin roxify_native --target ${{ matrix.target }}
 
       # ── Strip (Unix only) ──
       - name: Strip binary
