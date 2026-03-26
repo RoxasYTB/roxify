@@ -9,7 +9,9 @@ mod core;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod rans;
+mod rans_byte;
 mod bwt;
+mod mtf;
 mod context_mixing;
 mod pool;
 mod hybrid;
@@ -150,17 +152,18 @@ pub fn entropy_estimate(buffer: Buffer) -> f32 {
 
 #[cfg(not(test))]
 #[napi]
-pub fn hybrid_compress(buffer: Buffer) -> Result<Vec<u8>> {
+pub fn hybrid_compress(buffer: Buffer) -> Result<Buffer> {
     match hybrid::compress_high_performance(&buffer) {
-        Ok((compressed, _stats)) => Ok(compressed),
+        Ok((compressed, _stats)) => Ok(Buffer::from(compressed)),
         Err(e) => Err(Error::from_reason(e.to_string())),
     }
 }
 
 #[cfg(not(test))]
 #[napi]
-pub fn hybrid_decompress(buffer: Buffer) -> Result<Vec<u8>> {
+pub fn hybrid_decompress(buffer: Buffer) -> Result<Buffer> {
     hybrid::decompress_high_performance(&buffer)
+        .map(Buffer::from)
         .map_err(|e| Error::from_reason(e.to_string()))
 }
 

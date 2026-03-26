@@ -19,6 +19,7 @@ export const MARKER_START = MARKER_COLORS;
 export const MARKER_END = [...MARKER_COLORS].reverse();
 export const COMPRESSION_MARKERS = {
   zstd: [{ r: 0, g: 255, b: 0 }],
+  'bwt-ans': [{ r: 0, g: 128, b: 255 }],
 };
 
 export const FORMAT_MARKERS = {

@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.9.8"
+version = "1.10.1"
 edition = "2021"
 publish = false
 
@@ -12,6 +12,18 @@ path = "native/lib.rs"
 [[bin]]
 name = "roxify_native"
 path = "native/main.rs"
+
+[[bin]]
+name = "bench_hybrid"
+path = "native/bench_hybrid.rs"
+
+[[bin]]
+name = "test_stages"
+path = "native/test_stages.rs"
+
+[[bin]]
+name = "test_small_bwt"
+path = "native/test_small_bwt.rs"
 
 [dev-dependencies]
 
@@ -43,6 +55,7 @@ bytemuck = { version = "1.14", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "rt"], optional = true }
 parking_lot = "0.12"
 pollster = { version = "0.3", optional = true }
+libsais = { version = "0.2.0", default-features = false }
 
 [features]
 # default is intentionally empty so the crate compiles fast for local checks.
@@ -79,4 +92,3 @@ codegen-units = 16
 debug = false
 incremental = true
 panic = "abort"
-
