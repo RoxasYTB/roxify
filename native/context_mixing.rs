@@ -1,5 +1,3 @@
-use rayon::prelude::*;
-
 #[derive(Clone, Copy, Debug)]
 pub struct ProbabilityEstimate {
     pub p0: u32,
@@ -91,26 +89,25 @@ impl ContextMixer {
 }
 
 pub fn analyze_entropy(data: &[u8]) -> f32 {
-    let freq: Vec<u32> = {
-        let mut f = vec![0u32; 256];
-        for &byte in data {
-            f[byte as usize] += 1;
-        }
-        f
-    };
+    let mut freq = [0u32; 256];
+    for &byte in data {
+        freq[byte as usize] += 1;
+    }
 
-    let total: u32 = freq.iter().sum();
-    if total == 0 {
+    let total = data.len() as f32;
+    if total == 0.0 {
         return 0.0;
     }
 
-    freq.par_iter()
-        .filter(|&&f| f > 0)
-        .map(|&f| {
-            let p = (f as f32) / (total as f32);
-            -p * p.log2()
-        })
-        .sum()
+    let inv_total = 1.0 / total;
+    let mut entropy = 0.0f32;
+    for &f in &freq {
+        if f > 0 {
+            let p = f as f32 * inv_total;
+            entropy -= p * p.log2();
+        }
+    }
+    entropy
 }
 
 pub fn estimate_compression_gain(original: &[u8], entropy_bits: f32) -> f64 {
