@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 
 import {
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    statSync,
+    writeFileSync,
 } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import {
-  DataFormatError,
-  decodePngToBinary,
-  encodeBinaryToPng,
-  hasPassphraseInPng,
-  IncorrectPassphraseError,
-  listFilesInPng,
-  PassphraseRequiredError,
+    DataFormatError,
+    decodePngToBinary,
+    encodeBinaryToPng,
+    hasPassphraseInPng,
+    IncorrectPassphraseError,
+    listFilesInPng,
+    PassphraseRequiredError,
 } from './index.js';
 import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
 import * as cliProgress from './stub-progress.js';
 import {
-  encodeWithRustCLI,
-  isRustBinaryAvailable,
+    encodeWithRustCLI,
+    isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
 const VERSION = '1.9.2';
@@ -95,6 +95,7 @@ Commands:
 Options:
   --image                   Use PNG container (default)
   --sound                   Use WAV audio container (smaller overhead, faster)
+  --bwt-ans                 Use BWT-ANS compression instead of Zstd
   -p, --passphrase <pass>   Use passphrase (AES-256-GCM)
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
@@ -159,6 +160,9 @@ function parseArgs(args: string[]) {
         i++;
       } else if (key === 'force-ts') {
         parsed.forceTs = true;
+        i++;
+      } else if (key === 'bwt-ans') {
+        parsed.compression = 'bwt-ans';
         i++;
       } else if (key === 'lossy-resilient') {
         parsed.lossyResilient = true;
@@ -320,7 +324,7 @@ async function encodeCommand(args: string[]) {
     anyInputDir = false;
   }
 
-  if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound') {
+  if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound' && parsed.compression !== 'bwt-ans') {
     try {
       console.log(
         `Encoding to ${resolvedOutput} (Using native Rust encoder)\n`,
@@ -458,6 +462,7 @@ async function encodeCommand(args: string[]) {
     if (parsed.verbose) options.verbose = true;
 
     if (parsed.noCompress) options.compression = 'none';
+    if (parsed.compression === 'bwt-ans') options.compression = 'bwt-ans';
     if (parsed.passphrase) {
       options.passphrase = parsed.passphrase;
       options.encrypt = parsed.encrypt || 'aes';

@@ -3,16 +3,16 @@ import * as zlib from 'zlib';
 import { unpackBuffer } from '../pack.js';
 import { bytesToWav } from './audio.js';
 import {
-  COMPRESSION_MARKERS,
-  ENC_AES,
-  ENC_NONE,
-  ENC_XOR,
-  MAGIC,
-  MARKER_END,
-  MARKER_START,
-  PIXEL_MAGIC,
-  PIXEL_MAGIC_BLOCK,
-  PNG_HEADER,
+    COMPRESSION_MARKERS,
+    ENC_AES,
+    ENC_NONE,
+    ENC_XOR,
+    MAGIC,
+    MARKER_END,
+    MARKER_START,
+    PIXEL_MAGIC,
+    PIXEL_MAGIC_BLOCK,
+    PNG_HEADER,
 } from './constants.js';
 import { crc32 } from './crc.js';
 import { colorsToBytes } from './helpers.js';
@@ -105,7 +105,8 @@ export async function encodeBinaryToPng(
   if (
     typeof native.nativeEncodePngWithNameAndFilelist === 'function' &&
     opts.includeFileList &&
-    opts.fileList
+    opts.fileList &&
+    opts.compression !== 'bwt-ans'
   ) {
     const fileName = opts.name || undefined;
     const inputBuf = Array.isArray(input) ? Buffer.concat(input) : (input as Buffer);
@@ -194,20 +195,32 @@ export async function encodeBinaryToPng(
   if (opts.onProgress)
     opts.onProgress({ phase: 'compress_start', total: totalLen });
 
-  let payload = await parallelZstdCompress(
-    payloadInput,
-    compressionLevel,
-    (loaded, total) => {
-      if (opts.onProgress) {
-        opts.onProgress({
-          phase: 'compress_progress',
-          loaded,
-          total,
-        });
-      }
-    },
-    opts.dict,
-  );
+  let payload: Buffer[];
+
+  if (opts.compression === 'bwt-ans' && native?.hybridCompress) {
+    const flat = Array.isArray(payloadInput) ? Buffer.concat(payloadInput) : payloadInput;
+    if (opts.onProgress)
+      opts.onProgress({ phase: 'compress_progress', loaded: 0, total: 1 });
+    const compressed = Buffer.from(native.hybridCompress(flat));
+    payload = [compressed];
+    if (opts.onProgress)
+      opts.onProgress({ phase: 'compress_progress', loaded: 1, total: 1 });
+  } else {
+    payload = await parallelZstdCompress(
+      payloadInput,
+      compressionLevel,
+      (loaded, total) => {
+        if (opts.onProgress) {
+          opts.onProgress({
+            phase: 'compress_progress',
+            loaded,
+            total,
+          });
+        }
+      },
+      opts.dict,
+    );
+  }
 
   if (opts.onProgress)
     opts.onProgress({ phase: 'compress_done', loaded: payload.length });
@@ -431,7 +444,9 @@ export async function encodeBinaryToPng(
       : dataWithoutMarkers;
 
     const markerStartBytes = colorsToBytes(MARKER_START);
-    const compressionMarkerBytes = colorsToBytes(COMPRESSION_MARKERS.zstd);
+    const compressionMarkerBytes = colorsToBytes(
+      opts.compression === 'bwt-ans' ? COMPRESSION_MARKERS['bwt-ans'] : COMPRESSION_MARKERS.zstd,
+    );
     const dataWithMarkers: Buffer[] = [
       markerStartBytes,
       compressionMarkerBytes,

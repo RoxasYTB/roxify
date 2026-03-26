@@ -39,6 +39,7 @@ The core compression and image-processing logic is written in Rust and exposed t
 ## Features
 
 - **Native Rust acceleration** via N-API with automatic fallback to pure JavaScript
+- **BWT-ANS compression** -- Burrows-Wheeler Transform + Move-to-Front + RLE + rANS entropy coding via libsais O(n) SA-IS (18.1 MB/s encode, 31.2 MB/s decode)
 - **Multi-threaded Zstd compression** (level 19) with parallel chunk processing via Rayon
 - **AES-256-GCM encryption** with PBKDF2 key derivation (100,000 iterations)
 - **Lossless roundtrip** -- encoded data is recovered byte-for-byte
@@ -57,6 +58,20 @@ The core compression and image-processing logic is written in Rust and exposed t
 ## Benchmarks
 
 All measurements were taken on Linux x64 (Intel i7-6700K @ 4.0 GHz, 32 GB RAM) with Node.js v20. Every tool uses its **maximum compression** setting: zip -9, gzip -9, 7z LZMA2 -mx=9, and Roxify Zstd level 19. Roxify produces a valid PNG or WAV file rather than a raw archive.
+
+### BWT-ANS Native Compression (Rust, via N-API)
+
+Direct API calls through the native module (BWT → MTF → RLE0 → rANS, 1 MB blocks):
+
+| Dataset | Original | Compressed | Ratio | Encode | Decode | Enc Throughput | Dec Throughput |
+| ------- | -------- | ---------- | ----- | ------ | ------ | -------------- | -------------- |
+| Repetitive text 45 KB | 45 KB | 207 B | 0.5% | < 1 ms | < 1 ms | — | — |
+| Rust source 6 KB | 6 KB | 2.0 KB | 33.7% | < 1 ms | < 1 ms | — | — |
+| node_modules tar 175 MB | 175.5 MB | 38.4 MB | 21.9% | 9.68 s | 5.62 s | 18.1 MB/s | 31.2 MB/s |
+| Random 100 KB | 100 KB | 101 KB | 101.5% | < 1 ms | < 1 ms | — | — |
+| Zeros 100 KB | 100 KB | 51 B | 0.1% | < 1 ms | < 1 ms | — | — |
+
+> BWT-ANS achieves **21.9% on real-world node_modules** (175 MB), with **18 MB/s encode** and **31 MB/s decode** throughput. 100% lossless roundtrip verified on all datasets.
 
 ### Compression Ratio (Maximum Compression for All Tools)
 

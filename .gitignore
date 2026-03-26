@@ -26,6 +26,4 @@ libroxify_native-*
 # Build artifacts
 *.node
 !roxify_native.node
-# Lock files
 pnpm-lock.yaml
-.npmrc

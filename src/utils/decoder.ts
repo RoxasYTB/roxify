@@ -6,18 +6,18 @@ import { join } from 'path';
 import { unpackBuffer } from '../pack.js';
 import { isWav, wavToBytes } from './audio.js';
 import {
-  CHUNK_TYPE,
-  MAGIC,
-  MARKER_END,
-  MARKER_START,
-  PIXEL_MAGIC,
-  PIXEL_MAGIC_BLOCK,
-  PNG_HEADER,
+    CHUNK_TYPE,
+    MAGIC,
+    MARKER_END,
+    MARKER_START,
+    PIXEL_MAGIC,
+    PIXEL_MAGIC_BLOCK,
+    PNG_HEADER,
 } from './constants.js';
 import {
-  DataFormatError,
-  IncorrectPassphraseError,
-  PassphraseRequiredError,
+    DataFormatError,
+    IncorrectPassphraseError,
+    PassphraseRequiredError,
 } from './errors.js';
 import { colorsToBytes, deltaDecode, tryDecryptIfNeeded } from './helpers.js';
 import { native } from './native.js';
@@ -25,7 +25,7 @@ import { cropAndReconstitute } from './reconstitution.js';
 import { decodeRobustAudio, isRobustAudioWav } from './robust-audio.js';
 import { decodeRobustImage, isRobustImage } from './robust-image.js';
 import { DecodeOptions, DecodeResult } from './types.js';
-import { parallelZstdDecompress, tryZstdDecompress } from './zstd.js';
+import { parallelZstdDecompress } from './zstd.js';
 
 function isColorMatch(
   r1: number,
@@ -192,6 +192,8 @@ export function unstretchImage(
   return { data, width: logicalW, height: logicalH };
 }
 
+const RBW1_MAGIC = Buffer.from('RBW1');
+
 async function tryDecompress(
   payload: Buffer,
   onProgress?: (info: {
@@ -200,6 +202,12 @@ async function tryDecompress(
     total?: number;
   }) => void,
 ): Promise<Buffer> {
+  if (payload.length >= 4 && payload.subarray(0, 4).equals(RBW1_MAGIC) && native?.hybridDecompress) {
+    if (onProgress) onProgress({ phase: 'decompress_start', total: 1 });
+    const result = Buffer.from(native.hybridDecompress(payload));
+    if (onProgress) onProgress({ phase: 'decompress_done', loaded: 1, total: 1 });
+    return result;
+  }
   return await parallelZstdDecompress(payload, onProgress);
 }
 
@@ -553,7 +561,7 @@ export async function decodePngToBinary(
 
     if (opts.onProgress) opts.onProgress({ phase: 'decompress_start' });
     try {
-      payload = await tryZstdDecompress(payload, (info) => {
+      payload = await tryDecompress(payload, (info) => {
         if (opts.onProgress) opts.onProgress(info);
       });
     } catch (e) {
@@ -818,7 +826,7 @@ export async function decodePngToBinary(
       let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
 
       try {
-        payload = await tryZstdDecompress(payload, (info) => {
+        payload = await tryDecompress(payload, (info) => {
           if (opts.onProgress) opts.onProgress(info);
         });
         if (version === 3) {

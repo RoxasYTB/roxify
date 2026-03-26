@@ -1,4 +1,7 @@
 use anyhow::Result;
+use libsais::bwt::Bwt;
+use libsais::typestate::OwnedBuffer;
+use libsais::BwtConstruction;
 use rayon::prelude::*;
 
 pub struct BwtResult {
@@ -7,86 +10,39 @@ pub struct BwtResult {
 }
 
 pub fn bwt_encode(data: &[u8]) -> Result<BwtResult> {
-    if data.is_empty() {
-        return Ok(BwtResult {
-            transformed: Vec::new(),
-            primary_index: 0,
-        });
-    }
-
     let n = data.len();
-    let mut rotations: Vec<usize> = (0..n).collect();
-
-    rotations.par_sort_by(|&a, &b| {
-        for i in 0..n {
-            let ca = data[(a + i) % n];
-            let cb = data[(b + i) % n];
-            if ca != cb {
-                return ca.cmp(&cb);
-            }
-        }
-        std::cmp::Ordering::Equal
-    });
-
-    let mut transformed = Vec::with_capacity(n);
-    let mut primary_index = 0u32;
-
-    for (idx, &rot) in rotations.iter().enumerate() {
-        if rot == 0 {
-            primary_index = idx as u32;
-        }
-        transformed.push(data[(rot + n - 1) % n]);
+    if n == 0 {
+        return Ok(BwtResult { transformed: Vec::new(), primary_index: 0 });
     }
 
-    Ok(BwtResult {
-        transformed,
-        primary_index,
-    })
+    let bwt_result = BwtConstruction::for_text(data)
+        .with_owned_temporary_array_buffer32()
+        .single_threaded()
+        .run()
+        .map_err(|e| anyhow::anyhow!("libsais BWT: {:?}", e))?;
+
+    let primary_index = bwt_result.primary_index() as u32;
+    let transformed = bwt_result.bwt().to_vec();
+
+    Ok(BwtResult { transformed, primary_index })
 }
 
-pub fn bwt_decode(data: &[u8], primary_index: u32) -> Result<Vec<u8>> {
-    if data.is_empty() {
+pub fn bwt_decode(bwt_data: &[u8], primary_index: u32) -> Result<Vec<u8>> {
+    if bwt_data.is_empty() {
         return Ok(Vec::new());
     }
 
-    let n = data.len();
-    let primary_idx = primary_index as usize;
+    let bwt_obj: Bwt<'static, u8, OwnedBuffer> =
+        unsafe { Bwt::from_parts(bwt_data.to_vec(), primary_index as usize) };
 
-    if primary_idx >= n {
-        return Err(anyhow::anyhow!("Invalid primary index"));
-    }
+    let text = bwt_obj
+        .unbwt()
+        .with_owned_temporary_array_buffer32()
+        .single_threaded()
+        .run()
+        .map_err(|e| anyhow::anyhow!("libsais UnBWT: {:?}", e))?;
 
-    let mut counts = vec![0usize; 256];
-    for &byte in data {
-        counts[byte as usize] += 1;
-    }
-
-    let mut cumsum = vec![0usize; 256];
-    let mut sum = 0;
-    for i in 0..256 {
-        cumsum[i] = sum;
-        sum += counts[i];
-    }
-
-    let mut next = vec![0usize; n];
-    let mut counts = vec![0usize; 256];
-
-    for i in 0..n {
-        let byte = data[i] as usize;
-        let pos = cumsum[byte] + counts[byte];
-        next[pos] = i;
-        counts[byte] += 1;
-    }
-
-    let mut result = Vec::with_capacity(n);
-    let mut idx = primary_idx;
-
-    for _ in 0..n {
-        result.push(data[idx]);
-        idx = next[idx];
-    }
-
-    Ok(result)
+    Ok(text.as_slice().to_vec())
 }
 
 pub fn bwt_encode_streaming(block_size: usize, data: &[u8]) -> Result<Vec<(BwtResult, usize)>> {

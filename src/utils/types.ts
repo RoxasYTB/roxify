@@ -2,7 +2,7 @@ import { PackedFile } from '../pack.js';
 import type { EccLevel } from './ecc.js';
 
 export interface EncodeOptions {
-  compression?: 'zstd';
+  compression?: 'zstd' | 'bwt-ans';
   compressionLevel?: number;
   passphrase?: string;
   /** optional dictionary to use for zstd compression */

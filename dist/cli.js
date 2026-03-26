@@ -66,6 +66,7 @@ Commands:
 Options:
   --image                   Use PNG container (default)
   --sound                   Use WAV audio container (smaller overhead, faster)
+  --bwt-ans                 Use BWT-ANS compression instead of Zstd
   -p, --passphrase <pass>   Use passphrase (AES-256-GCM)
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
@@ -133,6 +134,10 @@ function parseArgs(args) {
             }
             else if (key === 'force-ts') {
                 parsed.forceTs = true;
+                i++;
+            }
+            else if (key === 'bwt-ans') {
+                parsed.compression = 'bwt-ans';
                 i++;
             }
             else if (key === 'lossy-resilient') {
@@ -292,7 +297,7 @@ async function encodeCommand(args) {
     catch (e) {
         anyInputDir = false;
     }
-    if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound') {
+    if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound' && parsed.compression !== 'bwt-ans') {
         try {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
             const startTime = Date.now();
@@ -395,6 +400,8 @@ async function encodeCommand(args) {
             options.verbose = true;
         if (parsed.noCompress)
             options.compression = 'none';
+        if (parsed.compression === 'bwt-ans')
+            options.compression = 'bwt-ans';
         if (parsed.passphrase) {
             options.passphrase = parsed.passphrase;
             options.encrypt = parsed.encrypt || 'aes';
