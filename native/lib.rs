@@ -24,6 +24,7 @@ mod audio;
 mod progress;
 mod reconstitution;
 mod archive;
+mod streaming;
 
 pub use core::*;
 #[cfg(feature = "gpu")]

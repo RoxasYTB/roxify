@@ -5,7 +5,7 @@ use crate::mtf::{mtf_encode, mtf_decode, rle0_encode, rle0_decode};
 use crate::rans_byte::{SymbolStats, rans_encode_block, rans_decode_block};
 use crate::context_mixing::analyze_entropy;
 
-const BLOCK_SIZE: usize = 256 * 1024;
+const BLOCK_SIZE: usize = 1024 * 1024;
 
 const BLOCK_FLAG_BWT: u8 = 0;
 const BLOCK_FLAG_ZSTD: u8 = 1;

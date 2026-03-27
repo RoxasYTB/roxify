@@ -10,7 +10,7 @@ use sha2::Sha256;
 const ENC_NONE: u8 = 0x00;
 const ENC_AES: u8 = 0x01;
 const ENC_XOR: u8 = 0x02;
-const PBKDF2_ITERS: u32 = 1_000_000;
+const PBKDF2_ITERS: u32 = 600_000;
 
 pub fn encrypt_xor(data: &[u8], passphrase: &str) -> Vec<u8> {
     let key = passphrase.as_bytes();

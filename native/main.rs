@@ -14,6 +14,7 @@ mod png_utils;
 mod audio;
 mod reconstitution;
 mod archive;
+mod streaming;
 
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
@@ -104,15 +105,28 @@ enum Commands {
 }
 
 fn read_all(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
-    let mut f = File::open(path)?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    Ok(buf)
+    let metadata = std::fs::metadata(path)?;
+    let size = metadata.len() as usize;
+
+    if size > 256 * 1024 * 1024 {
+        let file = File::open(path)?;
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        Ok(mmap.to_vec())
+    } else {
+        let mut f = File::open(path)?;
+        let mut buf = Vec::with_capacity(size);
+        f.read_to_end(&mut buf)?;
+        Ok(buf)
+    }
 }
 
 fn write_all(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
-    let mut f = File::create(path)?;
-    f.write_all(data)?;
+    let f = File::create(path)?;
+    let buf_size = if data.len() > 64 * 1024 * 1024 { 16 * 1024 * 1024 }
+        else { (8 * 1024 * 1024).min(data.len().max(8192)) };
+    let mut writer = std::io::BufWriter::with_capacity(buf_size, f);
+    writer.write_all(data)?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -144,14 +158,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Encode { input, output, level, passphrase, encrypt, name, dict } => {
             let is_dir = input.is_dir();
             let (payload, file_list_json) = if is_dir {
-                let tar_data = archive::tar_pack_directory(&input)
+                let result = archive::tar_pack_directory_with_list(&input)
                     .map_err(|e| anyhow::anyhow!(e))?;
-                let list = archive::tar_file_list(&tar_data)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-                let json_list: Vec<serde_json::Value> = list.iter()
+                let json_list: Vec<serde_json::Value> = result.file_list.iter()
                     .map(|(name, size)| serde_json::json!({"name": name, "size": size}))
                     .collect();
-                (tar_data, Some(serde_json::to_string(&json_list)?))
+                (result.data, Some(serde_json::to_string(&json_list)?))
             } else {
                 let pack_result = packer::pack_path_with_metadata(&input)?;
                 (pack_result.data, pack_result.file_list_json)
@@ -165,31 +177,45 @@ fn main() -> anyhow::Result<()> {
                 None => None,
             };
 
-            let png = if let Some(ref pass) = passphrase {
-                encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
-                    &payload,
-                    level,
-                    Some(pass),
-                    Some(&encrypt),
-                    ImageFormat::Png,
-                    file_name,
-                    file_list_json.as_deref(),
-                    dict_bytes.as_deref(),
-                )?
-            } else {
-                encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
-                    &payload,
-                    level,
-                    None,
-                    None,
-                    ImageFormat::Png,
-                    file_name,
-                    file_list_json.as_deref(),
-                    dict_bytes.as_deref(),
-                )?
-            };
+            let use_streaming = payload.len() > 64 * 1024 * 1024;
 
-            write_all(&output, &png)?;
+            if use_streaming {
+                streaming::encode_to_png_file(
+                    &payload,
+                    &output,
+                    level,
+                    passphrase.as_deref(),
+                    Some(&encrypt),
+                    file_name,
+                    file_list_json.as_deref(),
+                    dict_bytes.as_deref(),
+                )?;
+            } else {
+                let png = if let Some(ref pass) = passphrase {
+                    encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
+                        &payload,
+                        level,
+                        Some(pass),
+                        Some(&encrypt),
+                        ImageFormat::Png,
+                        file_name,
+                        file_list_json.as_deref(),
+                        dict_bytes.as_deref(),
+                    )?
+                } else {
+                    encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
+                        &payload,
+                        level,
+                        None,
+                        None,
+                        ImageFormat::Png,
+                        file_name,
+                        file_list_json.as_deref(),
+                        dict_bytes.as_deref(),
+                    )?
+                };
+                write_all(&output, &png)?;
+            }
 
             if file_list_json.is_some() {
                 if is_dir {
