@@ -17,12 +17,26 @@ pub fn encode_dir_to_png(
     compression_level: i32,
     name: Option<&str>,
 ) -> anyhow::Result<()> {
+    encode_dir_to_png_encrypted(dir_path, output_path, compression_level, name, None, None)
+}
+
+pub fn encode_dir_to_png_encrypted(
+    dir_path: &Path,
+    output_path: &Path,
+    compression_level: i32,
+    name: Option<&str>,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+) -> anyhow::Result<()> {
     let tmp_zst = output_path.with_extension("tmp.zst");
 
     let file_list = compress_dir_to_zst(dir_path, &tmp_zst, compression_level)?;
     let file_list_json = serde_json::to_string(&file_list)?;
 
-    let result = write_png_from_zst(&tmp_zst, output_path, name, Some(&file_list_json));
+    let result = write_png_from_zst(
+        &tmp_zst, output_path, name, Some(&file_list_json),
+        passphrase, encrypt_type,
+    );
     let _ = std::fs::remove_file(&tmp_zst);
     result
 }
@@ -103,15 +117,25 @@ fn write_png_from_zst(
     output_path: &Path,
     name: Option<&str>,
     file_list: Option<&str>,
+    passphrase: Option<&str>,
+    _encrypt_type: Option<&str>,
 ) -> anyhow::Result<()> {
     let zst_size = std::fs::metadata(zst_path)?.len() as usize;
 
-    let encrypted_len = 1 + zst_size;
+    let mut encryptor = match passphrase {
+        Some(pass) if !pass.is_empty() => Some(crate::crypto::StreamingEncryptor::new(pass)?),
+        _ => None,
+    };
+
+    let enc_header_len = encryptor.as_ref().map(|e| e.header_len()).unwrap_or(1);
+    let hmac_trailer_len: usize = if encryptor.is_some() { 32 } else { 0 };
+
+    let encrypted_payload_len = enc_header_len + zst_size + hmac_trailer_len;
 
     let version = 1u8;
     let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
     let name_len = name_bytes.len().min(255) as u8;
-    let payload_len_bytes = (encrypted_len as u32).to_be_bytes();
+    let payload_len_bytes = (encrypted_payload_len as u32).to_be_bytes();
 
     let mut meta_header = Vec::with_capacity(1 + 1 + name_len as usize + 4);
     meta_header.push(version);
@@ -133,7 +157,7 @@ fn write_png_from_zst(
     });
     let file_list_inline_len = file_list_chunk.as_ref().map(|c| c.len()).unwrap_or(0);
 
-    let total_meta_pixel_len = meta_header_len + 1 + zst_size + file_list_inline_len;
+    let total_meta_pixel_len = meta_header_len + encrypted_payload_len + file_list_inline_len;
     let raw_payload_len = PIXEL_MAGIC.len() + total_meta_pixel_len;
     let padding_needed = (3 - (raw_payload_len % 3)) % 3;
     let padded_len = raw_payload_len + padding_needed;
@@ -152,7 +176,13 @@ fn write_png_from_zst(
     let total_data_bytes = width * height * 3;
     let marker_end_pos = (height - 1) * width * 3 + (width - end_marker_pixels) * 3;
 
-    let header_bytes = build_header_bytes(&meta_header);
+    let enc_header_bytes = if let Some(ref enc) = encryptor {
+        enc.header.clone()
+    } else {
+        vec![0x00]
+    };
+
+    let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
 
     let stride = row_bytes + 1;
     let scanlines_total = height * stride;
@@ -182,7 +212,8 @@ fn write_png_from_zst(
         &mut zst_reader,
         zst_size,
         file_list_chunk.as_deref(),
-        width,
+        &mut encryptor,
+        hmac_trailer_len,
         height,
         row_bytes,
         marker_end_pos,
@@ -199,15 +230,15 @@ fn write_png_from_zst(
     Ok(())
 }
 
-fn build_header_bytes(meta_header: &[u8]) -> Vec<u8> {
-    let mut header = Vec::with_capacity(12 + PIXEL_MAGIC.len() + meta_header.len() + 1);
+fn build_header_bytes(meta_header: &[u8], enc_header: &[u8]) -> Vec<u8> {
+    let mut header = Vec::with_capacity(12 + PIXEL_MAGIC.len() + meta_header.len() + enc_header.len());
     for m in &MARKER_START {
         header.push(m.0); header.push(m.1); header.push(m.2);
     }
     header.push(MARKER_ZSTD.0); header.push(MARKER_ZSTD.1); header.push(MARKER_ZSTD.2);
     header.extend_from_slice(PIXEL_MAGIC);
     header.extend_from_slice(meta_header);
-    header.push(0x00);
+    header.extend_from_slice(enc_header);
     header
 }
 
@@ -217,7 +248,8 @@ fn write_idat_streaming<W: Write, R: Read>(
     zst_reader: &mut R,
     zst_size: usize,
     file_list_chunk: Option<&[u8]>,
-    _width: usize,
+    encryptor: &mut Option<crate::crypto::StreamingEncryptor>,
+    hmac_trailer_len: usize,
     height: usize,
     row_bytes: usize,
     marker_end_pos: usize,
@@ -238,7 +270,7 @@ fn write_idat_streaming<W: Write, R: Read>(
     crc.update(&zlib);
 
     let fl_chunk_data = file_list_chunk.unwrap_or(&[]);
-    let payload_total = header_bytes.len() + zst_size + fl_chunk_data.len();
+    let payload_total = header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
     let padding_after = total_data_bytes - payload_total.min(total_data_bytes);
 
     let marker_end_bytes = build_marker_end_bytes();
@@ -249,6 +281,9 @@ fn write_idat_streaming<W: Write, R: Read>(
 
     let mut header_pos: usize = 0;
     let mut zst_remaining = zst_size;
+    let mut hmac_pos: usize = 0;
+    let mut hmac_written = hmac_trailer_len == 0;
+    let mut hmac_finalized: Option<[u8; 32]> = None;
     let mut fl_pos: usize = 0;
     let mut zero_remaining = padding_after;
 
@@ -349,6 +384,9 @@ fn write_idat_streaming<W: Write, R: Read>(
                     let got = zst_reader.read(&mut transfer_buf[..take])
                         .map_err(|e| anyhow::anyhow!("read zst: {}", e))?;
                     if got == 0 { break; }
+                    if let Some(ref mut enc) = encryptor {
+                        enc.encrypt_chunk(&mut transfer_buf[..got]);
+                    }
                     w.write_all(&transfer_buf[..got])?;
                     crc.update(&transfer_buf[..got]);
                     for &b in &transfer_buf[..got] {
@@ -361,6 +399,34 @@ fn write_idat_streaming<W: Write, R: Read>(
                     scanline_pos += got;
                     deflate_block_remaining -= got;
                     cols_written += got;
+                } else if !hmac_written {
+                    if hmac_finalized.is_none() {
+                        if let Some(enc) = encryptor.take() {
+                            hmac_finalized = Some(enc.finalize_hmac());
+                        }
+                    }
+                    if let Some(ref hmac_bytes) = hmac_finalized {
+                        let avail = hmac_trailer_len - hmac_pos;
+                        let take = need.min(avail);
+                        let slice = &hmac_bytes[hmac_pos..hmac_pos + take];
+                        w.write_all(slice)?;
+                        crc.update(slice);
+                        for &b in slice {
+                            adler_a = (adler_a + b as u32) % 65521;
+                            adler_b = (adler_b + adler_a) % 65521;
+                        }
+                        hmac_pos += take;
+                        flat_pos += take;
+                        chunk_written += take;
+                        scanline_pos += take;
+                        deflate_block_remaining -= take;
+                        cols_written += take;
+                        if hmac_pos >= hmac_trailer_len {
+                            hmac_written = true;
+                        }
+                    } else {
+                        hmac_written = true;
+                    }
                 } else if fl_pos < fl_chunk_data.len() {
                     let avail = fl_chunk_data.len() - fl_pos;
                     let take = need.min(avail);
