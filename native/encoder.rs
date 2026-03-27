@@ -226,12 +226,11 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
 
 fn build_flat_pixel_buffer(
     meta_pixel: &[u8],
-    padding_needed: usize,
+    _padding_needed: usize,
     marker_end_pos: usize,
     marker_end_len: usize,
     total_data_bytes: usize,
 ) -> Vec<u8> {
-    let header_len = 12 + PIXEL_MAGIC.len() + meta_pixel.len() + padding_needed;
     let mut flat = vec![0u8; total_data_bytes];
 
     let mut pos = 0;
@@ -246,7 +245,6 @@ fn build_flat_pixel_buffer(
     pos += PIXEL_MAGIC.len();
 
     flat[pos..pos + meta_pixel.len()].copy_from_slice(meta_pixel);
-    pos += meta_pixel.len();
 
     if marker_end_pos + marker_end_len <= total_data_bytes {
         for (i, m) in MARKER_END.iter().enumerate() {

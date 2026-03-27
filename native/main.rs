@@ -15,6 +15,8 @@ mod audio;
 mod reconstitution;
 mod archive;
 mod streaming;
+mod streaming_decode;
+mod streaming_encode;
 
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
@@ -157,6 +159,21 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Encode { input, output, level, passphrase, encrypt, name, dict } => {
             let is_dir = input.is_dir();
+
+            let file_name = name.as_deref()
+                .or_else(|| input.file_name().and_then(|n| n.to_str()));
+
+            if is_dir && passphrase.is_none() && dict.is_none() {
+                streaming_encode::encode_dir_to_png(
+                    &input,
+                    &output,
+                    level,
+                    file_name,
+                )?;
+                println!("(TAR archive, rXFL chunk embedded)");
+                return Ok(());
+            }
+
             let (payload, file_list_json) = if is_dir {
                 let result = archive::tar_pack_directory_with_list(&input)
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -168,9 +185,6 @@ fn main() -> anyhow::Result<()> {
                 let pack_result = packer::pack_path_with_metadata(&input)?;
                 (pack_result.data, pack_result.file_list_json)
             };
-
-            let file_name = name.as_deref()
-                .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
             let dict_bytes: Option<Vec<u8>> = match dict {
                 Some(path) => Some(read_all(&path)?),
@@ -320,6 +334,27 @@ fn main() -> anyhow::Result<()> {
             write_all(&dest, &out)?;
         }
         Commands::Decompress { input, output, files, passphrase, dict } => {
+            let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+            let is_png_file = input.extension().map(|e| e == "png").unwrap_or(false)
+                || (file_size >= 8 && {
+                    let mut sig = [0u8; 8];
+                    std::fs::File::open(&input).and_then(|mut f| { use std::io::Read; f.read_exact(&mut sig) }).is_ok()
+                        && sig == [137, 80, 78, 71, 13, 10, 26, 10]
+                });
+
+            if is_png_file && files.is_none() && passphrase.is_none() && dict.is_none() && file_size > 100_000_000 {
+                let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("out.raw"));
+                match streaming_decode::streaming_decode_to_dir(&input, &out_dir) {
+                    Ok(written) => {
+                        println!("Unpacked {} files (TAR)", written.len());
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Streaming decode failed ({}), falling back to in-memory", e);
+                    }
+                }
+            }
+
             let buf = read_all(&input)?;
             let dict_bytes: Option<Vec<u8>> = match dict {
                 Some(path) => Some(read_all(&path)?),
