@@ -163,12 +163,14 @@ fn main() -> anyhow::Result<()> {
             let file_name = name.as_deref()
                 .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
-            if is_dir && passphrase.is_none() && dict.is_none() {
-                streaming_encode::encode_dir_to_png(
+            if is_dir && dict.is_none() {
+                streaming_encode::encode_dir_to_png_encrypted(
                     &input,
                     &output,
                     level,
                     file_name,
+                    passphrase.as_deref(),
+                    Some(&encrypt),
                 )?;
                 println!("(TAR archive, rXFL chunk embedded)");
                 return Ok(());
@@ -286,13 +288,13 @@ fn main() -> anyhow::Result<()> {
             let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
             if is_png {
                 let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
-                if !payload.is_empty() && (payload[0] == 0x01 || payload[0] == 0x02) {
+                if !payload.is_empty() && (payload[0] == 0x01 || payload[0] == 0x02 || payload[0] == 0x03) {
                     println!("Passphrase detected.");
                 } else {
                     println!("No passphrase detected.");
                 }
             } else {
-                if !buf.is_empty() && (buf[0] == 0x01 || buf[0] == 0x02) {
+                if !buf.is_empty() && (buf[0] == 0x01 || buf[0] == 0x02 || buf[0] == 0x03) {
                     println!("Passphrase detected.");
                 } else {
                     println!("No passphrase detected.");
@@ -342,9 +344,9 @@ fn main() -> anyhow::Result<()> {
                         && sig == [137, 80, 78, 71, 13, 10, 26, 10]
                 });
 
-            if is_png_file && files.is_none() && passphrase.is_none() && dict.is_none() && file_size > 100_000_000 {
+            if is_png_file && files.is_none() && dict.is_none() && file_size > 100_000_000 {
                 let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("out.raw"));
-                match streaming_decode::streaming_decode_to_dir(&input, &out_dir) {
+                match streaming_decode::streaming_decode_to_dir_encrypted(&input, &out_dir, passphrase.as_deref()) {
                     Ok(written) => {
                         println!("Unpacked {} files (TAR)", written.len());
                         return Ok(());
@@ -394,7 +396,7 @@ fn main() -> anyhow::Result<()> {
                         buf[1..].to_vec()
                     } else if buf.starts_with(b"ROX1") {
                         buf[4..].to_vec()
-                    } else if buf[0] == 0x01u8 || buf[0] == 0x02u8 {
+                    } else if buf[0] == 0x01u8 || buf[0] == 0x02u8 || buf[0] == 0x03u8 {
                         let pass = passphrase.as_ref().map(|s: &String| s.as_str());
                         match crate::crypto::try_decrypt(&buf, pass) {
                             Ok(v) => v,

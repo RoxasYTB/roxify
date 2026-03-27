@@ -1,10 +1,21 @@
 use std::io::Read;
 use std::path::Path;
+use cipher::{KeyIvInit, StreamCipher};
 
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const MARKER_BYTES: usize = 12;
 
+type Aes256Ctr = ctr::Ctr64BE<aes::Aes256>;
+
 pub fn streaming_decode_to_dir(png_path: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
+    streaming_decode_to_dir_encrypted(png_path, out_dir, None)
+}
+
+pub fn streaming_decode_to_dir_encrypted(
+    png_path: &Path,
+    out_dir: &Path,
+    passphrase: Option<&str>,
+) -> Result<Vec<String>, String> {
     let file = std::fs::File::open(png_path).map_err(|e| format!("open: {}", e))?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| format!("mmap: {}", e))? };
     let data = &mmap[..];
@@ -43,22 +54,46 @@ pub fn streaming_decode_to_dir(png_path: &Path, out_dir: &Path) -> Result<Vec<St
     let payload_reader = reader.take(payload_len);
 
     let first_byte_reader = FirstByteReader::new(payload_reader);
-    let (enc_byte, zstd_reader) = first_byte_reader.into_parts()?;
+    let (enc_byte, remaining_reader) = first_byte_reader.into_parts()?;
 
-    if enc_byte != 0x00 {
-        return Err(format!("Encrypted payloads not supported in streaming decode (enc=0x{:02x})", enc_byte));
+    match enc_byte {
+        0x00 => {
+            let mut decoder = zstd::stream::Decoder::new(remaining_reader)
+                .map_err(|e| format!("zstd decoder: {}", e))?;
+            decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
+            read_rox1_and_untar(decoder, out_dir)
+        }
+        0x03 => {
+            let pass = passphrase.ok_or("Passphrase required for AES-CTR decryption")?;
+            let mut salt = [0u8; 16];
+            let mut iv = [0u8; 16];
+            let mut r = remaining_reader;
+            r.read_exact(&mut salt).map_err(|e| format!("read salt: {}", e))?;
+            r.read_exact(&mut iv).map_err(|e| format!("read iv: {}", e))?;
+
+            let key = crate::crypto::derive_aes_ctr_key(pass, &salt);
+            let cipher = Aes256Ctr::new_from_slices(&key, &iv)
+                .map_err(|e| format!("AES-CTR init: {}", e))?;
+
+            let hmac_size = 32u64;
+            let encrypted_data_len = payload_len - 1 - 16 - 16 - hmac_size;
+            let ctr_reader = CtrDecryptReader::new(r.take(encrypted_data_len), cipher);
+
+            let mut decoder = zstd::stream::Decoder::new(ctr_reader)
+                .map_err(|e| format!("zstd decoder: {}", e))?;
+            decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
+            read_rox1_and_untar(decoder, out_dir)
+        }
+        _ => Err(format!("Unsupported encryption (enc=0x{:02x}) in streaming decode", enc_byte)),
     }
+}
 
-    let mut decoder = zstd::stream::Decoder::new(zstd_reader)
-        .map_err(|e| format!("zstd decoder: {}", e))?;
-    decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
-
+fn read_rox1_and_untar<R: Read>(mut decoder: R, out_dir: &Path) -> Result<Vec<String>, String> {
     let mut magic = [0u8; 4];
     decoder.read_exact(&mut magic).map_err(|e| format!("read ROX1: {}", e))?;
     if &magic != b"ROX1" {
         return Err(format!("Expected ROX1, got {:?}", magic));
     }
-
     std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {}", e))?;
     tar_unpack_from_reader(decoder, out_dir)
 }
@@ -239,6 +274,27 @@ impl<R: Read> FirstByteReader<R> {
         let mut byte = [0u8; 1];
         self.inner.read_exact(&mut byte).map_err(|e| format!("read first byte: {}", e))?;
         Ok((byte[0], self.inner))
+    }
+}
+
+struct CtrDecryptReader<R: Read> {
+    inner: R,
+    cipher: Aes256Ctr,
+}
+
+impl<R: Read> CtrDecryptReader<R> {
+    fn new(inner: R, cipher: Aes256Ctr) -> Self {
+        Self { inner, cipher }
+    }
+}
+
+impl<R: Read> Read for CtrDecryptReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.cipher.apply_keystream(&mut buf[..n]);
+        }
+        Ok(n)
     }
 }
 

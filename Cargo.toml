@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.11.2"
+version = "1.12.0"
 edition = "2021"
 publish = false
 
@@ -43,6 +43,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 walkdir = "2.5.0"
 tar = "0.4"
 aes-gcm = "0.10"
+aes = "0.8"
+ctr = "0.9"
+cipher = { version = "0.4", features = ["std"] }
+hmac = "0.12"
 pbkdf2 = "0.12"
 rand = "0.8"
 sha2 = "0.10"
