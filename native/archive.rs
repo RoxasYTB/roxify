@@ -4,7 +4,12 @@ use rayon::prelude::*;
 use tar::{Archive, Builder, Header};
 use walkdir::WalkDir;
 
-pub fn tar_pack_directory(dir_path: &Path) -> Result<Vec<u8>, String> {
+pub struct TarPackResult {
+    pub data: Vec<u8>,
+    pub file_list: Vec<(String, u64)>,
+}
+
+pub fn tar_pack_directory_with_list(dir_path: &Path) -> Result<TarPackResult, String> {
     let base = dir_path;
 
     let entries: Vec<_> = WalkDir::new(dir_path)
@@ -27,6 +32,10 @@ pub fn tar_pack_directory(dir_path: &Path) -> Result<Vec<u8>, String> {
         })
         .collect();
 
+    let file_list: Vec<(String, u64)> = file_data.iter()
+        .map(|(name, data)| (name.clone(), data.len() as u64))
+        .collect();
+
     let total_estimate: usize = file_data.iter().map(|(n, d)| 512 + d.len() + 512 + n.len()).sum();
     let mut buf = Vec::with_capacity(total_estimate + 1024);
     {
@@ -42,20 +51,42 @@ pub fn tar_pack_directory(dir_path: &Path) -> Result<Vec<u8>, String> {
         }
         builder.finish().map_err(|e| format!("tar finish: {}", e))?;
     }
-    Ok(buf)
+    Ok(TarPackResult { data: buf, file_list })
+}
+
+pub fn tar_pack_directory(dir_path: &Path) -> Result<Vec<u8>, String> {
+    tar_pack_directory_with_list(dir_path).map(|r| r.data)
+}
+
+pub fn tar_file_list_fast(tar_data: &[u8]) -> Vec<(String, u64)> {
+    let mut list = Vec::new();
+    let mut pos = 0;
+    while pos + 512 <= tar_data.len() {
+        let header = &tar_data[pos..pos + 512];
+        if header.iter().all(|&b| b == 0) {
+            break;
+        }
+        let name_end = header[..100].iter().position(|&b| b == 0).unwrap_or(100);
+        let name = String::from_utf8_lossy(&header[..name_end]).to_string();
+        let size_str = String::from_utf8_lossy(&header[124..136]);
+        let size = u64::from_str_radix(size_str.trim().trim_matches('\0'), 8).unwrap_or(0);
+        if !name.is_empty() {
+            list.push((name, size));
+        }
+        let data_blocks = (size as usize + 511) / 512;
+        pos += 512 + data_blocks * 512;
+    }
+    list
 }
 
 pub fn tar_unpack(tar_data: &[u8], output_dir: &Path) -> Result<Vec<String>, String> {
     let mut archive = Archive::new(Cursor::new(tar_data));
-    let mut written = Vec::new();
+    let mut entries_data: Vec<(std::path::PathBuf, Vec<u8>)> = Vec::new();
 
     let entries = archive.entries().map_err(|e| format!("tar entries: {}", e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("tar entry: {}", e))?;
-        let path = entry
-            .path()
-            .map_err(|e| format!("tar entry path: {}", e))?
-            .to_path_buf();
+        let path = entry.path().map_err(|e| format!("tar entry path: {}", e))?.to_path_buf();
 
         let mut safe = std::path::PathBuf::new();
         for comp in path.components() {
@@ -63,22 +94,35 @@ pub fn tar_unpack(tar_data: &[u8], output_dir: &Path) -> Result<Vec<String>, Str
                 safe.push(osstr);
             }
         }
-
         if safe.as_os_str().is_empty() {
             continue;
         }
 
-        let dest = output_dir.join(&safe);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir {:?}: {}", parent, e))?;
-        }
-
-        entry
-            .unpack(&dest)
-            .map_err(|e| format!("tar unpack {:?}: {}", dest, e))?;
-        written.push(safe.to_string_lossy().to_string());
+        let mut data = Vec::with_capacity(entry.size() as usize);
+        std::io::Read::read_to_end(&mut entry, &mut data)
+            .map_err(|e| format!("tar read {:?}: {}", safe, e))?;
+        entries_data.push((safe, data));
     }
+
+    let dirs: std::collections::HashSet<_> = entries_data.iter()
+        .filter_map(|(p, _)| {
+            let dest = output_dir.join(p);
+            dest.parent().map(|d| d.to_path_buf())
+        })
+        .collect();
+    for dir in &dirs {
+        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {:?}: {}", dir, e))?;
+    }
+
+    let written: Vec<String> = entries_data.par_iter()
+        .filter_map(|(safe, data)| {
+            let dest = output_dir.join(safe);
+            match std::fs::write(&dest, data) {
+                Ok(_) => Some(safe.to_string_lossy().to_string()),
+                Err(_) => None,
+            }
+        })
+        .collect();
 
     Ok(written)
 }

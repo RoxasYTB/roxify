@@ -2,7 +2,6 @@ use anyhow::Result;
 use std::process::{Command, Stdio};
 
 const MAGIC: &[u8] = b"ROX1";
-const ENC_NONE: u8 = 0x00;
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 
@@ -112,9 +111,7 @@ pub fn encode_to_wav_with_encryption_name_and_filelist(
     file_list: Option<&str>,
 ) -> Result<Vec<u8>> {
     // Same compression + encryption pipeline as PNG
-    let payload_input = [MAGIC, data].concat();
-
-    let compressed = crate::core::zstd_compress_bytes(&payload_input, compression_level, None)
+    let compressed = crate::core::zstd_compress_with_prefix(data, compression_level, None, MAGIC)
         .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {
@@ -180,9 +177,7 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     file_list: Option<&str>,
     dict: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let payload_input = [MAGIC, data].concat();
-
-    let compressed = crate::core::zstd_compress_bytes(&payload_input, compression_level, dict)
+    let compressed = crate::core::zstd_compress_with_prefix(data, compression_level, dict, MAGIC)
         .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {
@@ -194,65 +189,73 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     } else {
         crate::crypto::no_encryption(&compressed)
     };
+    drop(compressed);
 
     let meta_pixel = build_meta_pixel_with_name_and_filelist(&encrypted, name, file_list)?;
-    let data_without_markers = [PIXEL_MAGIC, &meta_pixel].concat();
+    drop(encrypted);
 
-    let padding_needed = (3 - (data_without_markers.len() % 3)) % 3;
-    let padded_data = if padding_needed > 0 {
-        [&data_without_markers[..], &vec![0u8; padding_needed]].concat()
-    } else {
-        data_without_markers
-    };
+    let raw_payload_len = PIXEL_MAGIC.len() + meta_pixel.len();
+    let padding_needed = (3 - (raw_payload_len % 3)) % 3;
+    let padded_len = raw_payload_len + padding_needed;
 
-    let mut marker_bytes = Vec::with_capacity(12);
-    for m in &MARKER_START {
-        marker_bytes.extend_from_slice(&[m.0, m.1, m.2]);
-    }
-    marker_bytes.extend_from_slice(&[MARKER_ZSTD.0, MARKER_ZSTD.1, MARKER_ZSTD.2]);
+    let marker_start_len = 12;
+    let marker_end_len = 9;
 
-    let data_with_markers = [&marker_bytes[..], &padded_data[..]].concat();
-
-    let mut marker_end_bytes = Vec::with_capacity(9);
-    for m in &MARKER_END {
-        marker_end_bytes.extend_from_slice(&[m.0, m.1, m.2]);
-    }
-
-    let data_pixels = (data_with_markers.len() + 2) / 3;
+    let data_with_markers_len = marker_start_len + padded_len;
+    let data_pixels = (data_with_markers_len + 2) / 3;
     let end_marker_pixels = 3;
     let total_pixels = data_pixels + end_marker_pixels;
 
     let side = (total_pixels as f64).sqrt().ceil() as usize;
     let side = side.max(end_marker_pixels);
-
     let width = side;
     let height = side;
 
     let total_data_bytes = width * height * 3;
-    let mut full_data = vec![0u8; total_data_bytes];
+    let marker_end_pos = (height - 1) * width * 3 + (width - end_marker_pixels) * 3;
 
-    let marker_start_pos = (height - 1) * width * 3 + (width - end_marker_pixels) * 3;
+    let flat = build_flat_pixel_buffer(&meta_pixel, padding_needed, marker_end_pos, marker_end_len, total_data_bytes);
+    drop(meta_pixel);
 
-    let copy_len = data_with_markers.len().min(marker_start_pos);
-    full_data[..copy_len].copy_from_slice(&data_with_markers[..copy_len]);
-
-    let end_len = marker_end_bytes.len().min(total_data_bytes - marker_start_pos);
-    full_data[marker_start_pos..marker_start_pos + end_len]
-        .copy_from_slice(&marker_end_bytes[..end_len]);
-
-    let stride = width * 3 + 1;
-    let mut scanlines = Vec::with_capacity(height * stride);
-
-    for row in 0..height {
-        scanlines.push(0u8);
-        let src_start = row * width * 3;
-        let src_end = (row + 1) * width * 3;
-        scanlines.extend_from_slice(&full_data[src_start..src_end]);
-    }
-
-    let idat_data = create_raw_deflate(&scanlines);
+    let row_bytes = width * 3;
+    let idat_data = create_raw_deflate_from_rows(&flat, row_bytes, height);
+    drop(flat);
 
     build_png(width, height, &idat_data, file_list)
+}
+
+fn build_flat_pixel_buffer(
+    meta_pixel: &[u8],
+    padding_needed: usize,
+    marker_end_pos: usize,
+    marker_end_len: usize,
+    total_data_bytes: usize,
+) -> Vec<u8> {
+    let header_len = 12 + PIXEL_MAGIC.len() + meta_pixel.len() + padding_needed;
+    let mut flat = vec![0u8; total_data_bytes];
+
+    let mut pos = 0;
+    for m in &MARKER_START {
+        flat[pos] = m.0; flat[pos + 1] = m.1; flat[pos + 2] = m.2;
+        pos += 3;
+    }
+    flat[pos] = MARKER_ZSTD.0; flat[pos + 1] = MARKER_ZSTD.1; flat[pos + 2] = MARKER_ZSTD.2;
+    pos += 3;
+
+    flat[pos..pos + PIXEL_MAGIC.len()].copy_from_slice(PIXEL_MAGIC);
+    pos += PIXEL_MAGIC.len();
+
+    flat[pos..pos + meta_pixel.len()].copy_from_slice(meta_pixel);
+    pos += meta_pixel.len();
+
+    if marker_end_pos + marker_end_len <= total_data_bytes {
+        for (i, m) in MARKER_END.iter().enumerate() {
+            let off = marker_end_pos + i * 3;
+            flat[off] = m.0; flat[off + 1] = m.1; flat[off + 2] = m.2;
+        }
+    }
+
+    flat
 }
 
 fn build_meta_pixel(payload: &[u8]) -> Result<Vec<u8>> {
@@ -323,38 +326,87 @@ fn write_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) -> Result<(
     out.extend_from_slice(chunk_type);
     out.extend_from_slice(data);
 
-    let mut crc_data = Vec::with_capacity(chunk_type.len() + data.len());
-    crc_data.extend_from_slice(chunk_type);
-    crc_data.extend_from_slice(data);
-    let crc = crate::core::crc32_bytes(&crc_data);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(chunk_type);
+    hasher.update(data);
+    let crc = hasher.finalize();
 
     out.extend_from_slice(&crc.to_be_bytes());
     Ok(())
 }
 
 fn create_raw_deflate(data: &[u8]) -> Vec<u8> {
-    let mut result = Vec::with_capacity(data.len() + 6 + (data.len() / 65535 + 1) * 5);
+    const MAX_BLOCK: usize = 65535;
+    let num_blocks = (data.len() + MAX_BLOCK - 1) / MAX_BLOCK;
+    let total_size = 2 + num_blocks * 5 + data.len() + 4;
+    let mut result = Vec::with_capacity(total_size);
 
     result.push(0x78);
     result.push(0x01);
 
     let mut offset = 0;
     while offset < data.len() {
-        let chunk_size = (data.len() - offset).min(65535);
+        let chunk_size = (data.len() - offset).min(MAX_BLOCK);
         let is_last = offset + chunk_size >= data.len();
 
-        result.push(if is_last { 0x01 } else { 0x00 });
-
-        result.push(chunk_size as u8);
-        result.push((chunk_size >> 8) as u8);
-        result.push(!chunk_size as u8);
-        result.push((!(chunk_size >> 8)) as u8);
-
+        let header = [
+            if is_last { 0x01 } else { 0x00 },
+            chunk_size as u8,
+            (chunk_size >> 8) as u8,
+            !chunk_size as u8,
+            (!(chunk_size >> 8)) as u8,
+        ];
+        result.extend_from_slice(&header);
         result.extend_from_slice(&data[offset..offset + chunk_size]);
         offset += chunk_size;
     }
 
     let adler = crate::core::adler32_bytes(data);
+    result.extend_from_slice(&adler.to_be_bytes());
+
+    result
+}
+
+fn create_raw_deflate_from_rows(flat: &[u8], row_bytes: usize, height: usize) -> Vec<u8> {
+    let stride = row_bytes + 1;
+    let scanlines_total = height * stride;
+
+    let mut scanlines = vec![0u8; scanlines_total];
+    for row in 0..height {
+        let flat_start = row * row_bytes;
+        let flat_end = (flat_start + row_bytes).min(flat.len());
+        let copy_len = flat_end.saturating_sub(flat_start);
+        if copy_len > 0 {
+            let dst_start = row * stride + 1;
+            scanlines[dst_start..dst_start + copy_len].copy_from_slice(&flat[flat_start..flat_end]);
+        }
+    }
+
+    const MAX_BLOCK: usize = 65535;
+    let num_blocks = (scanlines_total + MAX_BLOCK - 1) / MAX_BLOCK;
+    let total_size = 2 + num_blocks * 5 + scanlines_total + 4;
+    let mut result = Vec::with_capacity(total_size);
+
+    result.push(0x78);
+    result.push(0x01);
+
+    let mut offset = 0;
+    while offset < scanlines.len() {
+        let chunk_size = (scanlines.len() - offset).min(MAX_BLOCK);
+        let is_last = offset + chunk_size >= scanlines.len();
+        let header = [
+            if is_last { 0x01 } else { 0x00 },
+            chunk_size as u8,
+            (chunk_size >> 8) as u8,
+            !chunk_size as u8,
+            (!(chunk_size >> 8)) as u8,
+        ];
+        result.extend_from_slice(&header);
+        result.extend_from_slice(&scanlines[offset..offset + chunk_size]);
+        offset += chunk_size;
+    }
+
+    let adler = crate::core::adler32_bytes(&scanlines);
     result.extend_from_slice(&adler.to_be_bytes());
 
     result

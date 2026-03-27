@@ -85,13 +85,53 @@ pub fn crc32_bytes(buf: &[u8]) -> u32 {
 
 pub fn adler32_bytes(buf: &[u8]) -> u32 {
     const MOD: u32 = 65521;
+    const NMAX: usize = 5552;
+
+    if buf.len() > 4 * 1024 * 1024 {
+        return adler32_parallel(buf);
+    }
+
     let mut a: u32 = 1;
     let mut b: u32 = 0;
-    for &v in buf {
-        a = (a + v as u32) % MOD;
-        b = (b + a) % MOD;
+
+    for chunk in buf.chunks(NMAX) {
+        for &v in chunk {
+            a += v as u32;
+            b += a;
+        }
+        a %= MOD;
+        b %= MOD;
     }
+
     (b << 16) | a
+}
+
+fn adler32_parallel(buf: &[u8]) -> u32 {
+    use rayon::prelude::*;
+    const MOD: u32 = 65521;
+    const CHUNK: usize = 1024 * 1024;
+
+    let chunks: Vec<&[u8]> = buf.chunks(CHUNK).collect();
+    let partials: Vec<(u32, u32, usize)> = chunks.par_iter().map(|chunk| {
+        let mut a: u32 = 0;
+        let mut b: u32 = 0;
+        for &v in *chunk {
+            a += v as u32;
+            b += a;
+        }
+        a %= MOD;
+        b %= MOD;
+        (a, b, chunk.len())
+    }).collect();
+
+    let mut a: u64 = 1;
+    let mut b: u64 = 0;
+    for (pa, pb, len) in partials {
+        b = (b + pb as u64 + a * len as u64) % MOD as u64;
+        a = (a + pa as u64) % MOD as u64;
+    }
+
+    ((b as u32) << 16) | (a as u32)
 }
 
 pub fn delta_encode_bytes(buf: &[u8]) -> Vec<u8> {
@@ -173,40 +213,85 @@ pub fn train_zstd_dictionary(sample_paths: &[PathBuf], dict_size: usize) -> Resu
 /// For large buffers (>50 MiB) without a dictionary, multiple chunk sizes
 /// are benchmarked on a sample and the best is selected automatically.
 pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
+    zstd_compress_with_prefix(buf, level, dict, &[])
+}
+
+pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
     let actual_level = level.min(22).max(1);
+    let total_len = prefix.len() + buf.len();
+
+    let adaptive_level = if total_len > 2 * 1024 * 1024 * 1024 {
+        actual_level.min(1)
+    } else if total_len > 1024 * 1024 * 1024 {
+        actual_level.min(3)
+    } else if total_len > 256 * 1024 * 1024 {
+        actual_level.min(6)
+    } else if total_len > 64 * 1024 * 1024 {
+        actual_level.min(12)
+    } else {
+        actual_level
+    };
+
+    if dict.is_none() && total_len < 4 * 1024 * 1024 {
+        if prefix.is_empty() {
+            return zstd::bulk::compress(buf, adaptive_level)
+                .map_err(|e| format!("zstd bulk compress error: {}", e));
+        }
+        let mut combined = Vec::with_capacity(total_len);
+        combined.extend_from_slice(prefix);
+        combined.extend_from_slice(buf);
+        return zstd::bulk::compress(&combined, adaptive_level)
+            .map_err(|e| format!("zstd bulk compress error: {}", e));
+    }
+
     let mut encoder = if let Some(d) = dict {
-        zstd::stream::Encoder::with_dictionary(Vec::new(), actual_level, d)
+        zstd::stream::Encoder::with_dictionary(Vec::with_capacity(total_len / 2), adaptive_level, d)
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     } else {
-        zstd::stream::Encoder::new(Vec::new(), actual_level)
+        zstd::stream::Encoder::new(Vec::with_capacity(total_len / 2), adaptive_level)
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     };
 
     let threads = num_cpus::get() as u32;
     if threads > 1 {
-        let max_threads = if actual_level >= 20 { threads.min(4) } else { threads };
+        let max_threads = if adaptive_level >= 20 { threads.min(4) } else { threads };
         let _ = encoder.multithread(max_threads);
     }
 
-    if buf.len() > 1024 * 1024 {
+    if total_len > 256 * 1024 && adaptive_level >= 3 {
         let _ = encoder.long_distance_matching(true);
-        let wlog = if buf.len() > 512 * 1024 * 1024 { 28 }
-            else if buf.len() > 64 * 1024 * 1024 { 27 }
+    }
+    if total_len > 256 * 1024 {
+        let wlog = if total_len > 1024 * 1024 * 1024 { 30 }
+            else if total_len > 512 * 1024 * 1024 { 29 }
+            else if total_len > 64 * 1024 * 1024 { 28 }
+            else if total_len > 8 * 1024 * 1024 { 27 }
             else { 26 };
         let _ = encoder.window_log(wlog);
     }
 
-    let _ = encoder.set_pledged_src_size(Some(buf.len() as u64));
+    let _ = encoder.set_pledged_src_size(Some(total_len as u64));
 
-    encoder.write_all(buf).map_err(|e| format!("zstd write error: {}", e))?;
+    if !prefix.is_empty() {
+        encoder.write_all(prefix).map_err(|e| format!("zstd write prefix error: {}", e))?;
+    }
+
+    let chunk_size = if total_len > 256 * 1024 * 1024 { 16 * 1024 * 1024 }
+        else if total_len > 64 * 1024 * 1024 { 8 * 1024 * 1024 }
+        else { buf.len() };
+
+    for chunk in buf.chunks(chunk_size) {
+        encoder.write_all(chunk).map_err(|e| format!("zstd write error: {}", e))?;
+    }
+
     encoder.finish().map_err(|e| format!("zstd finish error: {}", e))
 }
 
 pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Read;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(buf.len() * 2);
     if let Some(d) = dict {
         let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(buf), d)
             .map_err(|e| format!("zstd decoder init error: {}", e))?;
