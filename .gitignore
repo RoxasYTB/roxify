@@ -27,3 +27,4 @@ libroxify_native-*
 *.node
 !roxify_native.node
 pnpm-lock.yaml
+.npmrc
