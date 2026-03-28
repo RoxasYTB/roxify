@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 
 import {
-    mkdirSync,
-    readdirSync,
-    readFileSync,
-    statSync,
-    writeFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
 } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import {
-    DataFormatError,
-    decodePngToBinary,
-    encodeBinaryToPng,
-    hasPassphraseInPng,
-    IncorrectPassphraseError,
-    listFilesInPng,
-    PassphraseRequiredError,
+  DataFormatError,
+  decodePngToBinary,
+  encodeBinaryToPng,
+  hasPassphraseInPng,
+  IncorrectPassphraseError,
+  listFilesInPng,
+  PassphraseRequiredError,
 } from './index.js';
 import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
 import * as cliProgress from './stub-progress.js';
 import {
-    encodeWithRustCLI,
-    isRustBinaryAvailable,
+  encodeWithRustCLI,
+  isRustBinaryAvailable,
 } from './utils/rust-cli-wrapper.js';
 
 const VERSION = '1.12.0';

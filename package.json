@@ -31,8 +31,6 @@
     "dist/roxify_native-macos-x64",
     "dist/rox-macos-universal",
     "scripts/postinstall.cjs",
-    "native",
-    "Cargo.toml",
     "README.md",
     "LICENSE"
   ],
