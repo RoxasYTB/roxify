@@ -30,9 +30,7 @@ fn smart_compress(data: &[u8], compression_level: i32, dict: Option<&[u8]>) -> R
 
     let entropy = sample_entropy(data);
 
-    let fast_level = if compression_level >= 19 { 6 }
-        else if compression_level >= 12 { 4 }
-        else { 3 };
+    let fast_level = compression_level.max(3);
 
     if entropy >= 7.5 {
         return crate::core::zstd_compress_with_prefix(data, fast_level, None, MAGIC)

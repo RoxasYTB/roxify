@@ -138,6 +138,7 @@ export async function encodeWithRustCLI(
   passphrase?: string,
   encryptType: 'aes' | 'xor' = 'aes',
   name?: string,
+  onProgress?: (pct: number) => void,
 ): Promise<void> {
   const cliPath = findRustBinary();
 
@@ -157,7 +158,7 @@ export async function encodeWithRustCLI(
   }
 
   return new Promise((resolve, reject) => {
-    const args = ['encode', '--level', String(compressionLevel)];
+    const args = ['encode', '--level', String(compressionLevel), '--progress'];
 
     let supportsName = false;
     if (name) {
@@ -188,7 +189,9 @@ export async function encodeWithRustCLI(
     const runSpawn = (exePath: string) => {
       let proc;
       try {
-        proc = spawn(exePath, args, { stdio: 'inherit' });
+        proc = spawn(exePath, args, {
+          stdio: ['inherit', 'inherit', 'pipe'],
+        });
       } catch (err: any) {
         if (!triedExtract) {
           triedExtract = true;
@@ -200,6 +203,21 @@ export async function encodeWithRustCLI(
           return runSpawn(tempExe);
         }
         return reject(err);
+      }
+
+      if (proc.stderr && onProgress) {
+        let stderrBuf = '';
+        proc.stderr.on('data', (chunk: Buffer) => {
+          stderrBuf += chunk.toString();
+          const lines = stderrBuf.split('\n');
+          stderrBuf = lines.pop() || '';
+          for (const line of lines) {
+            const match = line.match(/PROGRESS:(\d+)/);
+            if (match) {
+              onProgress(parseInt(match[1], 10));
+            }
+          }
+        });
       }
 
       proc.on('error', (err: any) => {
@@ -230,5 +248,72 @@ export async function encodeWithRustCLI(
     };
 
     runSpawn(cliPath);
+  });
+}
+
+export async function decodeWithRustCLI(
+  inputPath: string,
+  outputPath: string,
+  passphrase?: string,
+  files?: string[],
+  onProgress?: (pct: number) => void,
+): Promise<{ usedRust: boolean }> {
+  const cliPath = findRustBinary();
+
+  if (!cliPath) {
+    throw new Error('Rust CLI binary not found');
+  }
+
+  return new Promise((resolve, reject) => {
+    const args = ['decompress', '--progress'];
+
+    if (passphrase) {
+      args.push('--passphrase', passphrase);
+    }
+
+    if (files && files.length > 0) {
+      args.push('--files', JSON.stringify(files));
+    }
+
+    args.push(inputPath, outputPath);
+
+    const proc = spawn(cliPath, args, {
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+
+    if (proc.stdout) {
+      proc.stdout.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        stdout += text;
+        process.stdout.write(text);
+      });
+    }
+
+    if (proc.stderr && onProgress) {
+      let stderrBuf = '';
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderrBuf += chunk.toString();
+        const lines = stderrBuf.split('\n');
+        stderrBuf = lines.pop() || '';
+        for (const line of lines) {
+          const match = line.match(/PROGRESS:(\d+)/);
+          if (match) {
+            onProgress(parseInt(match[1], 10));
+          }
+        }
+      });
+    }
+
+    proc.on('error', (err) => reject(err));
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve({ usedRust: true });
+      } else {
+        reject(new Error(`Rust decoder exited with status ${code}`));
+      }
+    });
   });
 }

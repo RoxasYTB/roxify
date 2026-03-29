@@ -75,9 +75,7 @@ fn compress_dir_to_zst(
     let zst_file = File::create(zst_path)?;
     let buf_writer = BufWriter::with_capacity(16 * 1024 * 1024, zst_file);
 
-    let actual_level = if compression_level >= 19 { 6 }
-        else if compression_level >= 12 { 4 }
-        else { compression_level.min(6) };
+    let actual_level = compression_level.max(1);
     let mut encoder = zstd::stream::Encoder::new(buf_writer, actual_level)
         .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
 
@@ -86,7 +84,7 @@ fn compress_dir_to_zst(
         let _ = encoder.multithread(threads);
     }
     let _ = encoder.long_distance_matching(true);
-    let _ = encoder.window_log(30);
+    let _ = encoder.window_log(27);
 
     encoder.write_all(MAGIC)?;
 
