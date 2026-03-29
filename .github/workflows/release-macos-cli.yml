@@ -41,7 +41,11 @@ jobs:
           key: macos-cli-${{ matrix.target }}
 
       - name: Install OpenMP
-        run: brew install libomp
+        run: |
+          brew install libomp
+          echo "CFLAGS=-I$(brew --prefix libomp)/include" >> $GITHUB_ENV
+          echo "LDFLAGS=-L$(brew --prefix libomp)/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix libomp)/include" >> $GITHUB_ENV
 
       - name: Build CLI binary
         run: |
