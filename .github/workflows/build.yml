@@ -88,14 +88,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libzstd-dev pkg-config || true
 
-      - name: Install OpenMP (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install libomp
-          echo "CFLAGS=-I$(brew --prefix libomp)/include" >> $GITHUB_ENV
-          echo "LDFLAGS=-L$(brew --prefix libomp)/lib" >> $GITHUB_ENV
-          echo "CPPFLAGS=-I$(brew --prefix libomp)/include" >> $GITHUB_ENV
-
       # ── Build ──
       - name: Build native
         shell: bash
