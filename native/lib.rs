@@ -15,6 +15,7 @@ mod mtf;
 mod context_mixing;
 mod pool;
 mod hybrid;
+mod pipeline;
 mod encoder;
 mod packer;
 mod crypto;

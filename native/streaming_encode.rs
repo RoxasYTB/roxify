@@ -28,16 +28,31 @@ pub fn encode_dir_to_png_encrypted(
     passphrase: Option<&str>,
     encrypt_type: Option<&str>,
 ) -> anyhow::Result<()> {
+    encode_dir_to_png_encrypted_progress(dir_path, output_path, compression_level, name, passphrase, encrypt_type, false)
+}
+
+pub fn encode_dir_to_png_encrypted_progress(
+    dir_path: &Path,
+    output_path: &Path,
+    compression_level: i32,
+    name: Option<&str>,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    progress: bool,
+) -> anyhow::Result<()> {
     let tmp_zst = output_path.with_extension("tmp.zst");
 
-    let file_list = compress_dir_to_zst(dir_path, &tmp_zst, compression_level)?;
+    if progress { eprintln!("PROGRESS:0"); }
+    let file_list = compress_dir_to_zst(dir_path, &tmp_zst, compression_level, progress)?;
     let file_list_json = serde_json::to_string(&file_list)?;
 
+    if progress { eprintln!("PROGRESS:80"); }
     let result = write_png_from_zst(
         &tmp_zst, output_path, name, Some(&file_list_json),
         passphrase, encrypt_type,
     );
     let _ = std::fs::remove_file(&tmp_zst);
+    if progress { eprintln!("PROGRESS:100"); }
     result
 }
 
@@ -45,6 +60,7 @@ fn compress_dir_to_zst(
     dir_path: &Path,
     zst_path: &Path,
     compression_level: i32,
+    progress: bool,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let base = dir_path;
 
@@ -55,10 +71,13 @@ fn compress_dir_to_zst(
         .filter(|e| e.file_type().is_file())
         .collect();
 
+    let total_files = entries.len();
     let zst_file = File::create(zst_path)?;
     let buf_writer = BufWriter::with_capacity(16 * 1024 * 1024, zst_file);
 
-    let actual_level = compression_level.min(3);
+    let actual_level = if compression_level >= 19 { 6 }
+        else if compression_level >= 12 { 4 }
+        else { compression_level.min(6) };
     let mut encoder = zstd::stream::Encoder::new(buf_writer, actual_level)
         .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
 
@@ -72,9 +91,10 @@ fn compress_dir_to_zst(
     encoder.write_all(MAGIC)?;
 
     let mut file_list = Vec::new();
+    let mut last_pct = 0u32;
     {
         let mut tar_builder = Builder::new(&mut encoder);
-        for entry in &entries {
+        for (i, entry) in entries.iter().enumerate() {
             let full = entry.path();
             let rel = full.strip_prefix(base).unwrap_or(full);
             let rel_str = rel.to_string_lossy().replace('\\', "/");
@@ -103,6 +123,14 @@ fn compress_dir_to_zst(
                 .map_err(|e| anyhow::anyhow!("tar append {}: {}", rel_str, e))?;
 
             file_list.push(serde_json::json!({"name": rel_str, "size": size}));
+
+            if progress && total_files > 0 {
+                let pct = ((i + 1) as u32 * 80) / total_files as u32;
+                if pct > last_pct {
+                    last_pct = pct;
+                    eprintln!("PROGRESS:{}", pct);
+                }
+            }
         }
         tar_builder.finish().map_err(|e| anyhow::anyhow!("tar finish: {}", e))?;
     }

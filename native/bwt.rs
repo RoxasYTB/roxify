@@ -2,6 +2,7 @@ use anyhow::Result;
 use libsais::bwt::Bwt;
 use libsais::typestate::OwnedBuffer;
 use libsais::BwtConstruction;
+use libsais::ThreadCount;
 use rayon::prelude::*;
 
 pub struct BwtResult {
@@ -17,7 +18,7 @@ pub fn bwt_encode(data: &[u8]) -> Result<BwtResult> {
 
     let bwt_result = BwtConstruction::for_text(data)
         .with_owned_temporary_array_buffer32()
-        .single_threaded()
+        .multi_threaded(ThreadCount::openmp_default())
         .run()
         .map_err(|e| anyhow::anyhow!("libsais BWT: {:?}", e))?;
 
@@ -38,7 +39,7 @@ pub fn bwt_decode(bwt_data: &[u8], primary_index: u32) -> Result<Vec<u8>> {
     let text = bwt_obj
         .unbwt()
         .with_owned_temporary_array_buffer32()
-        .single_threaded()
+        .multi_threaded(ThreadCount::openmp_default())
         .run()
         .map_err(|e| anyhow::anyhow!("libsais UnBWT: {:?}", e))?;
 

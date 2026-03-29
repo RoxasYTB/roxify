@@ -163,22 +163,22 @@ pub fn delta_decode_bytes(buf: &[u8]) -> Vec<u8> {
 fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
-    // Allow ultra levels (20-22) for maximum compression
     let actual_level = level.min(22).max(1);
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), actual_level)
         .map_err(|e| format!("zstd encoder init error: {}", e))?;
 
     let threads = num_cpus::get() as u32;
     if threads > 1 {
-        // Ultra levels (>=20) use much more memory per thread; limit to 4
         let max_threads = if actual_level >= 20 { threads.min(4) } else { threads };
         let _ = encoder.multithread(max_threads);
     }
 
     if buf.len() > 1024 * 1024 {
         let _ = encoder.long_distance_matching(true);
-        let wlog = if buf.len() > 512 * 1024 * 1024 { 28 }
-            else if buf.len() > 64 * 1024 * 1024 { 27 }
+        let wlog = if buf.len() > 1024 * 1024 * 1024 { 30 }
+            else if buf.len() > 512 * 1024 * 1024 { 29 }
+            else if buf.len() > 64 * 1024 * 1024 { 28 }
+            else if buf.len() > 8 * 1024 * 1024 { 27 }
             else { 26 };
         let _ = encoder.window_log(wlog);
     }
@@ -222,45 +222,33 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
     let actual_level = level.min(22).max(1);
     let total_len = prefix.len() + buf.len();
 
-    let adaptive_level = if total_len > 2 * 1024 * 1024 * 1024 {
-        actual_level.min(1)
-    } else if total_len > 1024 * 1024 * 1024 {
-        actual_level.min(3)
-    } else if total_len > 256 * 1024 * 1024 {
-        actual_level.min(6)
-    } else if total_len > 64 * 1024 * 1024 {
-        actual_level.min(12)
-    } else {
-        actual_level
-    };
-
     if dict.is_none() && total_len < 4 * 1024 * 1024 {
         if prefix.is_empty() {
-            return zstd::bulk::compress(buf, adaptive_level)
+            return zstd::bulk::compress(buf, actual_level)
                 .map_err(|e| format!("zstd bulk compress error: {}", e));
         }
         let mut combined = Vec::with_capacity(total_len);
         combined.extend_from_slice(prefix);
         combined.extend_from_slice(buf);
-        return zstd::bulk::compress(&combined, adaptive_level)
+        return zstd::bulk::compress(&combined, actual_level)
             .map_err(|e| format!("zstd bulk compress error: {}", e));
     }
 
     let mut encoder = if let Some(d) = dict {
-        zstd::stream::Encoder::with_dictionary(Vec::with_capacity(total_len / 2), adaptive_level, d)
+        zstd::stream::Encoder::with_dictionary(Vec::with_capacity(total_len / 2), actual_level, d)
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     } else {
-        zstd::stream::Encoder::new(Vec::with_capacity(total_len / 2), adaptive_level)
+        zstd::stream::Encoder::new(Vec::with_capacity(total_len / 2), actual_level)
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     };
 
     let threads = num_cpus::get() as u32;
     if threads > 1 {
-        let max_threads = if adaptive_level >= 20 { threads.min(4) } else { threads };
+        let max_threads = if actual_level >= 20 { threads.min(4) } else { threads };
         let _ = encoder.multithread(max_threads);
     }
 
-    if total_len > 256 * 1024 && adaptive_level >= 3 {
+    if total_len > 256 * 1024 && actual_level >= 3 {
         let _ = encoder.long_distance_matching(true);
     }
     if total_len > 256 * 1024 {
@@ -306,6 +294,50 @@ pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Re
     Ok(out)
 }
 
+pub fn smart_decompress(buf: &[u8], dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
+    let decompressed = zstd_decompress_bytes(buf, dict)?;
+    strip_rox_prefix(&decompressed)
+}
+
+pub fn strip_rox_prefix(data: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    if data.starts_with(b"ROX2") {
+        return reverse_bwt_payload(&data[4..]);
+    }
+    if data.starts_with(b"ROX1") {
+        return Ok(data[4..].to_vec());
+    }
+    Ok(data.to_vec())
+}
+
+fn reverse_bwt_payload(payload: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    if payload.len() < 12 {
+        return Err("ROX2 payload too small".to_string());
+    }
+    let block_count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+    let original_size = u64::from_le_bytes(payload[4..12].try_into().unwrap()) as usize;
+    let mut pos = 12;
+    let mut result = Vec::with_capacity(original_size);
+
+    for _ in 0..block_count {
+        if pos + 8 > payload.len() {
+            return Err("ROX2 payload truncated".to_string());
+        }
+        let primary_index = u32::from_le_bytes(payload[pos..pos + 4].try_into().unwrap());
+        let block_len = u32::from_le_bytes(payload[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        pos += 8;
+        if pos + block_len > payload.len() {
+            return Err("ROX2 block data truncated".to_string());
+        }
+        let bwt_data = &payload[pos..pos + block_len];
+        pos += block_len;
+
+        let decoded = crate::bwt::bwt_decode(bwt_data, primary_index)
+            .map_err(|e| format!("BWT decode error: {}", e))?;
+        result.extend_from_slice(&decoded);
+    }
+
+    Ok(result)
+}
 
 #[cfg(test)]
 mod tests {
