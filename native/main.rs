@@ -17,6 +17,14 @@ mod archive;
 mod streaming;
 mod streaming_decode;
 mod streaming_encode;
+mod bwt;
+mod mtf;
+mod rans;
+mod rans_byte;
+mod context_mixing;
+mod pool;
+mod hybrid;
+mod pipeline;
 
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
@@ -41,9 +49,10 @@ enum Commands {
         encrypt: String,
         #[arg(short, long)]
         name: Option<String>,
-        /// optional zstd dictionary file for payload compression
         #[arg(long, value_name = "FILE")]
         dict: Option<PathBuf>,
+        #[arg(long)]
+        progress: bool,
     },
 
     List {
@@ -94,9 +103,10 @@ enum Commands {
         files: Option<String>,
         #[arg(short, long)]
         passphrase: Option<String>,
-        /// optional dictionary file used during decompression
         #[arg(long, value_name = "FILE")]
         dict: Option<PathBuf>,
+        #[arg(long)]
+        progress: bool,
     },
     Crc32 {
         input: PathBuf,
@@ -157,34 +167,39 @@ fn main() -> anyhow::Result<()> {
             println!("wrote {} bytes dictionary to {:?}", dict.len(), output);
             return Ok(());
         }
-        Commands::Encode { input, output, level, passphrase, encrypt, name, dict } => {
+        Commands::Encode { input, output, level, passphrase, encrypt, name, dict, progress } => {
             let is_dir = input.is_dir();
 
             let file_name = name.as_deref()
                 .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
             if is_dir && dict.is_none() {
-                streaming_encode::encode_dir_to_png_encrypted(
+                streaming_encode::encode_dir_to_png_encrypted_progress(
                     &input,
                     &output,
                     level,
                     file_name,
                     passphrase.as_deref(),
                     Some(&encrypt),
+                    progress,
                 )?;
                 println!("(TAR archive, rXFL chunk embedded)");
                 return Ok(());
             }
 
             let (payload, file_list_json) = if is_dir {
+                if progress { eprintln!("PROGRESS:0"); }
                 let result = archive::tar_pack_directory_with_list(&input)
                     .map_err(|e| anyhow::anyhow!(e))?;
                 let json_list: Vec<serde_json::Value> = result.file_list.iter()
                     .map(|(name, size)| serde_json::json!({"name": name, "size": size}))
                     .collect();
+                if progress { eprintln!("PROGRESS:30"); }
                 (result.data, Some(serde_json::to_string(&json_list)?))
             } else {
+                if progress { eprintln!("PROGRESS:0"); }
                 let pack_result = packer::pack_path_with_metadata(&input)?;
+                if progress { eprintln!("PROGRESS:20"); }
                 (pack_result.data, pack_result.file_list_json)
             };
 
@@ -195,6 +210,7 @@ fn main() -> anyhow::Result<()> {
 
             let use_streaming = payload.len() > 64 * 1024 * 1024;
 
+            if progress { eprintln!("PROGRESS:40"); }
             if use_streaming {
                 streaming::encode_to_png_file(
                     &payload,
@@ -232,6 +248,7 @@ fn main() -> anyhow::Result<()> {
                 };
                 write_all(&output, &png)?;
             }
+            if progress { eprintln!("PROGRESS:100"); }
 
             if file_list_json.is_some() {
                 if is_dir {
@@ -335,7 +352,8 @@ fn main() -> anyhow::Result<()> {
             let dest = output.unwrap_or_else(|| PathBuf::from("out.zst"));
             write_all(&dest, &out)?;
         }
-        Commands::Decompress { input, output, files, passphrase, dict } => {
+        Commands::Decompress { input, output, files, passphrase, dict, progress } => {
+            if progress { eprintln!("PROGRESS:0"); }
             let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
             let is_png_file = input.extension().map(|e| e == "png").unwrap_or(false)
                 || (file_size >= 8 && {
@@ -346,8 +364,10 @@ fn main() -> anyhow::Result<()> {
 
             if is_png_file && files.is_none() && dict.is_none() && file_size > 100_000_000 {
                 let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("out.raw"));
+                if progress { eprintln!("PROGRESS:10"); }
                 match streaming_decode::streaming_decode_to_dir_encrypted(&input, &out_dir, passphrase.as_deref()) {
                     Ok(written) => {
+                        if progress { eprintln!("PROGRESS:100"); }
                         println!("Unpacked {} files (TAR)", written.len());
                         return Ok(());
                     }
@@ -358,6 +378,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let buf = read_all(&input)?;
+            if progress { eprintln!("PROGRESS:20"); }
             let dict_bytes: Option<Vec<u8>> = match dict {
                 Some(path) => Some(read_all(&path)?),
                 None => None,
@@ -394,8 +415,8 @@ fn main() -> anyhow::Result<()> {
                 } else {
                                         if buf[0] == 0x00u8 {
                         buf[1..].to_vec()
-                    } else if buf.starts_with(b"ROX1") {
-                        buf[4..].to_vec()
+                    } else if buf.starts_with(b"ROX1") || buf.starts_with(b"ROX2") {
+                        buf.to_vec()
                     } else if buf[0] == 0x01u8 || buf[0] == 0x02u8 || buf[0] == 0x03u8 {
                         let pass = passphrase.as_ref().map(|s: &String| s.as_str());
                         match crate::crypto::try_decrypt(&buf, pass) {
@@ -407,19 +428,23 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
 
-                                                let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
-                    Box::new(Cursor::new(normalized[4..].to_vec()))
+                let decoded = if normalized.starts_with(b"ROX1") || normalized.starts_with(b"ROX2") {
+                    crate::core::strip_rox_prefix(&normalized).map_err(|e| anyhow::anyhow!(e))?
                 } else {
-                    let mut dec = zstd::stream::Decoder::new(Cursor::new(normalized)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                    let mut dec = zstd::stream::Decoder::new(Cursor::new(&normalized)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
                     dec.window_log_max(31).map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
-                    Box::new(dec)
+                    let mut out = Vec::new();
+                    std::io::Read::read_to_end(&mut dec, &mut out).map_err(|e| anyhow::anyhow!("zstd read: {}", e))?;
+                    crate::core::strip_rox_prefix(&out).map_err(|e| anyhow::anyhow!(e))?
                 };
+                let mut reader: Box<dyn std::io::Read> = Box::new(Cursor::new(decoded));
 
                 let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
                 std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
 
                                 let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
+                if progress { eprintln!("PROGRESS:100"); }
                 println!("Unpacked {} files", written.len());
             } else {
                                                 let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
@@ -429,15 +454,12 @@ fn main() -> anyhow::Result<()> {
                     let first = payload[0];
                     if first == 0x00u8 {
                         let compressed = payload[1..].to_vec();
-                        match crate::core::zstd_decompress_bytes(&compressed, dict_bytes.as_deref()) {
-                            Ok(mut o) => {
-                                if o.starts_with(b"ROX1") { o = o[4..].to_vec(); }
-                                o
-                            }
+                        match crate::core::smart_decompress(&compressed, dict_bytes.as_deref()) {
+                            Ok(o) => o,
                             Err(e) => {
-                                if compressed.starts_with(b"ROX1") {
-                                    eprintln!("⚠️ zstd decompress failed ({}), but payload starts with ROX1: falling back to raw pack", e);
-                                    compressed[4..].to_vec()
+                                if compressed.starts_with(b"ROX1") || compressed.starts_with(b"ROX2") {
+                                    eprintln!("⚠️ zstd decompress failed ({}), falling back to raw", e);
+                                    crate::core::strip_rox_prefix(&compressed).unwrap_or_else(|_| compressed[4..].to_vec())
                                 } else {
                                     return Err(anyhow::anyhow!("zstd decompress error: {}", e));
                                 }
@@ -447,16 +469,9 @@ fn main() -> anyhow::Result<()> {
                         let pass = passphrase.as_ref().map(|s| s.as_str());
                         match crate::crypto::try_decrypt(&payload, pass) {
                             Ok(v) => {
-                                let inner = if v.starts_with(b"ROX1") {
-                                    v[4..].to_vec()
-                                } else {
-                                    v
-                                };
-                                match crate::core::zstd_decompress_bytes(&inner, dict_bytes.as_deref()) {
-                                    Ok(mut o) => {
-                                        if o.starts_with(b"ROX1") { o = o[4..].to_vec(); }
-                                        o
-                                    }
+                                let inner = crate::core::strip_rox_prefix(&v).unwrap_or(v);
+                                match crate::core::smart_decompress(&inner, dict_bytes.as_deref()) {
+                                    Ok(o) => o,
                                     Err(_) => inner,
                                 }
                             }
@@ -464,12 +479,12 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 } else {
-                    match crate::core::zstd_decompress_bytes(&buf, dict_bytes.as_deref()) {
-                        Ok(mut x) => { if x.starts_with(b"ROX1") { x = x[4..].to_vec(); } x },
+                    match crate::core::smart_decompress(&buf, dict_bytes.as_deref()) {
+                        Ok(x) => x,
                         Err(e) => {
-                            if buf.starts_with(b"ROX1") {
-                                eprintln!("⚠️ zstd decompress failed ({}), but input already starts with ROX1: using raw pack", e);
-                                buf[4..].to_vec()
+                            if buf.starts_with(b"ROX1") || buf.starts_with(b"ROX2") {
+                                eprintln!("⚠️ zstd decompress failed ({}), falling back to raw", e);
+                                crate::core::strip_rox_prefix(&buf).unwrap_or_else(|_| buf[4..].to_vec())
                             } else {
                                 return Err(anyhow::anyhow!("zstd decompress error: {}", e));
                             }
@@ -477,6 +492,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
 
+                if progress { eprintln!("PROGRESS:60"); }
                 let dest = output.unwrap_or_else(|| PathBuf::from("out.raw"));
 
                 if archive::is_tar(&out_bytes) {
@@ -518,6 +534,7 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     write_all(&dest, &out_bytes)?;
                 }
+                if progress { eprintln!("PROGRESS:100"); }
             }
         }
         Commands::Crc32 { input } => {

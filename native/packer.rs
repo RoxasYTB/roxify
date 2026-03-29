@@ -284,8 +284,8 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, fi
                     pos += 4;
                     header_parsed = true;
                     if debug { eprintln!("[rox debug] header parsed, file_count={}", _file_count); }
-                } else if magic_header == 0x524f5831u32 {
-                                        if debug { eprintln!("[rox debug] found ROX1 outer magic, skipping 4 bytes"); }
+                } else if magic_header == 0x524f5831u32 || magic_header == 0x524f5832u32 {
+                                        if debug { eprintln!("[rox debug] found ROX outer magic, skipping 4 bytes"); }
                     pos += 4;
                     continue;                 } else {
                                     }
