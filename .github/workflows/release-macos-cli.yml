@@ -40,6 +40,9 @@ jobs:
         with:
           key: macos-cli-${{ matrix.target }}
 
+      - name: Install OpenMP
+        run: brew install libomp
+
       - name: Build CLI binary
         run: |
           cargo build --release --bin roxify_native --target ${{ matrix.target }}
