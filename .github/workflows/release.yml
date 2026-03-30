@@ -175,7 +175,7 @@ jobs:
   universal-macos:
     name: Create macOS Universal Binary
     needs: build-and-upload
-    if: always() && !cancelled()
+    if: needs.build-and-upload.result == 'success'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -245,7 +245,7 @@ jobs:
     name: Publish to npm
     needs: [build-and-upload, universal-macos]
     runs-on: ubuntu-latest
-    if: always() && !cancelled() && github.event_name == 'release'
+    if: needs.build-and-upload.result == 'success' && needs.universal-macos.result == 'success' && github.event_name == 'release'
     steps:
       - uses: actions/checkout@v4
 
@@ -266,27 +266,63 @@ jobs:
         with:
           name: release-universal-apple-darwin
           path: native-binaries
-        continue-on-error: true
+
+      - name: Verify all required binaries are present
+        run: |
+          MISSING=0
+          REQUIRED_NODES=(
+            "roxify_native-x86_64-unknown-linux-gnu.node"
+            "roxify_native-i686-unknown-linux-gnu.node"
+            "roxify_native-aarch64-unknown-linux-gnu.node"
+            "roxify_native-x86_64-apple-darwin.node"
+            "roxify_native-aarch64-apple-darwin.node"
+            "roxify_native-x86_64-pc-windows-msvc.node"
+            "roxify_native-i686-pc-windows-msvc.node"
+            "roxify_native-aarch64-pc-windows-msvc.node"
+          )
+          REQUIRED_CLI=(
+            "roxify_native-x86_64-pc-windows-msvc.exe"
+            "roxify_native-x86_64-unknown-linux-gnu"
+            "roxify_native-aarch64-apple-darwin"
+            "roxify_native-x86_64-apple-darwin"
+          )
+          echo "=== Checking .node binaries ==="
+          for f in "${REQUIRED_NODES[@]}"; do
+            if [ ! -f "native-binaries/$f" ]; then
+              echo "MISSING: $f"
+              MISSING=$((MISSING + 1))
+            else
+              echo "OK: $f"
+            fi
+          done
+          echo "=== Checking CLI binaries ==="
+          for f in "${REQUIRED_CLI[@]}"; do
+            if [ ! -f "native-binaries/$f" ]; then
+              echo "MISSING: $f"
+              MISSING=$((MISSING + 1))
+            else
+              echo "OK: $f"
+            fi
+          done
+          echo ""
+          ls -lhR native-binaries/
+          if [ $MISSING -gt 0 ]; then
+            echo "ERROR: $MISSING required binaries are missing. Aborting publish."
+            exit 1
+          fi
+          echo "All required binaries present."
 
       - name: Copy all native binaries to package root
         run: |
-          cp native-binaries/*.node . 2>/dev/null || true
+          cp native-binaries/*.node .
           mkdir -p dist
-          if [ -f native-binaries/roxify_native-x86_64-pc-windows-msvc.exe ]; then
-            cp native-binaries/roxify_native-x86_64-pc-windows-msvc.exe dist/roxify_native.exe
-          fi
-          if [ -f native-binaries/roxify_native-x86_64-unknown-linux-gnu ]; then
-            cp native-binaries/roxify_native-x86_64-unknown-linux-gnu dist/roxify_native
-            chmod +x dist/roxify_native
-          fi
-          if [ -f native-binaries/roxify_native-aarch64-apple-darwin ]; then
-            cp native-binaries/roxify_native-aarch64-apple-darwin dist/roxify_native-macos-arm64
-            chmod +x dist/roxify_native-macos-arm64
-          fi
-          if [ -f native-binaries/roxify_native-x86_64-apple-darwin ]; then
-            cp native-binaries/roxify_native-x86_64-apple-darwin dist/roxify_native-macos-x64
-            chmod +x dist/roxify_native-macos-x64
-          fi
+          cp native-binaries/roxify_native-x86_64-pc-windows-msvc.exe dist/roxify_native.exe
+          cp native-binaries/roxify_native-x86_64-unknown-linux-gnu dist/roxify_native
+          chmod +x dist/roxify_native
+          cp native-binaries/roxify_native-aarch64-apple-darwin dist/roxify_native-macos-arm64
+          chmod +x dist/roxify_native-macos-arm64
+          cp native-binaries/roxify_native-x86_64-apple-darwin dist/roxify_native-macos-x64
+          chmod +x dist/roxify_native-macos-x64
           if [ -f native-binaries/rox-macos-universal ]; then
             cp native-binaries/rox-macos-universal dist/rox-macos-universal
             chmod +x dist/rox-macos-universal
