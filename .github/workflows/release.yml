@@ -194,6 +194,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install OpenMP runtime (macOS)
+        run: brew install libomp
+
       - uses: actions/download-artifact@v4
         with:
           name: release-aarch64-apple-darwin
