@@ -97,6 +97,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libzstd-dev pkg-config
 
+      - name: Install and configure OpenMP (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install libomp
+          OPENMP_PREFIX="$(brew --prefix libomp)"
+          echo "CPPFLAGS=-I$OPENMP_PREFIX/include ${CPPFLAGS:-}" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$OPENMP_PREFIX/lib -lomp ${LDFLAGS:-}" >> "$GITHUB_ENV"
+          echo "CFLAGS_aarch64_apple_darwin=-I$OPENMP_PREFIX/include ${CFLAGS_aarch64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "CFLAGS_x86_64_apple_darwin=-I$OPENMP_PREFIX/include ${CFLAGS_x86_64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "CXXFLAGS_aarch64_apple_darwin=-I$OPENMP_PREFIX/include ${CXXFLAGS_aarch64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "CXXFLAGS_x86_64_apple_darwin=-I$OPENMP_PREFIX/include ${CXXFLAGS_x86_64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$OPENMP_PREFIX/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
       - name: Build native
         shell: bash
         env:
