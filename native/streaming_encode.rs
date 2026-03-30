@@ -11,6 +11,16 @@ const MARKER_END: [(u8, u8, u8); 3] = [(0, 0, 255), (0, 255, 0), (255, 0, 0)];
 const MARKER_ZSTD: (u8, u8, u8) = (0, 255, 0);
 const MAGIC: &[u8] = b"ROX1";
 
+fn compute_smart_level(total_bytes: u64, _file_count: usize) -> i32 {
+    let mb = total_bytes / (1024 * 1024);
+    match mb {
+        0..=50 => 6,
+        51..=500 => 3,
+        501..=2000 => 2,
+        _ => 1,
+    }
+}
+
 pub fn encode_dir_to_png(
     dir_path: &Path,
     output_path: &Path,
@@ -72,10 +82,19 @@ fn compress_dir_to_zst(
         .collect();
 
     let total_files = entries.len();
+    let total_size: u64 = entries.iter()
+        .filter_map(|e| std::fs::metadata(e.path()).ok())
+        .map(|m| m.len())
+        .sum();
+
+    let actual_level = if compression_level <= 0 {
+        compute_smart_level(total_size, total_files)
+    } else {
+        compression_level
+    }.max(1);
+
     let zst_file = File::create(zst_path)?;
     let buf_writer = BufWriter::with_capacity(16 * 1024 * 1024, zst_file);
-
-    let actual_level = compression_level.max(1);
     let mut encoder = zstd::stream::Encoder::new(buf_writer, actual_level)
         .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
 
@@ -83,8 +102,12 @@ fn compress_dir_to_zst(
     if threads > 1 {
         let _ = encoder.multithread(threads);
     }
-    let _ = encoder.long_distance_matching(true);
-    let _ = encoder.window_log(27);
+    if actual_level >= 10 {
+        let _ = encoder.long_distance_matching(true);
+        let _ = encoder.window_log(27);
+    } else if actual_level >= 6 {
+        let _ = encoder.window_log(24);
+    }
 
     encoder.write_all(MAGIC)?;
 

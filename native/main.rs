@@ -43,7 +43,7 @@ enum Commands {
     Encode {
         input: PathBuf,
         output: PathBuf,
-        #[arg(short, long, default_value_t = 12)]
+        #[arg(short, long, default_value_t = 0)]
         level: i32,
         #[arg(short, long)]
         passphrase: Option<String>,

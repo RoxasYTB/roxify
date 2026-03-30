@@ -365,7 +365,7 @@ async function encodeCommand(args: string[]) {
       await encodeWithRustCLI(
         inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0],
         resolvedOutput,
-        12,
+        0,
         parsed.passphrase,
         encryptType,
         fileName,
@@ -457,7 +457,7 @@ async function encodeCommand(args: string[]) {
       mode,
       name: parsed.outputName || 'archive',
       skipOptimization: false,
-      compressionLevel: 6,
+      compressionLevel: 0,
       outputFormat: 'auto',
       container: containerMode,
     });
