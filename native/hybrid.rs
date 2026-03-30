@@ -56,9 +56,9 @@ impl HybridCompressor {
             .collect::<Result<Vec<_>, _>>()?;
 
         let entropy = if data.len() > 4096 {
-            analyze_entropy(&data[..4096.min(data.len())])
+            compute_entropy(&data[..4096.min(data.len())])
         } else {
-            analyze_entropy(data)
+            compute_entropy(data)
         };
 
         let total_compressed: usize = compressed_blocks.iter().map(|b| b.len() + 4).sum();
@@ -148,13 +148,29 @@ impl HybridCompressor {
     }
 }
 
+fn compute_entropy(data: &[u8]) -> f32 {
+    #[cfg(feature = "gpu")]
+    if let Some(e) = crate::gpu::gpu_entropy(data) {
+        return e;
+    }
+    analyze_entropy(data)
+}
+
+fn fast_mtf_encode(data: &[u8]) -> Vec<u8> {
+    #[cfg(feature = "gpu")]
+    if let Some(v) = crate::gpu::gpu_mtf_encode(data) {
+        return v;
+    }
+    mtf_encode(data)
+}
+
 fn compress_block(block: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
     if block.is_empty() {
         return Ok(vec![BLOCK_FLAG_STORE]);
     }
 
     let sample_size = block.len().min(8192);
-    let entropy = analyze_entropy(&block[..sample_size]);
+    let entropy = compute_entropy(&block[..sample_size]);
 
     if entropy >= ENTROPY_THRESHOLD_STORE {
         let mut result = Vec::with_capacity(1 + block.len());
@@ -184,7 +200,7 @@ fn compress_block(block: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
         let bwt_zstd = zstd::encode_all(&bwt.transformed[..], zstd_level.min(6))?;
         let bwt_zstd_total = 1 + 4 + 4 + bwt_zstd.len();
 
-        let mtf_data = mtf_encode(&bwt.transformed);
+        let mtf_data = fast_mtf_encode(&bwt.transformed);
         let rle_data = rle0_encode(&mtf_data);
         let stats = SymbolStats::from_data(&rle_data);
         let encoded = rans_encode_block(&rle_data, &stats);

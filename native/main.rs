@@ -25,6 +25,10 @@ mod context_mixing;
 mod pool;
 mod hybrid;
 mod pipeline;
+#[cfg(feature = "gpu")]
+mod gpu;
+mod image_utils;
+mod progress;
 
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
@@ -113,6 +117,14 @@ enum Commands {
     },
     Adler32 {
         input: PathBuf,
+    },
+    HybridCompress {
+        input: PathBuf,
+        output: Option<PathBuf>,
+    },
+    HybridDecompress {
+        input: PathBuf,
+        output: Option<PathBuf>,
     },
 }
 
@@ -544,6 +556,41 @@ fn main() -> anyhow::Result<()> {
         Commands::Adler32 { input } => {
             let buf = read_all(&input)?;
             println!("adler32: {}", crate::core::adler32_bytes(&buf));
+        }
+        Commands::HybridCompress { input, output } => {
+            let buf = read_all(&input)?;
+            let start = std::time::Instant::now();
+            let (compressed, stats) = hybrid::compress_high_performance(&buf)?;
+            let elapsed = start.elapsed();
+            let dest = output.unwrap_or_else(|| {
+                let mut p = input.clone();
+                p.set_extension("rbw");
+                p
+            });
+            write_all(&dest, &compressed)?;
+            let mbps = (buf.len() as f64 / 1_048_576.0) / elapsed.as_secs_f64();
+            let ratio = (compressed.len() as f64) / (buf.len() as f64) * 100.0;
+            eprintln!("{:.1} MB -> {:.1} MB ({:.1}%) in {:.2}s ({:.1} MB/s) entropy={:.2}",
+                buf.len() as f64 / 1_048_576.0,
+                compressed.len() as f64 / 1_048_576.0,
+                ratio, elapsed.as_secs_f64(), mbps, stats.entropy_bits);
+        }
+        Commands::HybridDecompress { input, output } => {
+            let buf = read_all(&input)?;
+            let start = std::time::Instant::now();
+            let decompressed = hybrid::decompress_high_performance(&buf)?;
+            let elapsed = start.elapsed();
+            let dest = output.unwrap_or_else(|| {
+                let mut p = input.clone();
+                p.set_extension("dec");
+                p
+            });
+            write_all(&dest, &decompressed)?;
+            let mbps = (decompressed.len() as f64 / 1_048_576.0) / elapsed.as_secs_f64();
+            eprintln!("{:.1} MB -> {:.1} MB in {:.2}s ({:.1} MB/s)",
+                buf.len() as f64 / 1_048_576.0,
+                decompressed.len() as f64 / 1_048_576.0,
+                elapsed.as_secs_f64(), mbps);
         }
     }
     Ok(())

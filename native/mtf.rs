@@ -1,17 +1,23 @@
 pub fn mtf_encode(data: &[u8]) -> Vec<u8> {
     let mut table = [0u8; 256];
+    let mut inverse = [0u8; 256];
     for i in 0..256 {
         table[i] = i as u8;
+        inverse[i] = i as u8;
     }
     let mut output = Vec::with_capacity(data.len());
 
     for &byte in data {
-        let pos = unsafe { table.iter().position(|&b| b == byte).unwrap_unchecked() };
+        let pos = inverse[byte as usize] as usize;
         output.push(pos as u8);
         if pos > 0 {
-            let val = table[pos];
-            table.copy_within(0..pos, 1);
-            table[0] = val;
+            for j in (1..=pos).rev() {
+                let prev = table[j - 1];
+                table[j] = prev;
+                inverse[prev as usize] = j as u8;
+            }
+            table[0] = byte;
+            inverse[byte as usize] = 0;
         }
     }
 
@@ -30,9 +36,8 @@ pub fn mtf_decode(data: &[u8]) -> Vec<u8> {
         let byte = table[pos];
         output.push(byte);
         if pos > 0 {
-            let val = table[pos];
             table.copy_within(0..pos, 1);
-            table[0] = val;
+            table[0] = byte;
         }
     }
 
@@ -40,26 +45,31 @@ pub fn mtf_decode(data: &[u8]) -> Vec<u8> {
 }
 
 pub fn rle0_encode(data: &[u8]) -> Vec<u8> {
+    const MAX_RUN: u32 = 0x3FFFFF;
     let mut output = Vec::with_capacity(data.len());
     let mut i = 0;
 
     while i < data.len() {
         if data[i] == 0 {
-            let mut run = 0u32;
+            let mut total_run = 0u32;
             while i < data.len() && data[i] == 0 {
-                run += 1;
+                total_run += 1;
                 i += 1;
             }
-            output.push(0);
-            if run <= 127 {
-                output.push(run as u8);
-            } else if run <= 16383 {
-                output.push(0x80 | ((run >> 8) as u8));
-                output.push((run & 0xFF) as u8);
-            } else {
-                output.push(0xC0 | ((run >> 16) as u8));
-                output.push(((run >> 8) & 0xFF) as u8);
-                output.push((run & 0xFF) as u8);
+            while total_run > 0 {
+                let run = total_run.min(MAX_RUN);
+                total_run -= run;
+                output.push(0);
+                if run <= 127 {
+                    output.push(run as u8);
+                } else if run <= 16383 {
+                    output.push(0x80 | ((run >> 8) as u8));
+                    output.push((run & 0xFF) as u8);
+                } else {
+                    output.push(0xC0 | ((run >> 16) as u8));
+                    output.push(((run >> 8) & 0xFF) as u8);
+                    output.push((run & 0xFF) as u8);
+                }
             }
         } else {
             output.push(data[i]);

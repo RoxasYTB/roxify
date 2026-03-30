@@ -14,21 +14,19 @@ fn read_byte(idx: u32) -> u32 {
     return (word >> ((idx % 4u) * 8u)) & 0xFFu;
 }
 
-fn write_byte(idx: u32, val: u32) {
-    let word_idx = idx / 4u;
-    let byte_off = (idx % 4u) * 8u;
-    let mask = ~(0xFFu << byte_off);
-    let old = atomicLoad(&output_atomic[word_idx]);
-    let new_val = (old & mask) | (val << byte_off);
-    atomicStore(&output_atomic[word_idx], new_val);
+fn write_byte_packed(word_idx: u32, byte_off: u32, val: u32, current: u32) -> u32 {
+    let shift = byte_off * 8u;
+    return (current & ~(0xFFu << shift)) | (val << shift);
 }
 
-@group(0) @binding(3) var<storage, read_write> output_atomic: array<atomic<u32>>;
-
-@compute @workgroup_size(1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let chunk_id = gid.x;
+@compute @workgroup_size(256)
+fn mtf_encode(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+    let chunk_id = wg_id.x;
     if chunk_id >= params.num_chunks {
+        return;
+    }
+
+    if lid.x > 0u {
         return;
     }
 
@@ -40,6 +38,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         table[i] = i;
     }
 
+    var current_word: u32 = 0u;
+    var current_word_idx: u32 = start / 4u;
+
     for (var i = start; i < end; i++) {
         let byte_val = read_byte(i);
         var pos = 0u;
@@ -50,10 +51,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
 
-        let out_word_idx = i / 4u;
-        let out_byte_off = (i % 4u) * 8u;
-        let existing = output_data[out_word_idx];
-        output_data[out_word_idx] = (existing & ~(0xFFu << out_byte_off)) | (pos << out_byte_off);
+        let word_idx = i / 4u;
+        let byte_off = i % 4u;
+
+        if word_idx != current_word_idx {
+            output_data[current_word_idx] = current_word;
+            current_word_idx = word_idx;
+            current_word = 0u;
+        }
+        current_word = write_byte_packed(word_idx, byte_off, pos, current_word);
 
         if pos > 0u {
             let val = table[pos];
@@ -63,4 +69,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             table[0u] = val;
         }
     }
+    output_data[current_word_idx] = current_word;
 }
