@@ -1,20 +1,20 @@
 pub fn mtf_encode(data: &[u8]) -> Vec<u8> {
     let mut table = [0u8; 256];
     let mut inverse = [0u8; 256];
-    for i in 0..256 {
-        table[i] = i as u8;
-        inverse[i] = i as u8;
+    for i in 0..256u16 {
+        table[i as usize] = i as u8;
+        inverse[i as usize] = i as u8;
     }
     let mut output = Vec::with_capacity(data.len());
 
     for &byte in data {
-        let pos = inverse[byte as usize] as usize;
+        let pos = unsafe { *inverse.get_unchecked(byte as usize) } as usize;
         output.push(pos as u8);
         if pos > 0 {
             for j in (1..=pos).rev() {
-                let prev = table[j - 1];
-                table[j] = prev;
-                inverse[prev as usize] = j as u8;
+                let prev = unsafe { *table.get_unchecked(j - 1) };
+                unsafe { *table.get_unchecked_mut(j) = prev; }
+                unsafe { *inverse.get_unchecked_mut(prev as usize) = j as u8; }
             }
             table[0] = byte;
             inverse[byte as usize] = 0;
@@ -26,14 +26,14 @@ pub fn mtf_encode(data: &[u8]) -> Vec<u8> {
 
 pub fn mtf_decode(data: &[u8]) -> Vec<u8> {
     let mut table = [0u8; 256];
-    for i in 0..256 {
-        table[i] = i as u8;
+    for i in 0..256u16 {
+        table[i as usize] = i as u8;
     }
     let mut output = Vec::with_capacity(data.len());
 
     for &idx in data {
         let pos = idx as usize;
-        let byte = table[pos];
+        let byte = unsafe { *table.get_unchecked(pos) };
         output.push(byte);
         if pos > 0 {
             table.copy_within(0..pos, 1);
@@ -103,9 +103,8 @@ pub fn rle0_decode(data: &[u8]) -> Vec<u8> {
                 run = data[i] as u32;
                 i += 1;
             }
-            for _ in 0..run {
-                output.push(0);
-            }
+            let new_len = output.len() + run as usize;
+            output.resize(new_len, 0);
         } else {
             output.push(data[i]);
             i += 1;

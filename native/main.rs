@@ -25,8 +25,6 @@ mod context_mixing;
 mod pool;
 mod hybrid;
 mod pipeline;
-#[cfg(feature = "gpu")]
-mod gpu;
 mod image_utils;
 mod progress;
 

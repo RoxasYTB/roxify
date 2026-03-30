@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.12.3"
+version = "1.12.4"
 edition = "2021"
 publish = false
 
@@ -53,27 +53,22 @@ sha2 = "0.10"
 mimalloc = "0.1"
 
 crossbeam-channel = "0.5"
-wgpu = { version = "0.19", optional = true }
 memmap2 = "0.9"
 bytemuck = { version = "1.14", features = ["derive"] }
-# tokio is optional now; enable via the 'async' feature
 tokio = { version = "1", features = ["sync", "rt"], optional = true }
 parking_lot = "0.12"
-pollster = { version = "0.3", optional = true }
-libsais = { version = "0.2.0", default-features = false }
+libsais = "0.2.0"
 
 [features]
-default = ["gpu"]
-gpu = ["wgpu", "pollster"]
+default = []
 async = ["tokio"]
-full = ["gpu", "async"]
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "unwind"
+panic = "abort"
 
 [profile.release-size]
 inherits = "release"

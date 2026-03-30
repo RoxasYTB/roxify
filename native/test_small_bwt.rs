@@ -3,8 +3,6 @@ mod mtf;
 mod rans_byte;
 mod context_mixing;
 mod pool;
-#[cfg(feature = "gpu")]
-mod gpu;
 mod hybrid;
 
 fn main() {
