@@ -6,6 +6,8 @@ use napi_derive::napi;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod core;
+#[cfg(feature = "gpu")]
+mod gpu;
 mod rans;
 mod rans_byte;
 mod bwt;
@@ -13,7 +15,6 @@ mod mtf;
 mod context_mixing;
 mod pool;
 mod hybrid;
-mod pipeline;
 mod encoder;
 mod packer;
 mod crypto;
@@ -26,6 +27,14 @@ mod archive;
 mod streaming;
 
 pub use core::*;
+#[cfg(feature = "gpu")]
+pub use gpu::*;
+#[cfg(not(feature = "gpu"))]
+mod gpu {
+        pub fn gpu_available() -> bool {
+        false
+    }
+}
 
 pub use rans::*;
 pub use bwt::*;
@@ -117,7 +126,7 @@ pub fn native_zstd_decompress_with_dict(buffer: Buffer, dict: Buffer) -> Result<
 #[napi]
 pub fn check_gpu_status() -> GpuStatus {
     GpuStatus {
-        available: false,
+        available: gpu::gpu_available(),
         adapter_info: None,
     }
 }

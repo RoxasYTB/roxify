@@ -1,7 +1,8 @@
 use anyhow::Result;
 use libsais::bwt::Bwt;
 use libsais::typestate::OwnedBuffer;
-use libsais::{BwtConstruction, ThreadCount};
+use libsais::BwtConstruction;
+use rayon::prelude::*;
 
 pub struct BwtResult {
     pub transformed: Vec<u8>,
@@ -16,7 +17,7 @@ pub fn bwt_encode(data: &[u8]) -> Result<BwtResult> {
 
     let bwt_result = BwtConstruction::for_text(data)
         .with_owned_temporary_array_buffer32()
-        .multi_threaded(ThreadCount::openmp_default())
+        .single_threaded()
         .run()
         .map_err(|e| anyhow::anyhow!("libsais BWT: {:?}", e))?;
 
@@ -37,9 +38,19 @@ pub fn bwt_decode(bwt_data: &[u8], primary_index: u32) -> Result<Vec<u8>> {
     let text = bwt_obj
         .unbwt()
         .with_owned_temporary_array_buffer32()
-        .multi_threaded(ThreadCount::openmp_default())
+        .single_threaded()
         .run()
         .map_err(|e| anyhow::anyhow!("libsais UnBWT: {:?}", e))?;
 
     Ok(text.as_slice().to_vec())
+}
+
+pub fn bwt_encode_streaming(block_size: usize, data: &[u8]) -> Result<Vec<(BwtResult, usize)>> {
+    data.par_chunks(block_size)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let result = bwt_encode(chunk)?;
+            Ok((result, i * block_size))
+        })
+        .collect()
 }

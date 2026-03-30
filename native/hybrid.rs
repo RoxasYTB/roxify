@@ -5,16 +5,14 @@ use crate::mtf::{mtf_encode, mtf_decode, rle0_encode, rle0_decode};
 use crate::rans_byte::{SymbolStats, rans_encode_block, rans_decode_block};
 use crate::context_mixing::analyze_entropy;
 
-const BLOCK_SIZE: usize = 8 * 1024 * 1024;
+const BLOCK_SIZE: usize = 1024 * 1024;
 
 const BLOCK_FLAG_BWT: u8 = 0;
 const BLOCK_FLAG_ZSTD: u8 = 1;
 const BLOCK_FLAG_STORE: u8 = 2;
-const BLOCK_FLAG_BWT_ZSTD: u8 = 3;
 
 const ENTROPY_THRESHOLD_STORE: f32 = 7.95;
-const ENTROPY_THRESHOLD_HIGH: f32 = 7.5;
-const ENTROPY_THRESHOLD_MED: f32 = 6.0;
+const ENTROPY_THRESHOLD_ZSTD: f32 = 7.5;
 
 #[derive(Clone, Debug)]
 pub struct CompressionStats {
@@ -27,20 +25,13 @@ pub struct CompressionStats {
 
 pub struct HybridCompressor {
     block_size: usize,
-    zstd_level: i32,
 }
 
 impl HybridCompressor {
     pub fn new(_enable_gpu: bool, _pool_size: usize) -> Self {
         HybridCompressor {
             block_size: BLOCK_SIZE,
-            zstd_level: 3,
         }
-    }
-
-    pub fn with_zstd_level(mut self, level: i32) -> Self {
-        self.zstd_level = level.max(1).min(22);
-        self
     }
 
     pub fn compress(&self, data: &[u8]) -> Result<(Vec<u8>, CompressionStats)> {
@@ -48,25 +39,23 @@ impl HybridCompressor {
 
         let blocks: Vec<&[u8]> = data.chunks(self.block_size).collect();
         let blocks_count = blocks.len();
-        let zstd_level = self.zstd_level;
 
         let compressed_blocks: Vec<Vec<u8>> = blocks
             .par_iter()
-            .map(|block| compress_block(block, zstd_level))
+            .map(|block| compress_block(block))
             .collect::<Result<Vec<_>, _>>()?;
 
         let entropy = if data.len() > 4096 {
-            compute_entropy(&data[..4096.min(data.len())])
+            analyze_entropy(&data[..4096.min(data.len())])
         } else {
-            compute_entropy(data)
+            analyze_entropy(data)
         };
 
         let total_compressed: usize = compressed_blocks.iter().map(|b| b.len() + 4).sum();
-        let mut result = Vec::with_capacity(20 + total_compressed);
-        result.extend_from_slice(b"RBW3");
+        let mut result = Vec::with_capacity(16 + total_compressed);
+        result.extend_from_slice(b"RBW2");
         result.extend_from_slice(&(blocks_count as u32).to_le_bytes());
         result.extend_from_slice(&original_size.to_le_bytes());
-        result.extend_from_slice(&(self.block_size as u32).to_le_bytes());
 
         for block in &compressed_blocks {
             result.extend_from_slice(&(block.len() as u32).to_le_bytes());
@@ -91,9 +80,8 @@ impl HybridCompressor {
         }
 
         let magic = &data[0..4];
-        let v3 = magic == b"RBW3";
         let v2 = magic == b"RBW2";
-        if magic != b"RBW1" && !v2 && !v3 {
+        if magic != b"RBW1" && !v2 {
             return Err(anyhow::anyhow!("Invalid magic"));
         }
 
@@ -103,7 +91,7 @@ impl HybridCompressor {
             data[12], data[13], data[14], data[15],
         ]) as usize;
 
-        let mut pos = if v3 { 20 } else { 16 };
+        let mut pos = 16;
         let mut block_slices: Vec<&[u8]> = Vec::with_capacity(blocks_count);
 
         for _ in 0..blocks_count {
@@ -124,7 +112,7 @@ impl HybridCompressor {
         let decompressed_blocks: Vec<Vec<u8>> = block_slices
             .par_iter()
             .map(|block_data| {
-                if v2 || v3 {
+                if v2 {
                     decompress_block_v2(block_data)
                 } else {
                     decompress_block_v1(block_data)
@@ -148,21 +136,12 @@ impl HybridCompressor {
     }
 }
 
-fn compute_entropy(data: &[u8]) -> f32 {
-    analyze_entropy(data)
-}
-
-fn fast_mtf_encode(data: &[u8]) -> Vec<u8> {
-    mtf_encode(data)
-}
-
-fn compress_block(block: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
+fn compress_block(block: &[u8]) -> Result<Vec<u8>> {
     if block.is_empty() {
         return Ok(vec![BLOCK_FLAG_STORE]);
     }
 
-    let sample_size = block.len().min(8192);
-    let entropy = compute_entropy(&block[..sample_size]);
+    let entropy = analyze_entropy(block);
 
     if entropy >= ENTROPY_THRESHOLD_STORE {
         let mut result = Vec::with_capacity(1 + block.len());
@@ -171,8 +150,8 @@ fn compress_block(block: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
         return Ok(result);
     }
 
-    if entropy >= ENTROPY_THRESHOLD_HIGH {
-        let compressed = zstd::encode_all(block, zstd_level.min(3))?;
+    if entropy >= ENTROPY_THRESHOLD_ZSTD {
+        let compressed = zstd::encode_all(block, 1)?;
         if compressed.len() < block.len() {
             let mut result = Vec::with_capacity(1 + 4 + compressed.len());
             result.push(BLOCK_FLAG_ZSTD);
@@ -187,71 +166,43 @@ fn compress_block(block: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
     }
 
     let bwt = bwt_encode(block)?;
+    let mtf_data = mtf_encode(&bwt.transformed);
+    let rle_data = rle0_encode(&mtf_data);
+    let stats = SymbolStats::from_data(&rle_data);
+    let encoded = rans_encode_block(&rle_data, &stats);
+    let stats_bytes = stats.serialize();
 
-    if entropy < ENTROPY_THRESHOLD_MED {
-        let bwt_zstd = zstd::encode_all(&bwt.transformed[..], zstd_level.min(6))?;
-        let bwt_zstd_total = 1 + 4 + 4 + bwt_zstd.len();
+    let bwt_total = 1 + 4 + 4 + 4 + stats_bytes.len() + encoded.len();
 
-        let mtf_data = fast_mtf_encode(&bwt.transformed);
-        let rle_data = rle0_encode(&mtf_data);
-        let stats = SymbolStats::from_data(&rle_data);
-        let encoded = rans_encode_block(&rle_data, &stats);
-        let stats_bytes = stats.serialize();
-        let bwt_rans_total = 1 + 4 + 4 + 4 + stats_bytes.len() + encoded.len();
+    if bwt_total < block.len() {
+        let zstd_compressed = zstd::encode_all(block, 3)?;
+        let zstd_total = 1 + 4 + zstd_compressed.len();
 
-        let direct_zstd = zstd::encode_all(block, zstd_level.min(6))?;
-        let direct_zstd_total = 1 + 4 + direct_zstd.len();
-
-        if bwt_zstd_total <= bwt_rans_total && bwt_zstd_total < direct_zstd_total && bwt_zstd_total < block.len() {
-            let mut result = Vec::with_capacity(bwt_zstd_total);
-            result.push(BLOCK_FLAG_BWT_ZSTD);
-            result.extend_from_slice(&bwt.primary_index.to_le_bytes());
-            result.extend_from_slice(&(block.len() as u32).to_le_bytes());
-            result.extend_from_slice(&bwt_zstd);
-            return Ok(result);
-        }
-
-        if bwt_rans_total < direct_zstd_total && bwt_rans_total < block.len() {
-            let mut result = Vec::with_capacity(bwt_rans_total);
-            result.push(BLOCK_FLAG_BWT);
-            result.extend_from_slice(&bwt.primary_index.to_le_bytes());
-            result.extend_from_slice(&(block.len() as u32).to_le_bytes());
-            result.extend_from_slice(&(rle_data.len() as u32).to_le_bytes());
-            result.extend_from_slice(&stats_bytes);
-            result.extend_from_slice(&encoded);
-            return Ok(result);
-        }
-
-        if direct_zstd_total < block.len() {
-            let mut result = Vec::with_capacity(direct_zstd_total);
+        if zstd_total < bwt_total {
+            let mut result = Vec::with_capacity(zstd_total);
             result.push(BLOCK_FLAG_ZSTD);
             result.extend_from_slice(&(block.len() as u32).to_le_bytes());
-            result.extend_from_slice(&direct_zstd);
-            return Ok(result);
-        }
-    } else {
-        let bwt_zstd = zstd::encode_all(&bwt.transformed[..], zstd_level.min(3))?;
-        let bwt_zstd_total = 1 + 4 + 4 + bwt_zstd.len();
-
-        let direct_zstd = zstd::encode_all(block, zstd_level.min(6))?;
-        let direct_zstd_total = 1 + 4 + direct_zstd.len();
-
-        if bwt_zstd_total < direct_zstd_total && bwt_zstd_total < block.len() {
-            let mut result = Vec::with_capacity(bwt_zstd_total);
-            result.push(BLOCK_FLAG_BWT_ZSTD);
-            result.extend_from_slice(&bwt.primary_index.to_le_bytes());
-            result.extend_from_slice(&(block.len() as u32).to_le_bytes());
-            result.extend_from_slice(&bwt_zstd);
+            result.extend_from_slice(&zstd_compressed);
             return Ok(result);
         }
 
-        if direct_zstd_total < block.len() {
-            let mut result = Vec::with_capacity(direct_zstd_total);
-            result.push(BLOCK_FLAG_ZSTD);
-            result.extend_from_slice(&(block.len() as u32).to_le_bytes());
-            result.extend_from_slice(&direct_zstd);
-            return Ok(result);
-        }
+        let mut result = Vec::with_capacity(bwt_total);
+        result.push(BLOCK_FLAG_BWT);
+        result.extend_from_slice(&bwt.primary_index.to_le_bytes());
+        result.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        result.extend_from_slice(&(rle_data.len() as u32).to_le_bytes());
+        result.extend_from_slice(&stats_bytes);
+        result.extend_from_slice(&encoded);
+        return Ok(result);
+    }
+
+    let zstd_compressed = zstd::encode_all(block, 3)?;
+    if 1 + 4 + zstd_compressed.len() < block.len() {
+        let mut result = Vec::with_capacity(1 + 4 + zstd_compressed.len());
+        result.push(BLOCK_FLAG_ZSTD);
+        result.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        result.extend_from_slice(&zstd_compressed);
+        return Ok(result);
     }
 
     let mut result = Vec::with_capacity(1 + block.len());
@@ -275,19 +226,6 @@ fn decompress_block_v2(block: &[u8]) -> Result<Vec<u8>> {
             let mut decoded = zstd::decode_all(&block[5..])?;
             decoded.truncate(orig_len);
             Ok(decoded)
-        }
-        BLOCK_FLAG_BWT_ZSTD => {
-            if block.len() < 9 {
-                return Err(anyhow::anyhow!("Truncated BWT+ZSTD block"));
-            }
-            let primary_index = u32::from_le_bytes([block[1], block[2], block[3], block[4]]);
-            let orig_len = u32::from_le_bytes([block[5], block[6], block[7], block[8]]) as usize;
-            let bwt_data = zstd::decode_all(&block[9..])?;
-            let original = bwt_decode(&bwt_data, primary_index)?;
-            if original.len() != orig_len {
-                return Err(anyhow::anyhow!("Size mismatch"));
-            }
-            Ok(original)
         }
         BLOCK_FLAG_BWT => {
             if block.len() < 13 {

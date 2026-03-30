@@ -150,14 +150,6 @@ pub fn rans_encode_block(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
         return rans_encode_single(data, stats);
     }
 
-    if data.len() < 32 {
-        return rans_encode_interleaved2(data, stats);
-    }
-
-    rans_encode_interleaved4(data, stats)
-}
-
-fn rans_encode_interleaved2(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     let mut s0: u32 = RANS_BYTE_L;
     let mut s1: u32 = RANS_BYTE_L;
     let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 32);
@@ -183,54 +175,6 @@ fn rans_encode_interleaved2(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     output.push(1);
     write_state(&mut output, s0);
     write_state(&mut output, s1);
-
-    for &b in rev_bytes.iter().rev() {
-        output.push(b);
-    }
-    output
-}
-
-fn rans_encode_interleaved4(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
-    let mut s0: u32 = RANS_BYTE_L;
-    let mut s1: u32 = RANS_BYTE_L;
-    let mut s2: u32 = RANS_BYTE_L;
-    let mut s3: u32 = RANS_BYTE_L;
-    let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 64);
-
-    let len = data.len();
-    let remainder = len % 4;
-    let aligned = len - remainder;
-
-    for r in (0..remainder).rev() {
-        let sym = data[aligned + r] as usize;
-        let state_idx = r % 4;
-        match state_idx {
-            0 => rans_enc_put(&mut s0, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym]),
-            1 => rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym]),
-            2 => rans_enc_put(&mut s2, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym]),
-            _ => rans_enc_put(&mut s3, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym]),
-        }
-    }
-
-    let mut i = aligned;
-    while i >= 4 {
-        i -= 4;
-        let sym3 = data[i + 3] as usize;
-        rans_enc_put(&mut s3, &mut rev_bytes, stats.cum_freqs[sym3], stats.freqs[sym3]);
-        let sym2 = data[i + 2] as usize;
-        rans_enc_put(&mut s2, &mut rev_bytes, stats.cum_freqs[sym2], stats.freqs[sym2]);
-        let sym1 = data[i + 1] as usize;
-        rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym1], stats.freqs[sym1]);
-        let sym0 = data[i] as usize;
-        rans_enc_put(&mut s0, &mut rev_bytes, stats.cum_freqs[sym0], stats.freqs[sym0]);
-    }
-
-    let mut output = Vec::with_capacity(17 + rev_bytes.len());
-    output.push(2);
-    write_state(&mut output, s0);
-    write_state(&mut output, s1);
-    write_state(&mut output, s2);
-    write_state(&mut output, s3);
 
     for &b in rev_bytes.iter().rev() {
         output.push(b);
@@ -266,22 +210,16 @@ pub fn rans_decode_block(encoded: &[u8], stats: &SymbolStats, output_len: usize)
     for s in 0..256usize {
         let start = stats.cum_freqs[s] as usize;
         let end = stats.cum_freqs[s + 1] as usize;
-        if end > start && end <= PROB_SCALE as usize {
-            unsafe {
-                std::ptr::write_bytes(cum2sym.as_mut_ptr().add(start), s as u8, end - start);
-            }
+        if end > start {
+            cum2sym[start..end].fill(s as u8);
         }
     }
 
     let mode = encoded[0];
     let mut pos = 1usize;
 
-    if mode == 2 && output_len >= 32 {
-        return rans_decode_interleaved4(encoded, &cum2sym, stats, output_len, &mut pos);
-    }
-
     if mode == 1 && output_len >= 8 {
-        return rans_decode_interleaved2(encoded, &cum2sym, stats, output_len, &mut pos);
+        return rans_decode_interleaved(encoded, &cum2sym, stats, output_len, &mut pos);
     }
 
     if pos + 4 > encoded.len() {
@@ -305,7 +243,7 @@ pub fn rans_decode_block(encoded: &[u8], stats: &SymbolStats, output_len: usize)
     Ok(output)
 }
 
-fn rans_decode_interleaved2(
+fn rans_decode_interleaved(
     encoded: &[u8],
     cum2sym: &[u8; PROB_SCALE as usize],
     stats: &SymbolStats,
@@ -342,63 +280,6 @@ fn rans_decode_interleaved2(
         let slot = s1 & (PROB_SCALE - 1);
         let sym = cum2sym[slot as usize];
         output.push(sym);
-    }
-
-    Ok(output)
-}
-
-fn rans_decode_interleaved4(
-    encoded: &[u8],
-    cum2sym: &[u8; PROB_SCALE as usize],
-    stats: &SymbolStats,
-    output_len: usize,
-    pos: &mut usize,
-) -> Result<Vec<u8>> {
-    if *pos + 16 > encoded.len() {
-        return Err(anyhow::anyhow!("Data too short for 4-interleaved"));
-    }
-    let mut s0 = read_state(encoded, pos);
-    let mut s1 = read_state(encoded, pos);
-    let mut s2 = read_state(encoded, pos);
-    let mut s3 = read_state(encoded, pos);
-    let mut output = Vec::with_capacity(output_len);
-
-    let quads = output_len / 4;
-    for _ in 0..quads {
-        let slot0 = s0 & (PROB_SCALE - 1);
-        let sym0 = cum2sym[slot0 as usize];
-        output.push(sym0);
-        s0 = stats.freqs[sym0 as usize] * (s0 >> PROB_BITS) + slot0 - stats.cum_freqs[sym0 as usize];
-        rans_dec_renorm(&mut s0, encoded, pos);
-
-        let slot1 = s1 & (PROB_SCALE - 1);
-        let sym1 = cum2sym[slot1 as usize];
-        output.push(sym1);
-        s1 = stats.freqs[sym1 as usize] * (s1 >> PROB_BITS) + slot1 - stats.cum_freqs[sym1 as usize];
-        rans_dec_renorm(&mut s1, encoded, pos);
-
-        let slot2 = s2 & (PROB_SCALE - 1);
-        let sym2 = cum2sym[slot2 as usize];
-        output.push(sym2);
-        s2 = stats.freqs[sym2 as usize] * (s2 >> PROB_BITS) + slot2 - stats.cum_freqs[sym2 as usize];
-        rans_dec_renorm(&mut s2, encoded, pos);
-
-        let slot3 = s3 & (PROB_SCALE - 1);
-        let sym3 = cum2sym[slot3 as usize];
-        output.push(sym3);
-        s3 = stats.freqs[sym3 as usize] * (s3 >> PROB_BITS) + slot3 - stats.cum_freqs[sym3 as usize];
-        rans_dec_renorm(&mut s3, encoded, pos);
-    }
-
-    let remain = output_len % 4;
-    let states = [&mut s0, &mut s1, &mut s2, &mut s3];
-    for r in 0..remain {
-        let s = &mut *states[r];
-        let slot = *s & (PROB_SCALE - 1);
-        let sym = cum2sym[slot as usize];
-        output.push(sym);
-        *s = stats.freqs[sym as usize] * (*s >> PROB_BITS) + slot - stats.cum_freqs[sym as usize];
-        rans_dec_renorm(s, encoded, pos);
     }
 
     Ok(output)

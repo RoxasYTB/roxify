@@ -19,7 +19,8 @@ pub fn encode_to_png_file(
     file_list: Option<&str>,
     dict: Option<&[u8]>,
 ) -> anyhow::Result<()> {
-    let compressed = crate::encoder::smart_compress_public(data, compression_level, dict)?;
+    let compressed = crate::core::zstd_compress_with_prefix(data, compression_level, dict, MAGIC)
+        .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {
         match encrypt_type.unwrap_or("aes") {

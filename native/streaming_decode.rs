@@ -61,7 +61,7 @@ pub fn streaming_decode_to_dir_encrypted(
             let mut decoder = zstd::stream::Decoder::new(remaining_reader)
                 .map_err(|e| format!("zstd decoder: {}", e))?;
             decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
-            read_rox_and_untar(decoder, out_dir)
+            read_rox1_and_untar(decoder, out_dir)
         }
         0x03 => {
             let pass = passphrase.ok_or("Passphrase required for AES-CTR decryption")?;
@@ -82,32 +82,20 @@ pub fn streaming_decode_to_dir_encrypted(
             let mut decoder = zstd::stream::Decoder::new(ctr_reader)
                 .map_err(|e| format!("zstd decoder: {}", e))?;
             decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
-            read_rox_and_untar(decoder, out_dir)
+            read_rox1_and_untar(decoder, out_dir)
         }
         _ => Err(format!("Unsupported encryption (enc=0x{:02x}) in streaming decode", enc_byte)),
     }
 }
 
-fn read_rox_and_untar<R: Read>(mut decoder: R, out_dir: &Path) -> Result<Vec<String>, String> {
+fn read_rox1_and_untar<R: Read>(mut decoder: R, out_dir: &Path) -> Result<Vec<String>, String> {
     let mut magic = [0u8; 4];
-    decoder.read_exact(&mut magic).map_err(|e| format!("read magic: {}", e))?;
-
-    if &magic == b"ROX2" {
-        let mut all = Vec::new();
-        decoder.read_to_end(&mut all).map_err(|e| format!("read ROX2 payload: {}", e))?;
-        let mut combined = Vec::with_capacity(4 + all.len());
-        combined.extend_from_slice(&magic);
-        combined.extend_from_slice(&all);
-        let data = crate::core::strip_rox_prefix(&combined).map_err(|e| format!("ROX2 decode: {}", e))?;
-        std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {}", e))?;
-        let cursor = std::io::Cursor::new(data);
-        tar_unpack_from_reader(cursor, out_dir)
-    } else if &magic == b"ROX1" {
-        std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {}", e))?;
-        tar_unpack_from_reader(decoder, out_dir)
-    } else {
-        Err(format!("Expected ROX1/ROX2, got {:?}", magic))
+    decoder.read_exact(&mut magic).map_err(|e| format!("read ROX1: {}", e))?;
+    if &magic != b"ROX1" {
+        return Err(format!("Expected ROX1, got {:?}", magic));
     }
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {}", e))?;
+    tar_unpack_from_reader(decoder, out_dir)
 }
 
 fn parse_png_header(data: &[u8]) -> Result<(usize, usize, usize, usize), String> {
@@ -208,12 +196,7 @@ impl<'a> DeflatePixelReader<'a> {
         let mut written = 0;
         while written < count {
             self.ensure_block()?;
-            if self.offset >= self.idat_end || self.offset >= self.data.len() {
-                break;
-            }
-            let max_from_data = self.data.len() - self.offset;
-            let max_from_idat = self.idat_end.saturating_sub(self.offset);
-            let avail = self.block_remaining.min(count - written).min(max_from_data).min(max_from_idat);
+            let avail = self.block_remaining.min(count - written).min(self.idat_end - self.offset);
             if avail == 0 {
                 break;
             }
@@ -229,12 +212,7 @@ impl<'a> DeflatePixelReader<'a> {
         let mut remaining = count;
         while remaining > 0 {
             self.ensure_block()?;
-            if self.offset >= self.idat_end || self.offset >= self.data.len() {
-                break;
-            }
-            let max_from_data = self.data.len() - self.offset;
-            let max_from_idat = self.idat_end.saturating_sub(self.offset);
-            let skip = self.block_remaining.min(remaining).min(max_from_data).min(max_from_idat);
+            let skip = self.block_remaining.min(remaining).min(self.idat_end - self.offset);
             if skip == 0 {
                 break;
             }
