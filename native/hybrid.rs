@@ -149,18 +149,10 @@ impl HybridCompressor {
 }
 
 fn compute_entropy(data: &[u8]) -> f32 {
-    #[cfg(feature = "gpu")]
-    if let Some(e) = crate::gpu::gpu_entropy(data) {
-        return e;
-    }
     analyze_entropy(data)
 }
 
 fn fast_mtf_encode(data: &[u8]) -> Vec<u8> {
-    #[cfg(feature = "gpu")]
-    if let Some(v) = crate::gpu::gpu_mtf_encode(data) {
-        return v;
-    }
     mtf_encode(data)
 }
 

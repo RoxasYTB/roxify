@@ -5,8 +5,6 @@ mod bwt;
 mod mtf;
 mod context_mixing;
 mod pool;
-#[cfg(feature = "gpu")]
-mod gpu;
 mod hybrid;
 
 fn bench_roundtrip(name: &str, data: &[u8]) {

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rayon::prelude::*;
 use std::process::{Command, Stdio};
 
 const MAGIC: &[u8] = b"ROX1";
@@ -38,7 +39,7 @@ fn smart_compress(data: &[u8], compression_level: i32, dict: Option<&[u8]>) -> R
     }
 
     let blocks: Vec<&[u8]> = data.chunks(BWT_BLOCK_SIZE).collect();
-    let bwt_results: Vec<Result<crate::bwt::BwtResult>> = blocks.iter()
+    let bwt_results: Vec<Result<crate::bwt::BwtResult>> = blocks.par_iter()
         .map(|block| crate::bwt::bwt_encode(block))
         .collect();
 

@@ -266,8 +266,10 @@ pub fn rans_decode_block(encoded: &[u8], stats: &SymbolStats, output_len: usize)
     for s in 0..256usize {
         let start = stats.cum_freqs[s] as usize;
         let end = stats.cum_freqs[s + 1] as usize;
-        if end > start {
-            cum2sym[start..end].fill(s as u8);
+        if end > start && end <= PROB_SCALE as usize {
+            unsafe {
+                std::ptr::write_bytes(cum2sym.as_mut_ptr().add(start), s as u8, end - start);
+            }
         }
     }
 
