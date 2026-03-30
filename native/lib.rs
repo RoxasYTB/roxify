@@ -29,13 +29,16 @@ mod streaming;
 
 pub use core::*;
 #[cfg(feature = "gpu")]
-pub use gpu::*;
+pub use gpu::{gpu_available, gpu_instance, gpu_entropy, gpu_histogram, gpu_mtf_encode};
 #[cfg(not(feature = "gpu"))]
 mod gpu {
-        pub fn gpu_available() -> bool {
-        false
-    }
+    pub fn gpu_available() -> bool { false }
+    pub fn gpu_entropy(_data: &[u8]) -> Option<f32> { None }
+    pub fn gpu_histogram(_data: &[u8]) -> Option<[u32; 256]> { None }
+    pub fn gpu_mtf_encode(_data: &[u8]) -> Option<Vec<u8>> { None }
 }
+#[cfg(not(feature = "gpu"))]
+pub use gpu::*;
 
 pub use rans::*;
 pub use bwt::*;
@@ -126,8 +129,17 @@ pub fn native_zstd_decompress_with_dict(buffer: Buffer, dict: Buffer) -> Result<
 #[cfg(not(test))]
 #[napi]
 pub fn check_gpu_status() -> GpuStatus {
+    #[cfg(feature = "gpu")]
+    {
+        if let Some(ctx) = gpu::gpu_instance() {
+            return GpuStatus {
+                available: true,
+                adapter_info: Some(ctx.get_adapter_info()),
+            };
+        }
+    }
     GpuStatus {
-        available: gpu::gpu_available(),
+        available: false,
         adapter_info: None,
     }
 }

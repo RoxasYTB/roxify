@@ -48,13 +48,29 @@ pub fn pipeline_compress(data: &[u8], config: &PipelineConfig) -> Result<Vec<Vec
     results.into_iter().collect()
 }
 
+fn compute_entropy_fast(data: &[u8]) -> f32 {
+    #[cfg(feature = "gpu")]
+    if let Some(e) = crate::gpu::gpu_entropy(data) {
+        return e;
+    }
+    analyze_entropy(data)
+}
+
+fn fast_mtf(data: &[u8]) -> Vec<u8> {
+    #[cfg(feature = "gpu")]
+    if let Some(v) = crate::gpu::gpu_mtf_encode(data) {
+        return v;
+    }
+    mtf_encode(data)
+}
+
 fn pipeline_compress_block(block: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
     if block.is_empty() {
         return Ok(vec![BLOCK_FLAG_STORE]);
     }
 
     let sample_size = block.len().min(8192);
-    let entropy = analyze_entropy(&block[..sample_size]);
+    let entropy = compute_entropy_fast(&block[..sample_size]);
 
     if entropy >= ENTROPY_THRESHOLD_STORE {
         let mut result = Vec::with_capacity(1 + block.len());
@@ -86,7 +102,7 @@ fn pipeline_compress_block(block: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
     let direct_zstd_total = 1 + 4 + direct_zstd.len();
 
     if entropy < ENTROPY_THRESHOLD_MED {
-        let mtf_data = mtf_encode(&bwt.transformed);
+        let mtf_data = fast_mtf(&bwt.transformed);
         let rle_data = rle0_encode(&mtf_data);
         let stats = SymbolStats::from_data(&rle_data);
         let encoded = rans_encode_block(&rle_data, &stats);

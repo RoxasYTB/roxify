@@ -63,12 +63,7 @@ pollster = { version = "0.3", optional = true }
 libsais = { version = "0.2.0", default-features = false }
 
 [features]
-# default is intentionally empty so the crate compiles fast for local checks.
-# Enable 'gpu' to pull in the WGPU and pollster dependencies (heavy).
-# Enable 'async' to include tokio runtime (optional).
-# Example: `cargo build -p roxify_native --features gpu`
-default = []
-
+default = ["gpu"]
 gpu = ["wgpu", "pollster"]
 async = ["tokio"]
 full = ["gpu", "async"]
@@ -78,7 +73,7 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
+panic = "unwind"
 
 [profile.release-size]
 inherits = "release"
