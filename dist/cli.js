@@ -5,8 +5,8 @@ import { basename, dirname, join, resolve } from 'path';
 import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInPng, IncorrectPassphraseError, listFilesInPng, PassphraseRequiredError, } from './index.js';
 import { packPathsGenerator, unpackBuffer } from './pack.js';
 import * as cliProgress from './stub-progress.js';
-import { decodeWithRustCLI, encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
-const VERSION = '1.12.3';
+import { encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
+const VERSION = '1.9.2';
 function getDirectorySize(dirPath) {
     let totalSize = 0;
     try {
@@ -303,35 +303,22 @@ async function encodeCommand(args) {
             const startTime = Date.now();
             const encodeBar = new cliProgress.SingleBar({ format: ' {bar} {percentage}% | {step} | {elapsed}s' }, cliProgress.Presets.shades_classic);
             let barValue = 0;
-            encodeBar.start(100, 0, { step: 'Starting', elapsed: '0' });
-            const onProgress = (pct) => {
-                barValue = Math.max(barValue, pct);
+            encodeBar.start(100, 0, { step: 'Encoding', elapsed: '0' });
+            const progressInterval = setInterval(() => {
+                barValue = Math.min(barValue + 1, 99);
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                let step = 'Encoding';
-                if (pct < 30)
-                    step = 'Packing files';
-                else if (pct < 80)
-                    step = 'Compressing';
-                else if (pct < 100)
-                    step = 'Writing PNG';
-                else
-                    step = 'Done';
-                encodeBar.update(Math.min(barValue, 99), { step, elapsed: String(elapsed) });
-            };
-            const smoothInterval = setInterval(() => {
-                if (barValue < 99) {
-                    barValue = Math.min(barValue + 1, 99);
-                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                    encodeBar.update(barValue, { step: barValue < 30 ? 'Packing files' : barValue < 80 ? 'Compressing' : 'Writing PNG', elapsed: String(elapsed) });
-                }
-            }, 2000);
+                encodeBar.update(barValue, {
+                    step: 'Encoding',
+                    elapsed: String(elapsed),
+                });
+            }, 500);
             const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
             const fileName = basename(inputPaths[0]);
-            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 0, parsed.passphrase, encryptType, fileName, onProgress);
-            clearInterval(smoothInterval);
+            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 19, parsed.passphrase, encryptType, fileName);
+            clearInterval(progressInterval);
             const encodeTime = Date.now() - startTime;
             encodeBar.update(100, {
-                step: 'Done',
+                step: 'done',
                 elapsed: String(Math.floor(encodeTime / 1000)),
             });
             encodeBar.stop();
@@ -373,17 +360,27 @@ async function encodeCommand(args) {
         const encodeBar = new cliProgress.SingleBar({
             format: ' {bar} {percentage}% | {step} | {elapsed}s',
         }, cliProgress.Presets.shades_classic);
+        let barStarted = false;
         const startEncode = Date.now();
         let currentEncodeStep = 'Starting';
         let displayedPct = 0;
         let targetPct = 0;
         const TICK_MS = 100;
         const PCT_STEP = 1;
-        encodeBar.start(100, 0, { step: currentEncodeStep, elapsed: '0' });
         const encodeHeartbeat = setInterval(() => {
             const elapsed = Date.now() - startEncode;
+            if (!barStarted) {
+                encodeBar.start(100, Math.floor(displayedPct), {
+                    step: currentEncodeStep,
+                    elapsed: '0',
+                });
+                barStarted = true;
+            }
             if (displayedPct < targetPct) {
                 displayedPct = Math.min(displayedPct + PCT_STEP, targetPct);
+            }
+            else if (displayedPct < 99) {
+                displayedPct = Math.min(displayedPct + PCT_STEP, 99);
             }
             encodeBar.update(Math.floor(displayedPct), {
                 step: currentEncodeStep,
@@ -395,7 +392,7 @@ async function encodeCommand(args) {
             mode,
             name: parsed.outputName || 'archive',
             skipOptimization: false,
-            compressionLevel: 0,
+            compressionLevel: 6,
             outputFormat: 'auto',
             container: containerMode,
         });
@@ -541,11 +538,13 @@ async function encodeCommand(args) {
         const output = await encodeBinaryToPng(inputBuffer, options);
         const encodeTime = Date.now() - startEncode;
         clearInterval(encodeHeartbeat);
-        encodeBar.update(100, {
-            step: 'Done',
-            elapsed: String(Math.floor(encodeTime / 1000)),
-        });
-        encodeBar.stop();
+        if (barStarted) {
+            encodeBar.update(100, {
+                step: 'done',
+                elapsed: String(Math.floor(encodeTime / 1000)),
+            });
+            encodeBar.stop();
+        }
         writeFileSync(resolvedOutput, output);
         const outputSize = (output.length / 1024 / 1024).toFixed(2);
         const inputSize = (inputSizeVal / 1024 / 1024).toFixed(2);
@@ -576,42 +575,6 @@ async function decodeCommand(args) {
     }
     const resolvedInput = resolve(inputPath);
     const resolvedOutput = parsed.output || outputPath || 'decoded.bin';
-    const inputFileSize = statSync(resolvedInput).size;
-    if (isRustBinaryAvailable() && !parsed.dict && inputFileSize > 10 * 1024 * 1024) {
-        try {
-            console.log(' ');
-            console.log(`Decoding... (Using native Rust decoder)\n`);
-            const decodeBar = new cliProgress.SingleBar({ format: ' {bar} {percentage}% | {step} | {elapsed}s' }, cliProgress.Presets.shades_classic);
-            const startDecode = Date.now();
-            let barValue = 0;
-            decodeBar.start(100, 0, { step: 'Reading PNG', elapsed: '0' });
-            const onProgress = (pct) => {
-                barValue = Math.max(barValue, pct);
-                const elapsed = Math.floor((Date.now() - startDecode) / 1000);
-                let step = 'Reading PNG';
-                if (pct >= 10 && pct < 60)
-                    step = 'Decompressing';
-                else if (pct >= 60 && pct < 100)
-                    step = 'Extracting files';
-                else if (pct >= 100)
-                    step = 'Done';
-                decodeBar.update(Math.min(barValue, 99), { step, elapsed: String(elapsed) });
-            };
-            await decodeWithRustCLI(resolvedInput, resolvedOutput, parsed.passphrase, parsed.files, onProgress);
-            const decodeTime = Date.now() - startDecode;
-            decodeBar.update(100, { step: 'Done', elapsed: String(Math.floor(decodeTime / 1000)) });
-            decodeBar.stop();
-            console.log(`\nSuccess!`);
-            console.log(`  Time: ${decodeTime}ms`);
-            console.log(`  Output: ${resolve(resolvedOutput)}`);
-            console.log(' ');
-            return;
-        }
-        catch (err) {
-            console.warn('\nRust decoder failed, falling back to TypeScript decoder...');
-            console.warn(`Reason: ${err.message}\n`);
-        }
-    }
     try {
         const options = {};
         if (parsed.passphrase) {
@@ -638,19 +601,28 @@ async function decodeCommand(args) {
         const decodeBar = new cliProgress.SingleBar({
             format: ' {bar} {percentage}% | {step} | {elapsed}s',
         }, cliProgress.Presets.shades_classic);
+        let barStarted = false;
         const startDecode = Date.now();
         let currentPct = 0;
         let targetPct = 0;
-        let currentStep = 'Reading PNG';
-        decodeBar.start(100, 0, { step: currentStep, elapsed: '0' });
+        let currentStep = 'Decoding';
         const heartbeat = setInterval(() => {
             if (currentPct < targetPct) {
                 currentPct = Math.min(currentPct + 2, targetPct);
             }
-            decodeBar.update(Math.floor(currentPct), {
-                step: currentStep,
-                elapsed: String(Math.floor((Date.now() - startDecode) / 1000)),
-            });
+            if (!barStarted && targetPct > 0) {
+                decodeBar.start(100, Math.floor(currentPct), {
+                    step: currentStep,
+                    elapsed: String(Math.floor((Date.now() - startDecode) / 1000)),
+                });
+                barStarted = true;
+            }
+            else if (barStarted) {
+                decodeBar.update(Math.floor(currentPct), {
+                    step: currentStep,
+                    elapsed: String(Math.floor((Date.now() - startDecode) / 1000)),
+                });
+            }
         }, 100);
         options.onProgress = (info) => {
             if (info.phase === 'decompress_start') {
@@ -661,7 +633,7 @@ async function decodeCommand(args) {
                 info.loaded &&
                 info.total) {
                 targetPct = 50 + Math.floor((info.loaded / info.total) * 40);
-                currentStep = 'Decompressing';
+                currentStep = `Decompressing (${info.loaded}/${info.total})`;
             }
             else if (info.phase === 'decompress_done') {
                 targetPct = 90;
@@ -676,12 +648,14 @@ async function decodeCommand(args) {
         const result = await decodePngToBinary(inputBuffer, options);
         const decodeTime = Date.now() - startDecode;
         clearInterval(heartbeat);
-        currentPct = 100;
-        decodeBar.update(100, {
-            step: 'Done',
-            elapsed: String(Math.floor(decodeTime / 1000)),
-        });
-        decodeBar.stop();
+        if (barStarted) {
+            currentPct = 100;
+            decodeBar.update(100, {
+                step: 'done',
+                elapsed: String(Math.floor(decodeTime / 1000)),
+            });
+            decodeBar.stop();
+        }
         if (result.files) {
             const baseDir = parsed.output || outputPath || '.';
             const totalBytes = result.files.reduce((s, f) => s + f.buf.length, 0);

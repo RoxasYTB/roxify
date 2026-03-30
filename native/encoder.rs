@@ -1,94 +1,13 @@
 use anyhow::Result;
-use rayon::prelude::*;
 use std::process::{Command, Stdio};
 
 const MAGIC: &[u8] = b"ROX1";
-const MAGIC_BWT: &[u8] = b"ROX2";
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 
 const MARKER_START: [(u8, u8, u8); 3] = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
 const MARKER_END: [(u8, u8, u8); 3] = [(0, 0, 255), (0, 255, 0), (255, 0, 0)];
 const MARKER_ZSTD: (u8, u8, u8) = (0, 255, 0);
-
-const BWT_BLOCK_SIZE: usize = 8 * 1024 * 1024;
-const BWT_BENEFIT_THRESHOLD: i32 = 6;
-
-pub fn smart_compress_public(data: &[u8], compression_level: i32, dict: Option<&[u8]>) -> Result<Vec<u8>> {
-    smart_compress(data, compression_level, dict)
-}
-
-fn smart_compress(data: &[u8], compression_level: i32, dict: Option<&[u8]>) -> Result<Vec<u8>> {
-    if data.len() < 1024 || dict.is_some() {
-        return crate::core::zstd_compress_with_prefix(data, compression_level, dict, MAGIC)
-            .map_err(|e| anyhow::anyhow!("Compression failed: {}", e));
-    }
-
-    if compression_level < BWT_BENEFIT_THRESHOLD {
-        return crate::core::zstd_compress_with_prefix(data, compression_level, None, MAGIC)
-            .map_err(|e| anyhow::anyhow!("Compression failed: {}", e));
-    }
-
-    let entropy = sample_entropy(data);
-
-    let fast_level = compression_level.max(3);
-
-    if entropy >= 7.5 {
-        return crate::core::zstd_compress_with_prefix(data, fast_level, None, MAGIC)
-            .map_err(|e| anyhow::anyhow!("Compression failed: {}", e));
-    }
-
-    let blocks: Vec<&[u8]> = data.chunks(BWT_BLOCK_SIZE).collect();
-    let bwt_results: Vec<Result<crate::bwt::BwtResult>> = blocks.par_iter()
-        .map(|block| crate::bwt::bwt_encode(block))
-        .collect();
-
-    let mut bwt_payload = Vec::with_capacity(data.len() + blocks.len() * 8);
-    bwt_payload.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
-    bwt_payload.extend_from_slice(&(data.len() as u64).to_le_bytes());
-
-    for (i, bwt_result) in bwt_results.into_iter().enumerate() {
-        let bwt = bwt_result?;
-        let block_len = blocks[i].len() as u32;
-        bwt_payload.extend_from_slice(&bwt.primary_index.to_le_bytes());
-        bwt_payload.extend_from_slice(&block_len.to_le_bytes());
-        bwt_payload.extend_from_slice(&bwt.transformed);
-    }
-
-    let bwt_compressed = crate::core::zstd_compress_with_prefix(&bwt_payload, fast_level, None, MAGIC_BWT)
-        .map_err(|e| anyhow::anyhow!("BWT+Zstd compression failed: {}", e))?;
-
-    let direct_compressed = crate::core::zstd_compress_with_prefix(data, fast_level, None, MAGIC)
-        .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
-
-    if bwt_compressed.len() < direct_compressed.len() {
-        Ok(bwt_compressed)
-    } else {
-        Ok(direct_compressed)
-    }
-}
-
-fn sample_entropy(data: &[u8]) -> f32 {
-    let chunk_size = 8192;
-    let positions = [
-        0,
-        data.len() / 4,
-        data.len() / 2,
-        data.len() * 3 / 4,
-        data.len().saturating_sub(chunk_size),
-    ];
-    let mut total = 0.0f32;
-    let mut count = 0;
-    for &pos in &positions {
-        let start = pos.min(data.len().saturating_sub(chunk_size));
-        let end = (start + chunk_size).min(data.len());
-        if end > start {
-            total += crate::context_mixing::analyze_entropy(&data[start..end]);
-            count += 1;
-        }
-    }
-    if count > 0 { total / count as f32 } else { 8.0 }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum ImageFormat {
@@ -192,7 +111,8 @@ pub fn encode_to_wav_with_encryption_name_and_filelist(
     file_list: Option<&str>,
 ) -> Result<Vec<u8>> {
     // Same compression + encryption pipeline as PNG
-    let compressed = smart_compress(data, compression_level, None)?;
+    let compressed = crate::core::zstd_compress_with_prefix(data, compression_level, None, MAGIC)
+        .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {
         match encrypt_type.unwrap_or("aes") {
@@ -257,7 +177,8 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     file_list: Option<&str>,
     dict: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let compressed = smart_compress(data, compression_level, dict)?;
+    let compressed = crate::core::zstd_compress_with_prefix(data, compression_level, dict, MAGIC)
+        .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {
         match encrypt_type.unwrap_or("aes") {
@@ -602,7 +523,10 @@ mod tests {
         assert_eq!(payload[0], 0x00u8);
 
         let compressed = payload[1..].to_vec();
-        let decompressed = crate::core::smart_decompress(&compressed, None).expect("decompress");
+        let mut decompressed = crate::core::zstd_decompress_bytes(&compressed, None).expect("decompress");
+        if decompressed.starts_with(b"ROX1") {
+            decompressed = decompressed[4..].to_vec();
+        }
 
         let out_dir = base.join("out");
         fs::create_dir_all(&out_dir).unwrap();
@@ -620,7 +544,8 @@ mod tests {
             .expect("encode should succeed");
                 let payload = crate::png_utils::extract_payload_from_png(&png).expect("extract");
                 let decrypted = crate::crypto::try_decrypt(&payload, Some("password")).expect("decrypt");
-                let decompressed = crate::core::smart_decompress(&decrypted, None).expect("decompress");
+                let mut decompressed = crate::core::zstd_decompress_bytes(&decrypted, None).expect("decompress");
+        if decompressed.starts_with(b"ROX1") { decompressed = decompressed[4..].to_vec(); }
                 assert_eq!(decompressed, data);
     }
 }

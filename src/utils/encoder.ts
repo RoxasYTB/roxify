@@ -3,16 +3,16 @@ import * as zlib from 'zlib';
 import { unpackBuffer } from '../pack.js';
 import { bytesToWav } from './audio.js';
 import {
-  COMPRESSION_MARKERS,
-  ENC_AES,
-  ENC_NONE,
-  ENC_XOR,
-  MAGIC,
-  MARKER_END,
-  MARKER_START,
-  PIXEL_MAGIC,
-  PIXEL_MAGIC_BLOCK,
-  PNG_HEADER,
+    COMPRESSION_MARKERS,
+    ENC_AES,
+    ENC_NONE,
+    ENC_XOR,
+    MAGIC,
+    MARKER_END,
+    MARKER_START,
+    PIXEL_MAGIC,
+    PIXEL_MAGIC_BLOCK,
+    PNG_HEADER,
 } from './constants.js';
 import { crc32 } from './crc.js';
 import { colorsToBytes } from './helpers.js';
@@ -48,9 +48,9 @@ export async function encodeBinaryToPng(
   let progressBar: any = null;
   if (opts.showProgress) {
     progressBar = {
-      start: () => { },
-      update: () => { },
-      stop: () => { },
+      start: () => {},
+      update: () => {},
+      stop: () => {},
     };
     const startTime = Date.now();
     if (!opts.onProgress) {
@@ -71,7 +71,7 @@ export async function encodeBinaryToPng(
     }
   }
 
-  const compressionLevel = opts.compressionLevel ?? 3;
+  const compressionLevel = opts.compressionLevel ?? 19;
 
   // ─── Lossy-resilient encoding fast path ────────────────────────────────────
   // When lossyResilient is true, use QR-code-style block encoding with
@@ -117,7 +117,7 @@ export async function encodeBinaryToPng(
         sizeMap = {};
         for (const ef of unpack.files) sizeMap[ef.path] = ef.buf.length;
       }
-    } catch (e) { }
+    } catch (e) {}
 
     const normalized = opts.fileList.map((f: any) => {
       if (typeof f === 'string')
@@ -135,7 +135,7 @@ export async function encodeBinaryToPng(
     // ── WAV container (--sound) via native Rust encoder ──
     if (opts.container === 'sound') {
       if (typeof native.nativeEncodeWavWithEncryptionNameAndFilelist === 'function' &&
-        opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
+          opts.passphrase && opts.encrypt && opts.encrypt !== 'auto') {
         const result = native.nativeEncodeWavWithEncryptionNameAndFilelist(
           inputBuf, compressionLevel, opts.passphrase, opts.encrypt, fileName, fileListJson,
         );
@@ -315,7 +315,7 @@ export async function encodeBinaryToPng(
           sizeMap = {};
           for (const ef of unpack.files) sizeMap[ef.path] = ef.buf.length;
         }
-      } catch (e) { }
+      } catch (e) {}
     }
 
     const normalized = opts.fileList.map((f: any) => {
@@ -364,7 +364,7 @@ export async function encodeBinaryToPng(
             sizeMapW = {};
             for (const ef of unpack.files) sizeMapW[ef.path] = ef.buf.length;
           }
-        } catch (e) { }
+        } catch (e) {}
       }
       const normalizedW = opts.fileList.map((f: any) => {
         if (typeof f === 'string')
@@ -411,7 +411,7 @@ export async function encodeBinaryToPng(
             sizeMap2 = {};
             for (const ef of unpack.files) sizeMap2[ef.path] = ef.buf.length;
           }
-        } catch (e) { }
+        } catch (e) {}
       }
 
       const normalized = opts.fileList.map((f: any) => {
@@ -441,7 +441,7 @@ export async function encodeBinaryToPng(
     const paddedData =
       padding > 0 ?
         [...dataWithoutMarkers, Buffer.alloc(padding)]
-        : dataWithoutMarkers;
+      : dataWithoutMarkers;
 
     const markerStartBytes = colorsToBytes(MARKER_START);
     const compressionMarkerBytes = colorsToBytes(

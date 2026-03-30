@@ -176,7 +176,7 @@ fn validate_payload_deep(payload: &[u8]) -> bool {
     if payload.len() < 5 { return false; }
     if payload[0] == 0x01 || payload[0] == 0x02 || payload[0] == 0x03 { return true; }
     let compressed = if payload[0] == 0x00 { &payload[1..] } else { payload };
-    if compressed.starts_with(b"ROX1") || compressed.starts_with(b"ROX2") { return true; }
+    if compressed.starts_with(b"ROX1") { return true; }
     crate::core::zstd_decompress_bytes(compressed, None).is_ok()
 }
 

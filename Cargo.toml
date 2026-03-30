@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.12.7"
+version = "1.12.8"
 edition = "2021"
 publish = false
 
@@ -52,16 +52,25 @@ rand = "0.8"
 sha2 = "0.10"
 mimalloc = "0.1"
 
-crossbeam-channel = "0.5"
+wgpu = { version = "0.19", optional = true }
 memmap2 = "0.9"
 bytemuck = { version = "1.14", features = ["derive"] }
+# tokio is optional now; enable via the 'async' feature
 tokio = { version = "1", features = ["sync", "rt"], optional = true }
 parking_lot = "0.12"
-libsais = "0.2.0"
+pollster = { version = "0.3", optional = true }
+libsais = { version = "0.2.0", default-features = false }
 
 [features]
+# default is intentionally empty so the crate compiles fast for local checks.
+# Enable 'gpu' to pull in the WGPU and pollster dependencies (heavy).
+# Enable 'async' to include tokio runtime (optional).
+# Example: `cargo build -p roxify_native --features gpu`
 default = []
+
+gpu = ["wgpu", "pollster"]
 async = ["tokio"]
+full = ["gpu", "async"]
 
 [profile.release]
 opt-level = 3
