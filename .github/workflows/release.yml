@@ -22,7 +22,7 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           # ── Linux ──
@@ -95,7 +95,7 @@ jobs:
         if: runner.os == 'Linux' && !matrix.crossPkgs
         run: |
           sudo apt-get update
-          sudo apt-get install -y libzstd-dev pkg-config || true
+          sudo apt-get install -y libzstd-dev pkg-config
 
       - name: Build native
         shell: bash
@@ -166,7 +166,7 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
           for f in release/*; do
-            gh release upload "$TAG" "$f" --clobber || true
+            gh release upload "$TAG" "$f" --clobber
           done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -203,8 +203,9 @@ jobs:
             chmod +x release/roxify_native-universal-apple-darwin
             echo "Universal binary created successfully"
           else
-            echo "Warning: one or both macOS CLI binaries not found, skipping universal"
+            echo "ERROR: one or both macOS CLI binaries not found"
             ls -lhR macos-bins/
+            exit 1
           fi
 
       - name: Create universal .node module
@@ -214,6 +215,10 @@ jobs:
           if [ -f "$ARM_NODE" ] && [ -f "$X86_NODE" ]; then
             lipo -create -output release/roxify_native-universal-apple-darwin.node "$ARM_NODE" "$X86_NODE"
             echo "Universal .node module created"
+          else
+            echo "ERROR: one or both macOS .node binaries not found"
+            ls -lhR macos-bins/
+            exit 1
           fi
 
       - name: Smoke test universal binary
@@ -235,7 +240,7 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
           for f in release/*; do
-            gh release upload "$TAG" "$f" --clobber || true
+            gh release upload "$TAG" "$f" --clobber
           done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
