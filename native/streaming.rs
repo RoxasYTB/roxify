@@ -41,6 +41,7 @@ pub fn encode_to_png_file(
     let padded_len = raw_payload_len + padding_needed;
 
     let marker_start_len = 12;
+    let marker_end_bytes = 9;
     let data_with_markers_len = marker_start_len + padded_len;
     let data_pixels = (data_with_markers_len + 2) / 3;
     let end_marker_pixels = 3;
@@ -52,9 +53,9 @@ pub fn encode_to_png_file(
     let height = side;
     let row_bytes = width * 3;
     let total_data_bytes = width * height * 3;
-    let marker_end_pos = (height - 1) * width * 3 + (width - end_marker_pixels) * 3;
+    let marker_end_pos = total_data_bytes - marker_end_bytes;
 
-    let flat = build_flat_buffer(&meta_pixel, padding_needed, marker_end_pos, total_data_bytes);
+    let flat = build_flat_buffer(&meta_pixel, marker_end_pos, total_data_bytes);
     drop(meta_pixel);
 
     let stride = row_bytes + 1;
@@ -149,7 +150,6 @@ fn write_idat_direct<W: Write>(
 
 fn build_flat_buffer(
     meta_pixel: &[u8],
-    _padding_needed: usize,
     marker_end_pos: usize,
     total_data_bytes: usize,
 ) -> Vec<u8> {
@@ -166,11 +166,9 @@ fn build_flat_buffer(
     pos += PIXEL_MAGIC.len();
     flat[pos..pos + meta_pixel.len()].copy_from_slice(meta_pixel);
 
-    if marker_end_pos + 9 <= total_data_bytes {
-        for (i, m) in MARKER_END.iter().enumerate() {
-            let off = marker_end_pos + i * 3;
-            flat[off] = m.0; flat[off + 1] = m.1; flat[off + 2] = m.2;
-        }
+    for (i, m) in MARKER_END.iter().enumerate() {
+        let off = marker_end_pos + i * 3;
+        flat[off] = m.0; flat[off + 1] = m.1; flat[off + 2] = m.2;
     }
 
     flat
