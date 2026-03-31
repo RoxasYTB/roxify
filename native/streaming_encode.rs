@@ -163,6 +163,7 @@ fn write_png_from_zst(
     let padded_len = raw_payload_len + padding_needed;
 
     let marker_start_len = 12;
+    let marker_end_bytes = 9;
     let data_with_markers_len = marker_start_len + padded_len;
     let data_pixels = (data_with_markers_len + 2) / 3;
     let end_marker_pixels = 3;
@@ -174,7 +175,7 @@ fn write_png_from_zst(
     let height = side;
     let row_bytes = width * 3;
     let total_data_bytes = width * height * 3;
-    let marker_end_pos = (height - 1) * width * 3 + (width - end_marker_pixels) * 3;
+    let marker_end_pos = total_data_bytes - marker_end_bytes;
 
     let enc_header_bytes = if let Some(ref enc) = encryptor {
         enc.header.clone()

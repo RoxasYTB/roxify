@@ -199,7 +199,7 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     let padded_len = raw_payload_len + padding_needed;
 
     let marker_start_len = 12;
-    let marker_end_len = 9;
+    let marker_end_bytes = 9;
 
     let data_with_markers_len = marker_start_len + padded_len;
     let data_pixels = (data_with_markers_len + 2) / 3;
@@ -212,9 +212,9 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     let height = side;
 
     let total_data_bytes = width * height * 3;
-    let marker_end_pos = (height - 1) * width * 3 + (width - end_marker_pixels) * 3;
+    let marker_end_pos = total_data_bytes - marker_end_bytes;
 
-    let flat = build_flat_pixel_buffer(&meta_pixel, padding_needed, marker_end_pos, marker_end_len, total_data_bytes);
+    let flat = build_flat_pixel_buffer(&meta_pixel, marker_end_pos, total_data_bytes);
     drop(meta_pixel);
 
     let row_bytes = width * 3;
@@ -226,9 +226,7 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
 
 fn build_flat_pixel_buffer(
     meta_pixel: &[u8],
-    _padding_needed: usize,
     marker_end_pos: usize,
-    marker_end_len: usize,
     total_data_bytes: usize,
 ) -> Vec<u8> {
     let mut flat = vec![0u8; total_data_bytes];
@@ -246,22 +244,12 @@ fn build_flat_pixel_buffer(
 
     flat[pos..pos + meta_pixel.len()].copy_from_slice(meta_pixel);
 
-    if marker_end_pos + marker_end_len <= total_data_bytes {
-        for (i, m) in MARKER_END.iter().enumerate() {
-            let off = marker_end_pos + i * 3;
-            flat[off] = m.0; flat[off + 1] = m.1; flat[off + 2] = m.2;
-        }
+    for (i, m) in MARKER_END.iter().enumerate() {
+        let off = marker_end_pos + i * 3;
+        flat[off] = m.0; flat[off + 1] = m.1; flat[off + 2] = m.2;
     }
 
     flat
-}
-
-fn build_meta_pixel(payload: &[u8]) -> Result<Vec<u8>> {
-    build_meta_pixel_with_name(payload, None)
-}
-
-fn build_meta_pixel_with_name(payload: &[u8], name: Option<&str>) -> Result<Vec<u8>> {
-    build_meta_pixel_with_name_and_filelist(payload, name, None)
 }
 
 fn build_meta_pixel_with_name_and_filelist(payload: &[u8], name: Option<&str>, file_list: Option<&str>) -> Result<Vec<u8>> {
@@ -333,38 +321,6 @@ fn write_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) -> Result<(
     Ok(())
 }
 
-fn create_raw_deflate(data: &[u8]) -> Vec<u8> {
-    const MAX_BLOCK: usize = 65535;
-    let num_blocks = (data.len() + MAX_BLOCK - 1) / MAX_BLOCK;
-    let total_size = 2 + num_blocks * 5 + data.len() + 4;
-    let mut result = Vec::with_capacity(total_size);
-
-    result.push(0x78);
-    result.push(0x01);
-
-    let mut offset = 0;
-    while offset < data.len() {
-        let chunk_size = (data.len() - offset).min(MAX_BLOCK);
-        let is_last = offset + chunk_size >= data.len();
-
-        let header = [
-            if is_last { 0x01 } else { 0x00 },
-            chunk_size as u8,
-            (chunk_size >> 8) as u8,
-            !chunk_size as u8,
-            (!(chunk_size >> 8)) as u8,
-        ];
-        result.extend_from_slice(&header);
-        result.extend_from_slice(&data[offset..offset + chunk_size]);
-        offset += chunk_size;
-    }
-
-    let adler = crate::core::adler32_bytes(data);
-    result.extend_from_slice(&adler.to_be_bytes());
-
-    result
-}
-
 fn create_raw_deflate_from_rows(flat: &[u8], row_bytes: usize, height: usize) -> Vec<u8> {
     let stride = row_bytes + 1;
     let scanlines_total = height * stride;
@@ -408,35 +364,6 @@ fn create_raw_deflate_from_rows(flat: &[u8], row_bytes: usize, height: usize) ->
     result.extend_from_slice(&adler.to_be_bytes());
 
     result
-}
-
-fn predict_best_format(data: &[u8]) -> ImageFormat {
-    if data.len() < 2048 {
-        return ImageFormat::Png;
-    }
-
-    let sample_size = data.len().min(4096);
-    let sample = &data[..sample_size];
-
-    let entropy = calculate_shannon_entropy(sample);
-    let repetition_score = detect_repetition_patterns(sample);
-
-    let unique_bytes = count_unique_bytes(sample);
-    let unique_ratio = unique_bytes as f64 / 256.0;
-
-    let is_sequential = detect_sequential_pattern(sample);
-
-    if entropy > 7.8 {
-        ImageFormat::Png
-    } else if is_sequential || repetition_score > 0.2 {
-        ImageFormat::JpegXL
-    } else if unique_ratio < 0.3 && entropy < 6.5 {
-        ImageFormat::JpegXL
-    } else if entropy < 5.5 {
-        ImageFormat::JpegXL
-    } else {
-        ImageFormat::Png
-    }
 }
 
 fn detect_sequential_pattern(data: &[u8]) -> bool {
@@ -548,6 +475,39 @@ mod tests {
         if decompressed.starts_with(b"ROX1") { decompressed = decompressed[4..].to_vec(); }
                 assert_eq!(decompressed, data);
     }
+
+    #[test]
+    fn test_marker_end_in_last_3_pixels() {
+        use image::ImageReader;
+        use std::io::Cursor;
+
+        for size in &[11, 100, 1000, 5000, 50000] {
+            let data: Vec<u8> = (0..*size).map(|i| (i % 256) as u8).collect();
+
+            let png_raw = encode_to_png_raw(&data, 3).expect("encode raw");
+            let png_auto = encode_to_png(&data, 3).expect("encode auto");
+
+            for (label, png) in &[("raw", &png_raw), ("auto", &png_auto)] {
+                let reader = ImageReader::new(Cursor::new(*png))
+                    .with_guessed_format().unwrap();
+                let img = reader.decode().unwrap();
+                let rgb = img.to_rgb8();
+                let w = rgb.width();
+                let h = rgb.height();
+
+                let p1 = rgb.get_pixel(w - 3, h - 1);
+                let p2 = rgb.get_pixel(w - 2, h - 1);
+                let p3 = rgb.get_pixel(w - 1, h - 1);
+
+                assert_eq!([p1[0], p1[1], p1[2]], [0, 0, 255],
+                    "MARKER_END pixel 0 (blue) wrong for {}@size={}, got {:?}", label, size, p1);
+                assert_eq!([p2[0], p2[1], p2[2]], [0, 255, 0],
+                    "MARKER_END pixel 1 (green) wrong for {}@size={}, got {:?}", label, size, p2);
+                assert_eq!([p3[0], p3[1], p3[2]], [255, 0, 0],
+                    "MARKER_END pixel 2 (red) wrong for {}@size={}, got {:?}", label, size, p3);
+            }
+        }
+    }
 }
 
 fn detect_repetition_patterns(data: &[u8]) -> f64 {
@@ -573,27 +533,6 @@ fn detect_repetition_patterns(data: &[u8]) -> f64 {
     } else {
         0.0
     }
-}
-
-fn optimize_format(png_data: &[u8]) -> Result<Vec<u8>> {
-    let formats = [
-        ("webp", optimize_to_webp(png_data)),
-        ("jxl", optimize_to_jxl(png_data)),
-    ];
-
-    let mut best = png_data.to_vec();
-    let mut best_size = png_data.len();
-
-    for (_name, result) in formats {
-        if let Ok(optimized) = result {
-            if optimized.len() < best_size {
-                best = optimized;
-                best_size = best.len();
-            }
-        }
-    }
-
-    Ok(best)
 }
 
 fn optimize_to_webp(png_data: &[u8]) -> Result<Vec<u8>> {
