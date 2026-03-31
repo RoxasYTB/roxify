@@ -6,7 +6,7 @@ import { DataFormatError, decodePngToBinary, encodeBinaryToPng, hasPassphraseInP
 import { packPathsGenerator, unpackBuffer } from './pack.js';
 import * as cliProgress from './stub-progress.js';
 import { encodeWithRustCLI, isRustBinaryAvailable, } from './utils/rust-cli-wrapper.js';
-const VERSION = '1.9.2';
+const VERSION = '1.12.0';
 function getDirectorySize(dirPath) {
     let totalSize = 0;
     try {
