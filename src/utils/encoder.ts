@@ -548,16 +548,14 @@ export async function encodeBinaryToPng(
         const totalDataBytes = logicalWidth * logicalHeight * 3;
         const fullData = Buffer.alloc(totalDataBytes);
 
-        const markerStartPos =
-          (logicalHeight - 1) * logicalWidth * 3 +
-          (logicalWidth - MARKER_END.length) * 3;
+        const markerEndPos = totalDataBytes - MARKER_END.length * 3;
         flatData.copy(
           fullData,
           0,
           0,
-          Math.min(flatData.length, markerStartPos),
+          Math.min(flatData.length, markerEndPos),
         );
-        markerEndBytes.copy(fullData, markerStartPos);
+        markerEndBytes.copy(fullData, markerEndPos);
 
         for (let row = 0; row < height; row++) {
           raw[row * stride] = 0;
@@ -572,6 +570,15 @@ export async function encodeBinaryToPng(
         raw = Buffer.alloc(width * height * 3);
         const flatData = Buffer.concat(dataWithMarkers);
         flatData.copy(raw, 0, 0, Math.min(flatData.length, raw.length));
+
+        const markerEndBytes = Buffer.alloc(MARKER_END.length * 3);
+        for (let i = 0; i < MARKER_END.length; i++) {
+          markerEndBytes[i * 3] = MARKER_END[i].r;
+          markerEndBytes[i * 3 + 1] = MARKER_END[i].g;
+          markerEndBytes[i * 3 + 2] = MARKER_END[i].b;
+        }
+        const markerEndPos = raw.length - MARKER_END.length * 3;
+        markerEndBytes.copy(raw, markerEndPos);
       }
 
       if (opts.onProgress)

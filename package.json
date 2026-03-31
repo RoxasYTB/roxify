@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.12.9",
+  "version": "1.12.10",
   "type": "module",
   "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "main": "dist/index.js",
@@ -107,5 +107,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
   }
 }
