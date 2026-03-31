@@ -445,7 +445,12 @@ fn write_idat_streaming<W: Write, R: Read>(
                     deflate_block_remaining -= take;
                     cols_written += take;
                 } else {
-                    let take = need.min(zero_remaining).min(buf_size);
+                    let max_before_marker = if flat_pos < marker_end_pos {
+                        marker_end_pos - flat_pos
+                    } else {
+                        need
+                    };
+                    let take = need.min(zero_remaining).min(buf_size).min(max_before_marker);
                     if take == 0 { break; }
                     let zeros = vec![0u8; take];
                     w.write_all(&zeros)?;
