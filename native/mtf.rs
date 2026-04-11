@@ -6,7 +6,7 @@ pub fn mtf_encode(data: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len());
 
     for &byte in data {
-        let pos = unsafe { table.iter().position(|&b| b == byte).unwrap_unchecked() };
+        let pos = table.iter().position(|&b| b == byte).unwrap();
         output.push(pos as u8);
         if pos > 0 {
             let val = table[pos];

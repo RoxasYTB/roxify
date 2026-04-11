@@ -1088,6 +1088,33 @@ export async function decodePngToBinary(
     }
 
     if (endStartPixel === -1) {
+      const scanLines = Math.min(logicalHeight, 5);
+      for (let row = logicalHeight - 1; row >= logicalHeight - scanLines && endStartPixel === -1; row--) {
+        const rowStart = row * logicalWidth;
+        for (let col = logicalWidth - MARKER_END.length; col >= 0 && endStartPixel === -1; col--) {
+          let match = true;
+          for (let mi = 0; mi < MARKER_END.length && match; mi++) {
+            const pixelIdx = rowStart + col + mi;
+            if (pixelIdx >= curTotalPixels) { match = false; break; }
+            const offset = pixelIdx * 3;
+            if (!isColorMatch(
+              logicalData[offset], logicalData[offset + 1], logicalData[offset + 2],
+              MARKER_END[mi].r, MARKER_END[mi].g, MARKER_END[mi].b,
+            )) {
+              match = false;
+            }
+          }
+          if (match) {
+            endStartPixel = rowStart + col - startIdx;
+            if (process.env.ROX_DEBUG) {
+              console.log(`DEBUG: Found END marker via scan at row=${row}, col=${col}`);
+            }
+          }
+        }
+      }
+    }
+
+    if (endStartPixel === -1) {
       if (process.env.ROX_DEBUG) {
         console.log('DEBUG: END marker not found at expected position');
         const lastLinePixels = [];
@@ -1108,14 +1135,16 @@ export async function decodePngToBinary(
     }
 
     const dataPixelCount = endStartPixel - (MARKER_START.length + 1);
-    const pixelBytes = Buffer.allocUnsafe(dataPixelCount * 3);
+    const srcByteOffset = dataStartPixel * 3;
+    const byteCount = dataPixelCount * 3;
+    const pixelBytes = Buffer.allocUnsafe(byteCount);
 
-    for (let i = 0; i < dataPixelCount; i++) {
-      const srcOffset = (dataStartPixel + i) * 3;
-      const dstOffset = i * 3;
-      pixelBytes[dstOffset] = logicalData[srcOffset];
-      pixelBytes[dstOffset + 1] = logicalData[srcOffset + 1];
-      pixelBytes[dstOffset + 2] = logicalData[srcOffset + 2];
+    if (Buffer.isBuffer(logicalData)) {
+      logicalData.copy(pixelBytes, 0, srcByteOffset, srcByteOffset + byteCount);
+    } else {
+      for (let i = 0; i < byteCount; i++) {
+        pixelBytes[i] = logicalData[srcByteOffset + i];
+      }
     }
 
     if (process.env.ROX_DEBUG) {
@@ -1395,6 +1424,30 @@ export async function decodePngToBinary(
                   console.log(
                     'DEBUG: Found END marker in fallback at last line',
                   );
+                }
+              }
+            }
+
+            if (endStartPixel2 === -1) {
+              const scanLines2 = Math.min(logicalHeight2, 5);
+              for (let row2 = logicalHeight2 - 1; row2 >= logicalHeight2 - scanLines2 && endStartPixel2 === -1; row2--) {
+                const rowStart2 = row2 * logicalWidth2;
+                for (let col2 = logicalWidth2 - MARKER_END.length; col2 >= 0 && endStartPixel2 === -1; col2--) {
+                  let m2 = true;
+                  for (let mi = 0; mi < MARKER_END.length && m2; mi++) {
+                    const pixelIdx2 = rowStart2 + col2 + mi;
+                    if (pixelIdx2 >= curTotalPixels2) { m2 = false; break; }
+                    const off2 = pixelIdx2 * 3;
+                    if (!isColorMatch(
+                      logicalData2[off2], logicalData2[off2 + 1], logicalData2[off2 + 2],
+                      MARKER_END[mi].r, MARKER_END[mi].g, MARKER_END[mi].b,
+                    )) {
+                      m2 = false;
+                    }
+                  }
+                  if (m2) {
+                    endStartPixel2 = rowStart2 + col2 - startIdx2;
+                  }
                 }
               }
             }

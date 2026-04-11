@@ -120,6 +120,7 @@ export async function optimizePngBuffer(
       const row = raw.slice(rowStart, rowStart + rowBytes);
       let bestSum = Infinity;
       let bestFiltered: Buffer | null = null;
+      let chosenFilter = 0;
 
       for (let f = 0; f <= 4; f++) {
         const filtered = Buffer.alloc(rowBytes);
@@ -151,32 +152,10 @@ export async function optimizePngBuffer(
         if (sum < bestSum) {
           bestSum = sum;
           bestFiltered = filtered;
+          chosenFilter = f;
         }
       }
       const rowBuf = Buffer.alloc(1 + rowBytes);
-
-      let chosenFilter = 0;
-      for (let f = 0; f <= 4; f++) {
-        const filtered = Buffer.alloc(rowBytes);
-        for (let i = 0; i < rowBytes; i++) {
-          const val = row[i];
-          const left = i - bytesPerPixel >= 0 ? row[i - bytesPerPixel] : 0;
-          const up = prevRow ? prevRow[i] : 0;
-          const upLeft =
-            prevRow && i - bytesPerPixel >= 0 ? prevRow[i - bytesPerPixel] : 0;
-          if (f === 0) filtered[i] = val;
-          else if (f === 1) filtered[i] = (val - left + 256) & 0xff;
-          else if (f === 2) filtered[i] = (val - up + 256) & 0xff;
-          else if (f === 3)
-            filtered[i] = (val - Math.floor((left + up) / 2) + 256) & 0xff;
-          else
-            filtered[i] = (val - paethPredict(left, up, upLeft) + 256) & 0xff;
-        }
-        if (filtered.equals(bestFiltered!)) {
-          chosenFilter = f;
-          break;
-        }
-      }
       rowBuf[0] = chosenFilter;
       bestFiltered!.copy(rowBuf, 1);
       outRows.push(rowBuf);

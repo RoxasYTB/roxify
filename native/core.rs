@@ -216,22 +216,59 @@ pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::
     zstd_compress_with_prefix(buf, level, dict, &[])
 }
 
+fn compute_adaptive_level(buf: &[u8], requested_level: i32, total_len: usize) -> i32 {
+    let sample_size = buf.len().min(8192);
+    let entropy = if sample_size > 0 {
+        let sample = &buf[..sample_size];
+        let mut freq = [0u32; 256];
+        for &b in sample { freq[b as usize] += 1; }
+        let len = sample.len() as f32;
+        let mut ent: f32 = 0.0;
+        for &c in &freq {
+            if c > 0 {
+                let p = c as f32 / len;
+                ent -= p * p.log2();
+            }
+        }
+        ent
+    } else {
+        4.0
+    };
+
+    let size_cap = if total_len > 2 * 1024 * 1024 * 1024 {
+        1
+    } else if total_len > 1024 * 1024 * 1024 {
+        3
+    } else if total_len > 256 * 1024 * 1024 {
+        6
+    } else if total_len > 64 * 1024 * 1024 {
+        if entropy < 4.0 { 19 } else if entropy < 6.0 { 12 } else { 9 }
+    } else if total_len > 16 * 1024 * 1024 {
+        if entropy < 4.0 { 19 } else if entropy < 6.0 { 12 } else if entropy < 7.5 { 9 } else { 3 }
+    } else if total_len > 1024 * 1024 {
+        if entropy < 4.0 { 12 } else if entropy < 6.0 { 9 } else if entropy < 7.5 { 6 } else { 3 }
+    } else if total_len > 64 * 1024 {
+        if entropy < 6.0 { 6 } else if entropy < 7.5 { 3 } else { 1 }
+    } else if total_len > 1024 {
+        if entropy < 7.5 { 3 } else { 1 }
+    } else {
+        if entropy > 7.5 { 1 } else { 1 }
+    };
+
+    requested_level.min(size_cap)
+}
+
 pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
     let actual_level = level.min(22).max(1);
     let total_len = prefix.len() + buf.len();
+    let adaptive_level = compute_adaptive_level(buf, actual_level, total_len);
 
-    let adaptive_level = if total_len > 2 * 1024 * 1024 * 1024 {
-        actual_level.min(1)
-    } else if total_len > 1024 * 1024 * 1024 {
-        actual_level.min(3)
-    } else if total_len > 256 * 1024 * 1024 {
-        actual_level.min(6)
-    } else if total_len > 64 * 1024 * 1024 {
-        actual_level.min(12)
+    let estimated_output = if total_len < 1024 {
+        total_len
     } else {
-        actual_level
+        total_len * 3 / 4
     };
 
     if dict.is_none() && total_len < 4 * 1024 * 1024 {
@@ -247,10 +284,10 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
     }
 
     let mut encoder = if let Some(d) = dict {
-        zstd::stream::Encoder::with_dictionary(Vec::with_capacity(total_len / 2), adaptive_level, d)
+        zstd::stream::Encoder::with_dictionary(Vec::with_capacity(estimated_output), adaptive_level, d)
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     } else {
-        zstd::stream::Encoder::new(Vec::with_capacity(total_len / 2), adaptive_level)
+        zstd::stream::Encoder::new(Vec::with_capacity(estimated_output), adaptive_level)
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     };
 
