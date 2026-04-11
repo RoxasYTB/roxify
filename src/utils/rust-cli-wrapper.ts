@@ -134,11 +134,11 @@ export function isRustBinaryAvailable(): boolean {
 }
 
 import {
-  chmodSync,
-  mkdtempSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
+    chmodSync,
+    mkdtempSync,
+    readFileSync,
+    unlinkSync,
+    writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
 

@@ -17,7 +17,7 @@ export {
     encodeWithRustCLI,
     havepassphraseWithRustCLI,
     isRustBinaryAvailable,
-    listWithRustCLI,
+    listWithRustCLI
 } from './utils/rust-cli-wrapper.js';
 export * from './utils/types.js';
 export * from './utils/zstd.js';
