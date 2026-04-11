@@ -542,8 +542,9 @@ fn optimize_to_webp(png_data: &[u8]) -> Result<Vec<u8>> {
     use std::fs;
 
     let tmp_dir = std::env::temp_dir();
-    let tmp_in = tmp_dir.join("roxify_temp_in.png");
-    let tmp_out = tmp_dir.join("roxify_temp_out.webp");
+    let id = rand::random::<u64>();
+    let tmp_in = tmp_dir.join(format!("roxify_{}_in.png", id));
+    let tmp_out = tmp_dir.join(format!("roxify_{}_out.webp", id));
 
     fs::write(&tmp_in, png_data)?;
 
@@ -569,8 +570,9 @@ fn optimize_to_jxl(png_data: &[u8]) -> Result<Vec<u8>> {
     use std::fs;
 
     let tmp_dir = std::env::temp_dir();
-    let tmp_in = tmp_dir.join("roxify_temp_in.png");
-    let tmp_out = tmp_dir.join("roxify_temp_out.jxl");
+    let id = rand::random::<u64>();
+    let tmp_in = tmp_dir.join(format!("roxify_{}_in.png", id));
+    let tmp_out = tmp_dir.join(format!("roxify_{}_out.jxl", id));
 
     fs::write(&tmp_in, png_data)?;
 
@@ -596,12 +598,13 @@ fn reconvert_to_png(data: &[u8], original_format: &str) -> Result<Vec<u8>> {
     use std::fs;
 
     let tmp_dir = std::env::temp_dir();
+    let id = rand::random::<u64>();
     let tmp_in = match original_format {
-        "webp" => tmp_dir.join("roxify_reconvert_in.webp"),
-        "jxl" => tmp_dir.join("roxify_reconvert_in.jxl"),
+        "webp" => tmp_dir.join(format!("roxify_{}_reconvert_in.webp", id)),
+        "jxl" => tmp_dir.join(format!("roxify_{}_reconvert_in.jxl", id)),
         _ => return Err(anyhow::anyhow!("Unknown format")),
     };
-    let tmp_out = tmp_dir.join("roxify_reconvert_out.png");
+    let tmp_out = tmp_dir.join(format!("roxify_{}_reconvert_out.png", id));
 
     fs::write(&tmp_in, data)?;
 

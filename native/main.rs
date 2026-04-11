@@ -109,17 +109,10 @@ enum Commands {
 fn read_all(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
     let metadata = std::fs::metadata(path)?;
     let size = metadata.len() as usize;
-
-    if size > 256 * 1024 * 1024 {
-        let file = File::open(path)?;
-        let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        Ok(mmap.to_vec())
-    } else {
-        let mut f = File::open(path)?;
-        let mut buf = Vec::with_capacity(size);
-        f.read_to_end(&mut buf)?;
-        Ok(buf)
-    }
+    let mut f = File::open(path)?;
+    let mut buf = Vec::with_capacity(size);
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 fn write_all(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {

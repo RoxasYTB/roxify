@@ -160,37 +160,7 @@ pub fn delta_decode_bytes(buf: &[u8]) -> Vec<u8> {
     out
 }
 
-fn compress_with_chunk_size(buf: &[u8], level: i32, chunk_size: usize) -> std::result::Result<Vec<u8>, String> {
-    use std::io::Write;
 
-    // Allow ultra levels (20-22) for maximum compression
-    let actual_level = level.min(22).max(1);
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), actual_level)
-        .map_err(|e| format!("zstd encoder init error: {}", e))?;
-
-    let threads = num_cpus::get() as u32;
-    if threads > 1 {
-        // Ultra levels (>=20) use much more memory per thread; limit to 4
-        let max_threads = if actual_level >= 20 { threads.min(4) } else { threads };
-        let _ = encoder.multithread(max_threads);
-    }
-
-    if buf.len() > 1024 * 1024 {
-        let _ = encoder.long_distance_matching(true);
-        let wlog = if buf.len() > 512 * 1024 * 1024 { 28 }
-            else if buf.len() > 64 * 1024 * 1024 { 27 }
-            else { 26 };
-        let _ = encoder.window_log(wlog);
-    }
-
-    let _ = encoder.set_pledged_src_size(Some(buf.len() as u64));
-
-    for chunk in buf.chunks(chunk_size) {
-        encoder.write_all(chunk).map_err(|e| format!("zstd write error: {}", e))?;
-    }
-
-    encoder.finish().map_err(|e| format!("zstd finish error: {}", e))
-}
 
 pub fn train_zstd_dictionary(sample_paths: &[PathBuf], dict_size: usize) -> Result<Vec<u8>> {
     // load all sample files contiguously
@@ -216,43 +186,76 @@ pub fn zstd_compress_bytes(buf: &[u8], level: i32, dict: Option<&[u8]>) -> std::
     zstd_compress_with_prefix(buf, level, dict, &[])
 }
 
-fn compute_adaptive_level(buf: &[u8], requested_level: i32, total_len: usize) -> i32 {
-    let sample_size = buf.len().min(8192);
-    let entropy = if sample_size > 0 {
-        let sample = &buf[..sample_size];
-        let mut freq = [0u32; 256];
-        for &b in sample { freq[b as usize] += 1; }
-        let len = sample.len() as f32;
-        let mut ent: f32 = 0.0;
-        for &c in &freq {
-            if c > 0 {
-                let p = c as f32 / len;
-                ent -= p * p.log2();
-            }
+fn compute_entropy_sample(buf: &[u8]) -> f32 {
+    let sample_size = buf.len().min(16384);
+    if sample_size == 0 {
+        return 4.0;
+    }
+    let sample = &buf[..sample_size];
+    let mut freq = [0u32; 256];
+    for &b in sample {
+        freq[b as usize] += 1;
+    }
+    let len = sample.len() as f32;
+    let mut ent: f32 = 0.0;
+    for &c in &freq {
+        if c > 0 {
+            let p = c as f32 / len;
+            ent -= p * p.log2();
         }
-        ent
-    } else {
-        4.0
-    };
+    }
+    ent
+}
 
-    let size_cap = if total_len > 2 * 1024 * 1024 * 1024 {
-        1
-    } else if total_len > 1024 * 1024 * 1024 {
-        3
-    } else if total_len > 256 * 1024 * 1024 {
-        6
-    } else if total_len > 64 * 1024 * 1024 {
-        if entropy < 4.0 { 19 } else if entropy < 6.0 { 12 } else { 9 }
-    } else if total_len > 16 * 1024 * 1024 {
-        if entropy < 4.0 { 19 } else if entropy < 6.0 { 12 } else if entropy < 7.5 { 9 } else { 3 }
-    } else if total_len > 1024 * 1024 {
-        if entropy < 4.0 { 12 } else if entropy < 6.0 { 9 } else if entropy < 7.5 { 6 } else { 3 }
-    } else if total_len > 64 * 1024 {
-        if entropy < 6.0 { 6 } else if entropy < 7.5 { 3 } else { 1 }
-    } else if total_len > 1024 {
-        if entropy < 7.5 { 3 } else { 1 }
-    } else {
-        if entropy > 7.5 { 1 } else { 1 }
+fn compute_adaptive_level(buf: &[u8], requested_level: i32, total_len: usize) -> i32 {
+    let entropy = compute_entropy_sample(buf);
+
+    let size_cap = match total_len {
+        s if s > 2 * 1024 * 1024 * 1024 => 1,
+        s if s > 1024 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 3,
+            _ => 1,
+        },
+        s if s > 256 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 6,
+            e if e < 5.0 => 3,
+            _ => 1,
+        },
+        s if s > 64 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 12,
+            e if e < 5.0 => 6,
+            e if e < 7.0 => 3,
+            _ => 1,
+        },
+        s if s > 16 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 15,
+            e if e < 5.0 => 9,
+            e if e < 7.0 => 6,
+            e if e < 7.5 => 3,
+            _ => 1,
+        },
+        s if s > 1024 * 1024 => match entropy {
+            e if e < 3.0 => 19,
+            e if e < 5.0 => 12,
+            e if e < 6.5 => 6,
+            e if e < 7.5 => 3,
+            _ => 1,
+        },
+        s if s > 64 * 1024 => match entropy {
+            e if e < 4.0 => 9,
+            e if e < 6.0 => 6,
+            e if e < 7.5 => 3,
+            _ => 1,
+        },
+        s if s > 4096 => match entropy {
+            e if e < 5.0 => 6,
+            e if e < 7.0 => 3,
+            _ => 1,
+        },
+        _ => match entropy {
+            e if e < 6.0 => 3,
+            _ => 1,
+        },
     };
 
     requested_level.min(size_cap)
@@ -328,7 +331,8 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
 
 pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Read;
-    let mut out = Vec::with_capacity(buf.len() * 2);
+    let estimated = buf.len().saturating_mul(3).max(4096);
+    let mut out = Vec::with_capacity(estimated);
     if let Some(d) = dict {
         let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(buf), d)
             .map_err(|e| format!("zstd decoder init error: {}", e))?;

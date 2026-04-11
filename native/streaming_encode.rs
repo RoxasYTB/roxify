@@ -296,6 +296,7 @@ fn write_idat_streaming<W: Write, R: Read>(
 
     let buf_size = 1024 * 1024;
     let mut transfer_buf = vec![0u8; buf_size];
+    let zero_buf = vec![0u8; buf_size];
 
     for _row in 0..height {
         if deflate_block_remaining == 0 {
@@ -455,9 +456,8 @@ fn write_idat_streaming<W: Write, R: Read>(
                     };
                     let take = need.min(zero_remaining).min(buf_size).min(max_before_marker);
                     if take == 0 { break; }
-                    let zeros = vec![0u8; take];
-                    w.write_all(&zeros)?;
-                    crc.update(&zeros);
+                    w.write_all(&zero_buf[..take])?;
+                    crc.update(&zero_buf[..take]);
                     for _ in 0..take {
                         adler_b = (adler_b + adler_a) % 65521;
                     }
