@@ -221,7 +221,7 @@ export async function packPathsGenerator(
     yield Buffer.concat([indexHeader, indexBuf]);
 
     let readSoFar = 0;
-    const BATCH_SIZE = 1000;
+    const BATCH_SIZE = 100;
     const chunks: Buffer[] = [];
     let chunkSize = 0;
 

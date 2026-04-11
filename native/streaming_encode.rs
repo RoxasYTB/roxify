@@ -193,7 +193,10 @@ fn write_png_from_zst(
     let idat_len = 2 + num_blocks * 5 + scanlines_total + 4;
 
     let out_file = File::create(output_path)?;
-    let mut w = BufWriter::with_capacity(16 * 1024 * 1024, out_file);
+    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 16 * 1024 * 1024 }
+        else if total_data_bytes > 16 * 1024 * 1024 { 8 * 1024 * 1024 }
+        else { (total_data_bytes / 2).max(65536).min(4 * 1024 * 1024) };
+    let mut w = BufWriter::with_capacity(buf_capacity, out_file);
 
     w.write_all(PNG_HEADER)?;
 

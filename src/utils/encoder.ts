@@ -530,55 +530,32 @@ export async function encodeBinaryToPng(
         );
       }
 
+      const totalDataBytes = logicalWidth * logicalHeight * 3;
+      const markerEndPos = totalDataBytes - MARKER_END.length * 3;
+
+      const fullData = Buffer.alloc(totalDataBytes);
+      const flatData = Buffer.concat(dataWithMarkers);
+      flatData.copy(fullData, 0, 0, Math.min(flatData.length, markerEndPos));
+
+      let mOff = markerEndPos;
+      for (let i = 0; i < MARKER_END.length; i++) {
+        fullData[mOff++] = MARKER_END[i].r;
+        fullData[mOff++] = MARKER_END[i].g;
+        fullData[mOff++] = MARKER_END[i].b;
+      }
+
       let raw: Buffer;
       let stride = 0;
 
       if (useManualPng) {
         stride = width * 3 + 1;
         raw = Buffer.alloc(height * stride);
-
-        const flatData = Buffer.concat(dataWithMarkers);
-        const markerEndBytes = Buffer.alloc(MARKER_END.length * 3);
-        for (let i = 0; i < MARKER_END.length; i++) {
-          markerEndBytes[i * 3] = MARKER_END[i].r;
-          markerEndBytes[i * 3 + 1] = MARKER_END[i].g;
-          markerEndBytes[i * 3 + 2] = MARKER_END[i].b;
-        }
-
-        const totalDataBytes = logicalWidth * logicalHeight * 3;
-        const fullData = Buffer.alloc(totalDataBytes);
-
-        const markerEndPos = totalDataBytes - MARKER_END.length * 3;
-        flatData.copy(
-          fullData,
-          0,
-          0,
-          Math.min(flatData.length, markerEndPos),
-        );
-        markerEndBytes.copy(fullData, markerEndPos);
-
         for (let row = 0; row < height; row++) {
           raw[row * stride] = 0;
-          fullData.copy(
-            raw,
-            row * stride + 1,
-            row * width * 3,
-            (row + 1) * width * 3,
-          );
+          fullData.copy(raw, row * stride + 1, row * width * 3, (row + 1) * width * 3);
         }
       } else {
-        raw = Buffer.alloc(width * height * 3);
-        const flatData = Buffer.concat(dataWithMarkers);
-        flatData.copy(raw, 0, 0, Math.min(flatData.length, raw.length));
-
-        const markerEndBytes = Buffer.alloc(MARKER_END.length * 3);
-        for (let i = 0; i < MARKER_END.length; i++) {
-          markerEndBytes[i * 3] = MARKER_END[i].r;
-          markerEndBytes[i * 3 + 1] = MARKER_END[i].g;
-          markerEndBytes[i * 3 + 2] = MARKER_END[i].b;
-        }
-        const markerEndPos = raw.length - MARKER_END.length * 3;
-        markerEndBytes.copy(raw, markerEndPos);
+        raw = fullData;
       }
 
       if (opts.onProgress)

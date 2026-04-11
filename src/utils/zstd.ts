@@ -66,7 +66,7 @@ export async function parallelZstdCompress(
   onProgress?: (loaded: number, total: number) => void,
   dict?: Buffer,
 ): Promise<Buffer[]> {
-  const chunkSize = 8 * 1024 * 1024;
+  const chunkSize = 32 * 1024 * 1024;
 
   // For small payloads (< chunkSize), concatenate and compress as single frame
   // to avoid multi-chunk overhead (16+ bytes header per chunk boundary).

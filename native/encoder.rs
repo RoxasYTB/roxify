@@ -229,24 +229,27 @@ fn build_flat_pixel_buffer(
     marker_end_pos: usize,
     total_data_bytes: usize,
 ) -> Vec<u8> {
-    let mut flat = vec![0u8; total_data_bytes];
+    let mut flat = Vec::with_capacity(total_data_bytes);
 
-    let mut pos = 0;
     for m in &MARKER_START {
-        flat[pos] = m.0; flat[pos + 1] = m.1; flat[pos + 2] = m.2;
-        pos += 3;
+        flat.push(m.0); flat.push(m.1); flat.push(m.2);
     }
-    flat[pos] = MARKER_ZSTD.0; flat[pos + 1] = MARKER_ZSTD.1; flat[pos + 2] = MARKER_ZSTD.2;
-    pos += 3;
+    flat.push(MARKER_ZSTD.0); flat.push(MARKER_ZSTD.1); flat.push(MARKER_ZSTD.2);
 
-    flat[pos..pos + PIXEL_MAGIC.len()].copy_from_slice(PIXEL_MAGIC);
-    pos += PIXEL_MAGIC.len();
+    flat.extend_from_slice(PIXEL_MAGIC);
+    flat.extend_from_slice(meta_pixel);
 
-    flat[pos..pos + meta_pixel.len()].copy_from_slice(meta_pixel);
+    let payload_end = flat.len();
+    if payload_end < marker_end_pos {
+        flat.resize(marker_end_pos, 0);
+    }
 
-    for (i, m) in MARKER_END.iter().enumerate() {
-        let off = marker_end_pos + i * 3;
-        flat[off] = m.0; flat[off + 1] = m.1; flat[off + 2] = m.2;
+    for m in &MARKER_END {
+        flat.push(m.0); flat.push(m.1); flat.push(m.2);
+    }
+
+    if flat.len() < total_data_bytes {
+        flat.resize(total_data_bytes, 0);
     }
 
     flat
