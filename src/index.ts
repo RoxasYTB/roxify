@@ -13,8 +13,11 @@ export * from './utils/reconstitution.js';
 export * from './utils/robust-audio.js';
 export * from './utils/robust-image.js';
 export {
+    decodeWithRustCLI,
     encodeWithRustCLI,
-    isRustBinaryAvailable
+    havepassphraseWithRustCLI,
+    isRustBinaryAvailable,
+    listWithRustCLI,
 } from './utils/rust-cli-wrapper.js';
 export * from './utils/types.js';
 export * from './utils/zstd.js';

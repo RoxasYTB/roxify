@@ -9,23 +9,35 @@ import {
 } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
-import {
-    DataFormatError,
-    decodePngToBinary,
-    encodeBinaryToPng,
-    hasPassphraseInPng,
-    IncorrectPassphraseError,
-    listFilesInPng,
-    PassphraseRequiredError,
-} from './index.js';
-import { packPathsGenerator, unpackBuffer, VFSIndexEntry } from './pack.js';
 import * as cliProgress from './stub-progress.js';
 import {
+    decodeWithRustCLI,
     encodeWithRustCLI,
+    havepassphraseWithRustCLI,
     isRustBinaryAvailable,
+    listWithRustCLI,
 } from './utils/rust-cli-wrapper.js';
 
-const VERSION = '1.12.0';
+async function loadJsEngine() {
+  const indexMod = await import('./index.js');
+  const packMod = await import('./pack.js');
+  return {
+    decodePngToBinary: indexMod.decodePngToBinary,
+    encodeBinaryToPng: indexMod.encodeBinaryToPng,
+    hasPassphraseInPng: indexMod.hasPassphraseInPng,
+    listFilesInPng: indexMod.listFilesInPng,
+    DataFormatError: indexMod.DataFormatError,
+    IncorrectPassphraseError: indexMod.IncorrectPassphraseError,
+    PassphraseRequiredError: indexMod.PassphraseRequiredError,
+    packPathsGenerator: packMod.packPathsGenerator,
+    unpackBuffer: packMod.unpackBuffer,
+    VFSIndexEntry: undefined as any,
+  };
+}
+
+type VFSIndexEntry = { path: string; size: number; offset: number };
+
+const VERSION = '1.13.1';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
@@ -303,8 +315,9 @@ async function encodeCommand(args: string[]) {
       }
     });
 
-    if (anyDir) {
-      const { index } = await packPathsGenerator(
+    if (anyDir && !isRustBinaryAvailable()) {
+      const js = await loadJsEngine();
+      const { index } = await js.packPathsGenerator(
         inputPaths,
         undefined,
         () => { },
@@ -412,6 +425,7 @@ async function encodeCommand(args: string[]) {
   }
 
   try {
+    const js = await loadJsEngine();
     const encodeBar = new cliProgress.SingleBar(
       {
         format: ' {bar} {percentage}% | {step} | {elapsed}s',
@@ -494,7 +508,7 @@ async function encodeCommand(args: string[]) {
 
     if (inputPaths.length > 1) {
       currentEncodeStep = 'Reading files';
-      const { index, stream, totalSize } = await packPathsGenerator(
+      const { index, stream, totalSize } = await js.packPathsGenerator(
         inputPaths,
         undefined,
         onProgress,
@@ -517,7 +531,7 @@ async function encodeCommand(args: string[]) {
       const st = statSync(resolvedInput);
       if (st.isDirectory()) {
         currentEncodeStep = 'Reading files';
-        const { index, stream, totalSize } = await packPathsGenerator(
+        const { index, stream, totalSize } = await js.packPathsGenerator(
           [resolvedInput],
           dirname(resolvedInput),
           onProgress,
@@ -600,7 +614,7 @@ async function encodeCommand(args: string[]) {
     } else {
       inputBuffer = inputData as Buffer;
     }
-    const output = await encodeBinaryToPng(inputBuffer, options);
+    const output = await js.encodeBinaryToPng(inputBuffer, options);
     const encodeTime = Date.now() - startEncode;
     clearInterval(encodeHeartbeat);
     if (barStarted) {
@@ -643,7 +657,52 @@ async function decodeCommand(args: string[]) {
 
   const resolvedInput = resolve(inputPath);
 
-  const resolvedOutput = parsed.output || outputPath || 'decoded.bin';
+  const resolvedOutput = parsed.output || outputPath || '.';
+
+  if (isRustBinaryAvailable() && !parsed.forceTs && !parsed.lossyResilient) {
+    try {
+      console.log(' ');
+      console.log('Decoding... (Using native Rust decoder)\n');
+      const startTime = Date.now();
+
+      const decodeBar = new cliProgress.SingleBar(
+        { format: ' {bar} {percentage}% | {step} | {elapsed}s' },
+        cliProgress.Presets.shades_classic,
+      );
+      let barValue = 0;
+      decodeBar.start(100, 0, { step: 'Decoding', elapsed: '0' });
+
+      const progressInterval = setInterval(() => {
+        barValue = Math.min(barValue + 2, 99);
+        decodeBar.update(barValue, {
+          step: 'Decoding',
+          elapsed: String(Math.floor((Date.now() - startTime) / 1000)),
+        });
+      }, 300);
+
+      await decodeWithRustCLI(
+        resolvedInput,
+        resolvedOutput,
+        parsed.passphrase,
+        parsed.files,
+        parsed.dict,
+      );
+
+      clearInterval(progressInterval);
+      const decodeTime = Date.now() - startTime;
+      decodeBar.update(100, { step: 'done', elapsed: String(Math.floor(decodeTime / 1000)) });
+      decodeBar.stop();
+
+      console.log(`\nSuccess!`);
+      console.log(`  Time: ${decodeTime}ms`);
+      console.log(`  Output: ${resolve(resolvedOutput)}`);
+      console.log(' ');
+      return;
+    } catch (err: any) {
+      console.warn('\nRust decoder failed, falling back to TypeScript decoder...');
+      console.warn(`Reason: ${err.message}\n`);
+    }
+  }
 
   try {
     const options: any = {};
@@ -718,7 +777,8 @@ async function decodeCommand(args: string[]) {
     };
 
     const inputBuffer = await readLargeFile(resolvedInput);
-    const result = await decodePngToBinary(inputBuffer, options);
+    const js = await loadJsEngine();
+    const result = await js.decodePngToBinary(inputBuffer, options);
     const decodeTime = Date.now() - startDecode;
     clearInterval(heartbeat);
     if (barStarted) {
@@ -767,7 +827,7 @@ async function decodeCommand(args: string[]) {
       );
       console.log(`Time: ${decodeTime}ms`);
     } else if (result.buf) {
-      const unpacked = unpackBuffer(result.buf);
+      const unpacked = js.unpackBuffer(result.buf);
       if (unpacked) {
         const baseDir = parsed.output || outputPath || '.';
 
@@ -806,7 +866,7 @@ async function decodeCommand(args: string[]) {
     console.log(' ');
   } catch (err: any) {
     if (
-      err instanceof PassphraseRequiredError ||
+      (err.message && err.message.includes('passphrase required')) ||
       (err.message && err.message.includes('passphrase') && !parsed.passphrase)
     ) {
       console.log(' ');
@@ -814,13 +874,13 @@ async function decodeCommand(args: string[]) {
         'File appears to be encrypted. Provide a passphrase with -p',
       );
     } else if (
-      err instanceof IncorrectPassphraseError ||
+      (err.message && err.message.includes('Incorrect passphrase')) ||
       (err.message && err.message.includes('Incorrect passphrase'))
     ) {
       console.log(' ');
       console.error('Incorrect passphrase');
     } else if (
-      err instanceof DataFormatError ||
+      (err.message && err.message.includes('data format error')) ||
       (err.message &&
         (err.message.includes('decompression failed') ||
           err.message.includes('missing ROX1') ||
@@ -858,42 +918,25 @@ async function listCommand(args: string[]) {
 
   if (isRustBinaryAvailable()) {
     try {
-      const { findRustBinary } = await import('./utils/rust-cli-wrapper.js');
-      const cliPath = findRustBinary();
+      const output = await listWithRustCLI(resolvedInput);
+      const fileList = JSON.parse(output.trim());
 
-      if (cliPath) {
-        const { execSync } = await import('child_process');
-        try {
-          const help = execSync(`"${cliPath}" --help`, { encoding: 'utf-8' });
-          if (!help.includes('list')) {
-            throw new Error('native CLI does not support list');
-          }
-
-          const output = execSync(`"${cliPath}" list "${resolvedInput}"`, {
-            encoding: 'utf-8',
-            stdio: ['pipe', 'pipe', 'inherit'],
-            timeout: 30000,
-          });
-
-          const fileList = JSON.parse(output.trim());
-
-          console.log(`Files in ${resolvedInput}:`);
-          for (const file of fileList) {
-            if (typeof file === 'string') {
-              console.log(`  ${file}`);
-            } else {
-              console.log(`  ${file.name} (${file.size} bytes)`);
-            }
-          }
-          return;
-        } catch (e) { }
+      console.log(`Files in ${resolvedInput}:`);
+      for (const file of fileList) {
+        if (typeof file === 'string') {
+          console.log(`  ${file}`);
+        } else {
+          console.log(`  ${file.name} (${file.size} bytes)`);
+        }
       }
-    } catch (err: any) { }
+      return;
+    } catch (e) { }
   }
 
   try {
     const inputBuffer = readFileSync(resolvedInput);
-    const fileList = await listFilesInPng(inputBuffer, {
+    const js = await loadJsEngine();
+    const fileList = await js.listFilesInPng(inputBuffer, {
       includeSizes: parsed.sizes !== false,
     });
 
@@ -931,9 +974,17 @@ async function havePassphraseCommand(args: string[]) {
   }
 
   const resolvedInput = resolve(inputPath);
+  if (isRustBinaryAvailable()) {
+    try {
+      const output = await havepassphraseWithRustCLI(resolvedInput);
+      console.log(output.trim());
+      return;
+    } catch (e) { }
+  }
   try {
     const inputBuffer = readFileSync(resolvedInput);
-    const has = await hasPassphraseInPng(inputBuffer);
+    const js = await loadJsEngine();
+    const has = await js.hasPassphraseInPng(inputBuffer);
     console.log(has ? 'Passphrase detected.' : 'No passphrase detected.');
   } catch (err: any) {
     console.log(' ');
