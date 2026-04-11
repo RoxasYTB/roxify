@@ -25,17 +25,17 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # ── Linux (Ubuntu 20.04 for max glibc compat: Debian 11+, Ubuntu 20.04+, Fedora 33+, etc.) ──
-          - os: ubuntu-20.04
+          # ── Linux (Ubuntu 22.04 for glibc 2.35 compat: Debian 12+, Ubuntu 22.04+, Fedora 36+) ──
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             ext: so
             libPrefix: true
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: i686-unknown-linux-gnu
             ext: so
             libPrefix: true
             crossPkgs: gcc-multilib g++-multilib
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             ext: so
             libPrefix: true
