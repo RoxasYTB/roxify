@@ -17,6 +17,7 @@ mod archive;
 mod streaming;
 mod streaming_decode;
 mod streaming_encode;
+mod progress;
 
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
@@ -157,13 +158,16 @@ fn main() -> anyhow::Result<()> {
                 .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
             if is_dir && dict.is_none() {
-                streaming_encode::encode_dir_to_png_encrypted(
+                streaming_encode::encode_dir_to_png_encrypted_with_progress(
                     &input,
                     &output,
                     level,
                     file_name,
                     passphrase.as_deref(),
                     Some(&encrypt),
+                    Some(Box::new(|current, total, step| {
+                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                    })),
                 )?;
                 println!("(TAR archive, rXFL chunk embedded)");
                 return Ok(());
@@ -187,6 +191,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             let use_streaming = payload.len() > 64 * 1024 * 1024;
+            eprintln!("PROGRESS:50:100:encoding");
 
             if use_streaming {
                 streaming::encode_to_png_file(
@@ -227,6 +232,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             if file_list_json.is_some() {
+                eprintln!("PROGRESS:100:100:done");
                 if is_dir {
                     println!("(TAR archive, rXFL chunk embedded)");
                 } else {
@@ -339,8 +345,10 @@ fn main() -> anyhow::Result<()> {
 
             if is_png_file && files.is_none() && dict.is_none() && file_size > 100_000_000 {
                 let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("out.raw"));
+                eprintln!("PROGRESS:5:100:decoding");
                 match streaming_decode::streaming_decode_to_dir_encrypted(&input, &out_dir, passphrase.as_deref()) {
                     Ok(written) => {
+                        eprintln!("PROGRESS:100:100:done");
                         println!("Unpacked {} files (TAR)", written.len());
                         return Ok(());
                     }
@@ -351,6 +359,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let buf = read_all(&input)?;
+            eprintln!("PROGRESS:20:100:decompressing");
             let dict_bytes: Option<Vec<u8>> = match dict {
                 Some(path) => Some(read_all(&path)?),
                 None => None,
@@ -413,6 +422,7 @@ fn main() -> anyhow::Result<()> {
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
 
                                 let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
+                eprintln!("PROGRESS:100:100:done");
                 println!("Unpacked {} files", written.len());
             } else {
                                                 let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
@@ -511,6 +521,7 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     write_all(&dest, &out_bytes)?;
                 }
+                eprintln!("PROGRESS:100:100:done");
             }
         }
         Commands::Crc32 { input } => {

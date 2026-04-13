@@ -28,7 +28,7 @@ pub struct HybridCompressor {
 }
 
 impl HybridCompressor {
-    pub fn new(_enable_gpu: bool, _pool_size: usize) -> Self {
+    pub fn new() -> Self {
         HybridCompressor {
             block_size: BLOCK_SIZE,
         }
@@ -36,7 +36,6 @@ impl HybridCompressor {
 
     pub fn compress(&self, data: &[u8]) -> Result<(Vec<u8>, CompressionStats)> {
         let original_size = data.len() as u64;
-
         let blocks: Vec<&[u8]> = data.chunks(self.block_size).collect();
         let blocks_count = blocks.len();
 
@@ -136,12 +135,10 @@ impl HybridCompressor {
     }
 }
 
-fn compress_block(block: &[u8]) -> Result<Vec<u8>> {
+fn compress_block_with_entropy(block: &[u8], entropy: f32) -> Result<Vec<u8>> {
     if block.is_empty() {
         return Ok(vec![BLOCK_FLAG_STORE]);
     }
-
-    let entropy = analyze_entropy(block);
 
     if entropy >= ENTROPY_THRESHOLD_STORE {
         let mut result = Vec::with_capacity(1 + block.len());
@@ -165,6 +162,19 @@ fn compress_block(block: &[u8]) -> Result<Vec<u8>> {
         return Ok(result);
     }
 
+    try_bwt_or_zstd(block)
+}
+
+fn compress_block(block: &[u8]) -> Result<Vec<u8>> {
+    if block.is_empty() {
+        return Ok(vec![BLOCK_FLAG_STORE]);
+    }
+
+    let entropy = analyze_entropy(block);
+    compress_block_with_entropy(block, entropy)
+}
+
+fn try_bwt_or_zstd(block: &[u8]) -> Result<Vec<u8>> {
     let bwt = bwt_encode(block)?;
     let mtf_data = mtf_encode(&bwt.transformed);
     let rle_data = rle0_encode(&mtf_data);
@@ -277,11 +287,11 @@ fn decompress_block_v1(block: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn compress_high_performance(data: &[u8]) -> Result<(Vec<u8>, CompressionStats)> {
-    let compressor = HybridCompressor::new(false, 0);
+    let compressor = HybridCompressor::new();
     compressor.compress(data)
 }
 
 pub fn decompress_high_performance(data: &[u8]) -> Result<Vec<u8>> {
-    let compressor = HybridCompressor::new(false, 0);
+    let compressor = HybridCompressor::new();
     compressor.decompress(data)
 }
