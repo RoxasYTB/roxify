@@ -6,8 +6,6 @@ use napi_derive::napi;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod core;
-#[cfg(feature = "gpu")]
-mod gpu;
 mod rans;
 mod rans_byte;
 mod bwt;
@@ -27,15 +25,6 @@ mod archive;
 mod streaming;
 
 pub use core::*;
-#[cfg(feature = "gpu")]
-pub use gpu::*;
-#[cfg(not(feature = "gpu"))]
-mod gpu {
-        pub fn gpu_available() -> bool {
-        false
-    }
-}
-
 pub use rans::*;
 pub use bwt::*;
 pub use context_mixing::*;
@@ -55,12 +44,6 @@ pub struct CompressionReport {
     pub ratio: f64,
     pub entropy_bits: f64,
     pub blocks_count: u32,
-}
-
-#[napi(object)]
-pub struct GpuStatus {
-    pub available: bool,
-    pub adapter_info: Option<String>,
 }
 
 #[cfg(not(test))]
@@ -120,15 +103,6 @@ pub fn native_zstd_decompress(buffer: Buffer) -> Result<Vec<u8>> {
 pub fn native_zstd_decompress_with_dict(buffer: Buffer, dict: Buffer) -> Result<Vec<u8>> {
     let dict_slice: &[u8] = &dict;
     core::zstd_decompress_bytes(&buffer, Some(dict_slice)).map_err(|e| Error::from_reason(e))
-}
-
-#[cfg(not(test))]
-#[napi]
-pub fn check_gpu_status() -> GpuStatus {
-    GpuStatus {
-        available: gpu::gpu_available(),
-        adapter_info: None,
-    }
 }
 
 #[cfg(not(test))]

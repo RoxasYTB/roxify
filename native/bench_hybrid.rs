@@ -8,7 +8,7 @@ mod pool;
 mod hybrid;
 
 fn bench_roundtrip(name: &str, data: &[u8]) {
-    let compressor = hybrid::HybridCompressor::new(false, 4);
+    let compressor = hybrid::HybridCompressor::new();
 
     let start = Instant::now();
     let (compressed, stats) = compressor.compress(data).unwrap();
