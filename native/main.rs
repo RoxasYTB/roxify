@@ -343,10 +343,16 @@ fn main() -> anyhow::Result<()> {
                         && sig == [137, 80, 78, 71, 13, 10, 26, 10]
                 });
 
-            if is_png_file && files.is_none() && dict.is_none() && file_size > 100_000_000 {
+            if is_png_file && files.is_none() && dict.is_none() {
                 let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("out.raw"));
-                eprintln!("PROGRESS:5:100:decoding");
-                match streaming_decode::streaming_decode_to_dir_encrypted(&input, &out_dir, passphrase.as_deref()) {
+                match streaming_decode::streaming_decode_to_dir_encrypted_with_progress(
+                    &input,
+                    &out_dir,
+                    passphrase.as_deref(),
+                    Some(Box::new(|current, total, step| {
+                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                    })),
+                ) {
                     Ok(written) => {
                         eprintln!("PROGRESS:100:100:done");
                         println!("Unpacked {} files (TAR)", written.len());

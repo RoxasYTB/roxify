@@ -70,8 +70,8 @@ All measurements taken on Linux x64 (Intel i7-6700K @ 4.0 GHz, 32 GB RAM). Roxif
 
 | Dataset | unzip | Roxify decode | Speedup |
 | --- | --- | --- | --- |
-| Test A (177 MB) | 2.4 s | 1.8 s | 1.3x |
-| Test B (1.4 GB) | 8.4 s | 2.2 s | 3.8x |
+| Test A (177 MB) | 2.4 s | 1.3 s | 1.8x |
+| Test B (1.4 GB) | 8.4 s | 2.9 s | 2.9x |
 
 Roxify produces a valid PNG image instead of a ZIP archive. On these real-world datasets it compresses 20-37% smaller than ZIP -9 while encoding 15x faster, thanks to multi-threaded Zstd with long-distance matching.
 
@@ -537,6 +537,8 @@ Input --> Detect Format --> Demodulate/Read Blocks --> De-interleave --> RS ECC 
 | `image_utils.rs`    | Image resizing, pixel format conversion, metadata extraction           |
 | `png_utils.rs`      | Low-level PNG chunk read/write operations                              |
 | `progress.rs`       | Progress tracking for long-running compression/decompression           |
+| `streaming_encode.rs` | Streaming directory-to-PNG encoder with real-time progress           |
+| `streaming_decode.rs` | Streaming PNG-to-directory decoder with real-time progress           |
 
 ### TypeScript Modules
 

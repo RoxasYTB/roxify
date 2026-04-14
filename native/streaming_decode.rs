@@ -7,14 +7,25 @@ const MARKER_BYTES: usize = 12;
 
 type Aes256Ctr = ctr::Ctr64BE<aes::Aes256>;
 
+pub type DecodeProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
+
 pub fn streaming_decode_to_dir(png_path: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
-    streaming_decode_to_dir_encrypted(png_path, out_dir, None)
+    streaming_decode_to_dir_encrypted_with_progress(png_path, out_dir, None, None)
 }
 
 pub fn streaming_decode_to_dir_encrypted(
     png_path: &Path,
     out_dir: &Path,
     passphrase: Option<&str>,
+) -> Result<Vec<String>, String> {
+    streaming_decode_to_dir_encrypted_with_progress(png_path, out_dir, passphrase, None)
+}
+
+pub fn streaming_decode_to_dir_encrypted_with_progress(
+    png_path: &Path,
+    out_dir: &Path,
+    passphrase: Option<&str>,
+    progress: Option<DecodeProgressCallback>,
 ) -> Result<Vec<String>, String> {
     let file = std::fs::File::open(png_path).map_err(|e| format!("open: {}", e))?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| format!("mmap: {}", e))? };
@@ -24,7 +35,16 @@ pub fn streaming_decode_to_dir_encrypted(
         return Err("Not a PNG file".into());
     }
 
+    if let Some(ref cb) = progress {
+        cb(2, 100, "parsing_png");
+    }
+
     let (width, height, idat_data_start, idat_data_end) = parse_png_header(data)?;
+    let total_expected = parse_rxfl_total_bytes(data).unwrap_or(0);
+
+    if let Some(ref cb) = progress {
+        cb(5, 100, "reading_header");
+    }
 
     let mut reader = DeflatePixelReader::new(data, width, height, idat_data_start, idat_data_end);
 
@@ -51,6 +71,10 @@ pub fn streaming_decode_to_dir_encrypted(
     reader.read_exact(&mut plen_buf).map_err(|e| format!("read payload_len: {}", e))?;
     let payload_len = u32::from_be_bytes(plen_buf) as u64;
 
+    if let Some(ref cb) = progress {
+        cb(8, 100, "decrypting");
+    }
+
     let payload_reader = reader.take(payload_len);
 
     let first_byte_reader = FirstByteReader::new(payload_reader);
@@ -58,10 +82,13 @@ pub fn streaming_decode_to_dir_encrypted(
 
     match enc_byte {
         0x00 => {
+            if let Some(ref cb) = progress {
+                cb(10, 100, "decompressing");
+            }
             let mut decoder = zstd::stream::Decoder::new(remaining_reader)
                 .map_err(|e| format!("zstd decoder: {}", e))?;
             decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
-            read_rox1_and_untar(decoder, out_dir)
+            read_rox1_and_untar_with_progress(decoder, out_dir, progress, total_expected)
         }
         0x03 => {
             let pass = passphrase.ok_or("Passphrase required for AES-CTR decryption")?;
@@ -79,23 +106,31 @@ pub fn streaming_decode_to_dir_encrypted(
             let encrypted_data_len = payload_len - 1 - 16 - 16 - hmac_size;
             let ctr_reader = CtrDecryptReader::new(r.take(encrypted_data_len), cipher);
 
+            if let Some(ref cb) = progress {
+                cb(10, 100, "decompressing");
+            }
             let mut decoder = zstd::stream::Decoder::new(ctr_reader)
                 .map_err(|e| format!("zstd decoder: {}", e))?;
             decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
-            read_rox1_and_untar(decoder, out_dir)
+            read_rox1_and_untar_with_progress(decoder, out_dir, progress, total_expected)
         }
         _ => Err(format!("Unsupported encryption (enc=0x{:02x}) in streaming decode", enc_byte)),
     }
 }
 
-fn read_rox1_and_untar<R: Read>(mut decoder: R, out_dir: &Path) -> Result<Vec<String>, String> {
+fn read_rox1_and_untar_with_progress<R: Read>(
+    mut decoder: R,
+    out_dir: &Path,
+    progress: Option<DecodeProgressCallback>,
+    total_expected: u64,
+) -> Result<Vec<String>, String> {
     let mut magic = [0u8; 4];
     decoder.read_exact(&mut magic).map_err(|e| format!("read ROX1: {}", e))?;
     if &magic != b"ROX1" {
         return Err(format!("Expected ROX1, got {:?}", magic));
     }
     std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {}", e))?;
-    tar_unpack_from_reader(decoder, out_dir)
+    tar_unpack_from_reader_with_progress(decoder, out_dir, progress, total_expected)
 }
 
 fn parse_png_header(data: &[u8]) -> Result<(usize, usize, usize, usize), String> {
@@ -145,6 +180,30 @@ fn parse_png_header(data: &[u8]) -> Result<(usize, usize, usize, usize), String>
     }
 
     Ok((width, height, idat_start, idat_end))
+}
+
+fn parse_rxfl_total_bytes(data: &[u8]) -> Option<u64> {
+    let mut pos = 8;
+    while pos + 12 <= data.len() {
+        let chunk_len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let chunk_type = &data[pos + 4..pos + 8];
+        let chunk_data_start = pos + 8;
+
+        if chunk_type == b"rXFL" && chunk_data_start + chunk_len <= data.len() {
+            let json_bytes = &data[chunk_data_start..chunk_data_start + chunk_len];
+            if let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(json_bytes) {
+                let total: u64 = entries.iter()
+                    .filter_map(|e| e.get("size").and_then(|s| s.as_u64()))
+                    .sum();
+                return Some(total);
+            }
+        } else if chunk_type == b"IEND" {
+            break;
+        }
+
+        pos = chunk_data_start + chunk_len + 4;
+    }
+    None
 }
 
 struct DeflatePixelReader<'a> {
@@ -298,15 +357,23 @@ impl<R: Read> Read for CtrDecryptReader<R> {
     }
 }
 
-fn tar_unpack_from_reader<R: Read>(reader: R, output_dir: &Path) -> Result<Vec<String>, String> {
+fn tar_unpack_from_reader_with_progress<R: Read>(
+    reader: R,
+    output_dir: &Path,
+    progress: Option<DecodeProgressCallback>,
+    total_expected: u64,
+) -> Result<Vec<String>, String> {
     let buf_reader = std::io::BufReader::with_capacity(8 * 1024 * 1024, reader);
     let mut archive = tar::Archive::new(buf_reader);
     let mut written = Vec::new();
     let mut created_dirs = std::collections::HashSet::new();
+    let mut bytes_extracted: u64 = 0;
+    let mut last_pct: u64 = 10;
 
     let entries = archive.entries().map_err(|e| format!("tar entries: {}", e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("tar entry: {}", e))?;
+        let entry_size = entry.size();
         let path = entry.path().map_err(|e| format!("tar path: {}", e))?.to_path_buf();
 
         let mut safe = std::path::PathBuf::new();
@@ -327,11 +394,28 @@ fn tar_unpack_from_reader<R: Read>(reader: R, output_dir: &Path) -> Result<Vec<S
         }
 
         let mut f = std::io::BufWriter::with_capacity(
-            (entry.size() as usize).min(4 * 1024 * 1024).max(8192),
+            (entry_size as usize).min(4 * 1024 * 1024).max(8192),
             std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
         );
         std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;
         written.push(safe.to_string_lossy().to_string());
+
+        bytes_extracted += entry_size;
+        if let Some(ref cb) = progress {
+            let pct = if total_expected > 0 {
+                10 + (bytes_extracted * 89 / total_expected).min(89)
+            } else {
+                (10 + (bytes_extracted / (1024 * 1024))).min(99)
+            };
+            if pct > last_pct {
+                last_pct = pct;
+                cb(pct, 100, "extracting");
+            }
+        }
+    }
+
+    if let Some(ref cb) = progress {
+        cb(99, 100, "finishing");
     }
 
     Ok(written)

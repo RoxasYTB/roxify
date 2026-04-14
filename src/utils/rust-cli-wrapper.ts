@@ -153,9 +153,11 @@ function extractToTemp(pathToRead: string): string {
   return dest;
 }
 
+export type ProgressCallback = (current: number, total: number, step: string) => void;
+
 function spawnRustCLI(
   args: string[],
-  options?: { collectStdout?: boolean },
+  options?: { collectStdout?: boolean; onProgress?: ProgressCallback },
 ): Promise<string> {
   const cliPath = findRustBinary();
   if (!cliPath) throw new Error('Rust CLI binary not found');
@@ -167,9 +169,12 @@ function spawnRustCLI(
 
     const runSpawn = (exePath: string) => {
       let proc;
+      const hasProgress = !!options?.onProgress;
       const stdio: any = options?.collectStdout
-        ? ['pipe', 'pipe', 'inherit']
-        : 'inherit';
+        ? ['pipe', 'pipe', hasProgress ? 'pipe' : 'inherit']
+        : hasProgress
+          ? ['pipe', 'inherit', 'pipe']
+          : 'inherit';
       try {
         proc = spawn(exePath, args, { stdio });
       } catch (err: any) {
@@ -183,6 +188,23 @@ function spawnRustCLI(
 
       if (options?.collectStdout && proc.stdout) {
         proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      }
+
+      if (hasProgress && proc.stderr) {
+        let stderrBuf = '';
+        proc.stderr.on('data', (chunk: Buffer) => {
+          stderrBuf += chunk.toString();
+          const lines = stderrBuf.split('\n');
+          stderrBuf = lines.pop() || '';
+          for (const line of lines) {
+            const match = line.match(/^PROGRESS:(\d+):(\d+):(.+)$/);
+            if (match) {
+              options.onProgress!(Number(match[1]), Number(match[2]), match[3]);
+            } else if (line.trim()) {
+              process.stderr.write(line + '\n');
+            }
+          }
+        });
       }
 
       proc.on('error', (err: any) => {
@@ -212,6 +234,7 @@ export async function encodeWithRustCLI(
   passphrase?: string,
   encryptType: 'aes' | 'xor' = 'aes',
   name?: string,
+  onProgress?: ProgressCallback,
 ): Promise<void> {
   const cliPath = findRustBinary();
   if (!cliPath) throw new Error('Rust CLI binary not found');
@@ -231,7 +254,7 @@ export async function encodeWithRustCLI(
   }
 
   args.push(inputPath, outputPath);
-  await spawnRustCLI(args);
+  await spawnRustCLI(args, { onProgress });
 }
 
 export async function decodeWithRustCLI(
@@ -240,6 +263,7 @@ export async function decodeWithRustCLI(
   passphrase?: string,
   files?: string[],
   dict?: string,
+  onProgress?: ProgressCallback,
 ): Promise<void> {
   const args = ['decompress', inputPath, outputPath];
 
@@ -247,7 +271,7 @@ export async function decodeWithRustCLI(
   if (files && files.length > 0) args.push('--files', JSON.stringify(files));
   if (dict) args.push('--dict', dict);
 
-  await spawnRustCLI(args);
+  await spawnRustCLI(args, { onProgress });
 }
 
 export async function listWithRustCLI(inputPath: string): Promise<string> {

@@ -20,7 +20,7 @@ async function loadJsEngine() {
         VFSIndexEntry: undefined,
     };
 }
-const VERSION = '1.13.1';
+const VERSION = '1.13.2';
 function getDirectorySize(dirPath) {
     let totalSize = 0;
     try {
@@ -317,20 +317,17 @@ async function encodeCommand(args) {
             console.log(`Encoding to ${resolvedOutput} (Using native Rust encoder)\n`);
             const startTime = Date.now();
             const encodeBar = new cliProgress.SingleBar({ format: ' {bar} {percentage}% | {step} | {elapsed}s' }, cliProgress.Presets.shades_classic);
-            let barValue = 0;
             encodeBar.start(100, 0, { step: 'Encoding', elapsed: '0' });
-            const progressInterval = setInterval(() => {
-                barValue = Math.min(barValue + 1, 99);
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                encodeBar.update(barValue, {
-                    step: 'Encoding',
-                    elapsed: String(elapsed),
-                });
-            }, 500);
             const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
             const fileName = basename(inputPaths[0]);
-            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 19, parsed.passphrase, encryptType, fileName);
-            clearInterval(progressInterval);
+            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 19, parsed.passphrase, encryptType, fileName, (current, total, step) => {
+                const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                encodeBar.update(Math.min(pct, 99), {
+                    step: step || 'Encoding',
+                    elapsed: String(elapsed),
+                });
+            });
             const encodeTime = Date.now() - startTime;
             encodeBar.update(100, {
                 step: 'done',
@@ -597,17 +594,15 @@ async function decodeCommand(args) {
             console.log('Decoding... (Using native Rust decoder)\n');
             const startTime = Date.now();
             const decodeBar = new cliProgress.SingleBar({ format: ' {bar} {percentage}% | {step} | {elapsed}s' }, cliProgress.Presets.shades_classic);
-            let barValue = 0;
             decodeBar.start(100, 0, { step: 'Decoding', elapsed: '0' });
-            const progressInterval = setInterval(() => {
-                barValue = Math.min(barValue + 2, 99);
-                decodeBar.update(barValue, {
-                    step: 'Decoding',
-                    elapsed: String(Math.floor((Date.now() - startTime) / 1000)),
+            await decodeWithRustCLI(resolvedInput, resolvedOutput, parsed.passphrase, parsed.files, parsed.dict, (current, total, step) => {
+                const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                decodeBar.update(Math.min(pct, 99), {
+                    step: step || 'Decoding',
+                    elapsed: String(elapsed),
                 });
-            }, 300);
-            await decodeWithRustCLI(resolvedInput, resolvedOutput, parsed.passphrase, parsed.files, parsed.dict);
-            clearInterval(progressInterval);
+            });
             const decodeTime = Date.now() - startTime;
             decodeBar.update(100, { step: 'done', elapsed: String(Math.floor(decodeTime / 1000)) });
             decodeBar.stop();

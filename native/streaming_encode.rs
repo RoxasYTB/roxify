@@ -42,21 +42,14 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     encrypt_type: Option<&str>,
     progress: Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
-    let tmp_zst = output_path.with_extension("tmp.zst");
-
-    let file_list = compress_dir_to_zst(dir_path, &tmp_zst, compression_level, &progress)?;
-
-    if let Some(ref cb) = progress {
-        cb(90, 100, "writing_png");
-    }
+    let (zst_buf, file_list) = compress_dir_to_zst_mem(dir_path, compression_level, &progress)?;
 
     let file_list_json = serde_json::to_string(&file_list)?;
 
-    let result = write_png_from_zst(
-        &tmp_zst, output_path, name, Some(&file_list_json),
-        passphrase, encrypt_type,
+    let result = write_png_from_zst_mem(
+        zst_buf, output_path, name, Some(&file_list_json),
+        passphrase, encrypt_type, &progress,
     );
-    let _ = std::fs::remove_file(&tmp_zst);
 
     if let Some(ref cb) = progress {
         cb(100, 100, "done");
@@ -65,12 +58,11 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     result
 }
 
-fn compress_dir_to_zst(
+fn compress_dir_to_zst_mem(
     dir_path: &Path,
-    zst_path: &Path,
     compression_level: i32,
     progress: &Option<ProgressCallback>,
-) -> anyhow::Result<Vec<serde_json::Value>> {
+) -> anyhow::Result<(Vec<u8>, Vec<serde_json::Value>)> {
     let base = dir_path;
 
     let entries: Vec<_> = WalkDir::new(dir_path)
@@ -80,13 +72,13 @@ fn compress_dir_to_zst(
         .filter(|e| e.file_type().is_file())
         .collect();
 
-    let total_files = entries.len() as u64;
-
-    let zst_file = File::create(zst_path)?;
-    let buf_writer = BufWriter::with_capacity(16 * 1024 * 1024, zst_file);
+    let total_bytes: u64 = entries.iter()
+        .filter_map(|e| std::fs::metadata(e.path()).ok())
+        .map(|m| m.len())
+        .sum();
 
     let actual_level = compression_level.min(3);
-    let mut encoder = zstd::stream::Encoder::new(buf_writer, actual_level)
+    let mut encoder = zstd::stream::Encoder::new(Vec::with_capacity(16 * 1024 * 1024), actual_level)
         .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
 
     let threads = num_cpus::get() as u32;
@@ -99,9 +91,11 @@ fn compress_dir_to_zst(
     encoder.write_all(MAGIC)?;
 
     let mut file_list = Vec::new();
+    let mut bytes_processed: u64 = 0;
+    let mut last_pct: u64 = 0;
     {
         let mut tar_builder = Builder::new(&mut encoder);
-        for (idx, entry) in entries.iter().enumerate() {
+        for entry in entries.iter() {
             let full = entry.path();
             let rel = full.strip_prefix(base).unwrap_or(full);
             let rel_str = rel.to_string_lossy().replace('\\', "/");
@@ -131,28 +125,37 @@ fn compress_dir_to_zst(
 
             file_list.push(serde_json::json!({"name": rel_str, "size": size}));
 
+            bytes_processed += size;
             if let Some(ref cb) = progress {
-                let pct = ((idx as u64 + 1) * 85 / total_files.max(1)).min(85);
-                cb(pct, 100, "compressing");
+                let pct = if total_bytes > 0 {
+                    (bytes_processed * 89 / total_bytes).min(89)
+                } else {
+                    89
+                };
+                if pct > last_pct {
+                    last_pct = pct;
+                    cb(pct, 100, "compressing");
+                }
             }
         }
         tar_builder.finish().map_err(|e| anyhow::anyhow!("tar finish: {}", e))?;
     }
 
-    encoder.finish().map_err(|e| anyhow::anyhow!("zstd finish: {}", e))?;
+    let zst_buf = encoder.finish().map_err(|e| anyhow::anyhow!("zstd finish: {}", e))?;
 
-    Ok(file_list)
+    Ok((zst_buf, file_list))
 }
 
-fn write_png_from_zst(
-    zst_path: &Path,
+fn write_png_from_zst_mem(
+    zst_buf: Vec<u8>,
     output_path: &Path,
     name: Option<&str>,
     file_list: Option<&str>,
     passphrase: Option<&str>,
     _encrypt_type: Option<&str>,
+    progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
-    let zst_size = std::fs::metadata(zst_path)?.len() as usize;
+    let zst_size = zst_buf.len();
 
     let mut encryptor = match passphrase {
         Some(pass) if !pass.is_empty() => Some(crate::crypto::StreamingEncryptor::new(pass)?),
@@ -239,8 +242,7 @@ fn write_png_from_zst(
     ihdr[9] = 2;
     write_chunk_hdr(&mut w, b"IHDR", &ihdr)?;
 
-    let mut zst_file = File::open(zst_path)?;
-    let mut zst_reader = std::io::BufReader::with_capacity(16 * 1024 * 1024, &mut zst_file);
+    let mut zst_reader = std::io::Cursor::new(zst_buf);
 
     write_idat_streaming(
         &mut w,
@@ -255,6 +257,7 @@ fn write_png_from_zst(
         marker_end_pos,
         idat_len,
         total_data_bytes,
+        progress,
     )?;
 
     if let Some(fl) = file_list {
@@ -291,6 +294,7 @@ fn write_idat_streaming<W: Write, R: Read>(
     marker_end_pos: usize,
     idat_len: usize,
     total_data_bytes: usize,
+    progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
     w.write_all(&(idat_len as u32).to_be_bytes())?;
     w.write_all(b"IDAT")?;
@@ -323,14 +327,15 @@ fn write_idat_streaming<W: Write, R: Read>(
     let mut fl_pos: usize = 0;
     let mut zero_remaining = padding_after;
 
-    let mut adler_a: u32 = 1;
-    let mut adler_b: u32 = 0;
+    let mut adler = simd_adler32::Adler32::new();
 
     let buf_size = 1024 * 1024;
     let mut transfer_buf = vec![0u8; buf_size];
     let zero_buf = vec![0u8; buf_size];
 
-    for _row in 0..height {
+    let mut last_png_pct: u64 = 89;
+
+    for row_idx in 0..height {
         if deflate_block_remaining == 0 {
             let remaining_scanlines = scanlines_total - scanline_pos;
             let block_size = remaining_scanlines.min(65535);
@@ -350,8 +355,7 @@ fn write_idat_streaming<W: Write, R: Read>(
         let filter_byte = [0u8];
         w.write_all(&filter_byte)?;
         crc.update(&filter_byte);
-        adler_a = (adler_a + 0) % 65521;
-        adler_b = (adler_b + adler_a) % 65521;
+        adler.write(&filter_byte);
         scanline_pos += 1;
         deflate_block_remaining -= 1;
 
@@ -388,10 +392,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     let slice = &marker_end_bytes[me_offset..me_offset + take];
                     w.write_all(slice)?;
                     crc.update(slice);
-                    for &b in slice {
-                        adler_a = (adler_a + b as u32) % 65521;
-                        adler_b = (adler_b + adler_a) % 65521;
-                    }
+                    adler.write(slice);
                     flat_pos += take;
                     chunk_written += take;
                     scanline_pos += take;
@@ -406,10 +407,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     let slice = &header_bytes[header_pos..header_pos + take];
                     w.write_all(slice)?;
                     crc.update(slice);
-                    for &b in slice {
-                        adler_a = (adler_a + b as u32) % 65521;
-                        adler_b = (adler_b + adler_a) % 65521;
-                    }
+                    adler.write(slice);
                     header_pos += take;
                     flat_pos += take;
                     chunk_written += take;
@@ -426,10 +424,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     }
                     w.write_all(&transfer_buf[..got])?;
                     crc.update(&transfer_buf[..got]);
-                    for &b in &transfer_buf[..got] {
-                        adler_a = (adler_a + b as u32) % 65521;
-                        adler_b = (adler_b + adler_a) % 65521;
-                    }
+                    adler.write(&transfer_buf[..got]);
                     zst_remaining -= got;
                     flat_pos += got;
                     chunk_written += got;
@@ -448,10 +443,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                         let slice = &hmac_bytes[hmac_pos..hmac_pos + take];
                         w.write_all(slice)?;
                         crc.update(slice);
-                        for &b in slice {
-                            adler_a = (adler_a + b as u32) % 65521;
-                            adler_b = (adler_b + adler_a) % 65521;
-                        }
+                        adler.write(slice);
                         hmac_pos += take;
                         flat_pos += take;
                         chunk_written += take;
@@ -470,10 +462,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     let slice = &fl_chunk_data[fl_pos..fl_pos + take];
                     w.write_all(slice)?;
                     crc.update(slice);
-                    for &b in slice {
-                        adler_a = (adler_a + b as u32) % 65521;
-                        adler_b = (adler_b + adler_a) % 65521;
-                    }
+                    adler.write(slice);
                     fl_pos += take;
                     flat_pos += take;
                     chunk_written += take;
@@ -490,9 +479,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     if take == 0 { break; }
                     w.write_all(&zero_buf[..take])?;
                     crc.update(&zero_buf[..take]);
-                    for _ in 0..take {
-                        adler_b = (adler_b + adler_a) % 65521;
-                    }
+                    adler.write(&zero_buf[..take]);
                     zero_remaining -= take;
                     flat_pos += take;
                     chunk_written += take;
@@ -502,10 +489,18 @@ fn write_idat_streaming<W: Write, R: Read>(
                 }
             }
         }
+
+        if let Some(ref cb) = progress {
+            let pct = 90 + ((row_idx as u64 + 1) * 9 / height as u64).min(9);
+            if pct > last_png_pct {
+                last_png_pct = pct;
+                cb(pct, 100, "writing_png");
+            }
+        }
     }
 
-    let adler = (adler_b << 16) | adler_a;
-    let adler_bytes = adler.to_be_bytes();
+    let adler_val = adler.finish();
+    let adler_bytes = adler_val.to_be_bytes();
     w.write_all(&adler_bytes)?;
     crc.update(&adler_bytes);
 

@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.13.2"
+version = "1.13.3"
 edition = "2021"
 publish = false
 
@@ -51,6 +51,7 @@ pbkdf2 = "0.12"
 rand = "0.8"
 sha2 = "0.10"
 mimalloc = "0.1"
+simd-adler32 = "0.3"
 
 memmap2 = "0.9"
 bytemuck = { version = "1.14", features = ["derive"] }
