@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.13.3] - 2026-04-14
+
+### Performance: SIMD Adler32, streaming decode progress, zero-copy optimizations
+
+- **SIMD Adler32**: Replaced manual Adler32 in `core.rs` and `streaming_encode.rs` with `simd-adler32` crate for hardware-accelerated checksums.
+- **In-memory Zstd buffer**: Eliminated temp `.zst` file in encode pipeline — compression now streams directly to an in-memory buffer.
+- **Zero-copy no-encryption**: Added `no_encryption_in_place` that prepends the 0x00 marker without copying the entire buffer.
+- **Dead code removal**: Removed unused `encode_payload_to_png_pixels` and redundant allocation paths in `encoder.rs`.
+- **Real-time encode progress**: Progress is now byte-based (0→89% compression, 90→99% PNG writing with row-level granularity) instead of file-count-based.
+- **Real-time decode progress**: Full progress chain through streaming decode: parsing PNG (2%), reading header (5%), decrypting (8%), decompressing (10%), extracting (10→99% byte-based via rXFL chunk), finishing (99%).
+- **CLI progress bars**: Replaced fake `setInterval`-based progress bars with real PROGRESS line parsing from Rust CLI stderr.
+- **Vec<u8> → Buffer fix**: Changed all 24 `Vec<u8>` function returns and 2 struct fields in N-API bindings to `Buffer` type, fixing V8 OOM crash on decode (napi-rs v2 converts `Vec<u8>` to `Array<number>` instead of `Buffer`).
+- **Streaming decode for all PNGs**: Removed 100MB size threshold — streaming decode now runs for all PNG files.
+- **Encoding**: ~25% faster on real-world datasets (1.2s for 177MB, 6.1s for 1.4GB).
+- **Decoding**: Test A 1.3s, Test B 2.9s with smooth progress throughout.
+
 ## [1.7.2] - 2026-03-04
 
 ### Fix: Windows native binary now shipped in npm package

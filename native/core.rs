@@ -84,54 +84,9 @@ pub fn crc32_bytes(buf: &[u8]) -> u32 {
 }
 
 pub fn adler32_bytes(buf: &[u8]) -> u32 {
-    const MOD: u32 = 65521;
-    const NMAX: usize = 5552;
-
-    if buf.len() > 4 * 1024 * 1024 {
-        return adler32_parallel(buf);
-    }
-
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-
-    for chunk in buf.chunks(NMAX) {
-        for &v in chunk {
-            a += v as u32;
-            b += a;
-        }
-        a %= MOD;
-        b %= MOD;
-    }
-
-    (b << 16) | a
-}
-
-fn adler32_parallel(buf: &[u8]) -> u32 {
-    use rayon::prelude::*;
-    const MOD: u32 = 65521;
-    const CHUNK: usize = 1024 * 1024;
-
-    let chunks: Vec<&[u8]> = buf.chunks(CHUNK).collect();
-    let partials: Vec<(u32, u32, usize)> = chunks.par_iter().map(|chunk| {
-        let mut a: u32 = 0;
-        let mut b: u32 = 0;
-        for &v in *chunk {
-            a += v as u32;
-            b += a;
-        }
-        a %= MOD;
-        b %= MOD;
-        (a, b, chunk.len())
-    }).collect();
-
-    let mut a: u64 = 1;
-    let mut b: u64 = 0;
-    for (pa, pb, len) in partials {
-        b = (b + pb as u64 + a * len as u64) % MOD as u64;
-        a = (a + pa as u64) % MOD as u64;
-    }
-
-    ((b as u32) << 16) | (a as u32)
+    let mut hasher = simd_adler32::Adler32::new();
+    hasher.write(buf);
+    hasher.finish()
 }
 
 pub fn delta_encode_bytes(buf: &[u8]) -> Vec<u8> {

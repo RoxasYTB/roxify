@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::process::{Command, Stdio};
 
 const MAGIC: &[u8] = b"ROX1";
 const PIXEL_MAGIC: &[u8] = b"PXL1";
@@ -12,54 +11,23 @@ const MARKER_ZSTD: (u8, u8, u8) = (0, 255, 0);
 #[derive(Debug, Clone, Copy)]
 pub enum ImageFormat {
     Png,
-    WebP,
-    JpegXL,
 }
 
 pub fn encode_to_png(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
-    let format = predict_best_format_raw(data);
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, None, None, None)
+    encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, None, None, None, None, None)
 }
 
 
 pub fn encode_to_png_with_name(data: &[u8], compression_level: i32, name: Option<&str>) -> Result<Vec<u8>> {
-    let format = predict_best_format_raw(data);
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, format, name, None, None)
+    encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, None, None, name, None, None)
 }
 
 pub fn encode_to_png_with_name_and_filelist(data: &[u8], compression_level: i32, name: Option<&str>, file_list: Option<&str>) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, name, file_list, None)
-}
-
-fn predict_best_format_raw(data: &[u8]) -> ImageFormat {
-    if data.len() < 512 {
-        return ImageFormat::Png;
-    }
-
-    let sample_size = data.len().min(4096);
-    let sample = &data[..sample_size];
-
-    let entropy = calculate_shannon_entropy(sample);
-    let repetition_score = detect_repetition_patterns(sample);
-    let unique_bytes = count_unique_bytes(sample);
-    let unique_ratio = unique_bytes as f64 / 256.0;
-    let is_sequential = detect_sequential_pattern(sample);
-
-    if entropy > 7.8 {
-        ImageFormat::Png
-    } else if is_sequential || repetition_score > 0.15 {
-        ImageFormat::JpegXL
-    } else if unique_ratio < 0.4 && entropy < 6.5 {
-        ImageFormat::JpegXL
-    } else if entropy < 5.0 {
-        ImageFormat::JpegXL
-    } else {
-        ImageFormat::Png
-    }
+    encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, None, None, name, file_list, None)
 }
 
 pub fn encode_to_png_raw(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, None, None, ImageFormat::Png, None, None, None)
+    encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, None, None, None, None, None)
 }
 
 pub fn encode_to_png_with_encryption_and_name(
@@ -69,8 +37,7 @@ pub fn encode_to_png_with_encryption_and_name(
     encrypt_type: Option<&str>,
     name: Option<&str>,
 ) -> Result<Vec<u8>> {
-    let format = predict_best_format_raw(data);
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, format, name, None, None)
+    encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, passphrase, encrypt_type, name, None, None)
 }
 
 pub fn encode_to_png_with_encryption_name_and_filelist(
@@ -81,7 +48,7 @@ pub fn encode_to_png_with_encryption_name_and_filelist(
     name: Option<&str>,
     file_list: Option<&str>,
 ) -> Result<Vec<u8>> {
-    encode_to_png_with_encryption_name_and_format_and_filelist(data, compression_level, passphrase, encrypt_type, ImageFormat::Png, name, file_list, None)
+    encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, passphrase, encrypt_type, name, file_list, None)
 }
 
 // ─── WAV container encoding ─────────────────────────────────────────────────
@@ -121,15 +88,13 @@ pub fn encode_to_wav_with_encryption_name_and_filelist(
             _ => crate::crypto::encrypt_aes(&compressed, pass)?,
         }
     } else {
-        crate::crypto::no_encryption(&compressed)
+        crate::crypto::no_encryption_in_place(compressed)
     };
 
     let meta_pixel = build_meta_pixel_with_name_and_filelist(&encrypted, name, file_list)?;
 
-    // Prepend PIXEL_MAGIC so decoder can validate the payload
     let wav_payload = [PIXEL_MAGIC, &meta_pixel].concat();
 
-    // Wrap in WAV container (44 bytes overhead, constant)
     Ok(crate::audio::bytes_to_wav(&wav_payload))
 }
 
@@ -144,28 +109,12 @@ pub fn encode_to_png_with_encryption_name_and_format_and_filelist(
     compression_level: i32,
     passphrase: Option<&str>,
     encrypt_type: Option<&str>,
-    format: ImageFormat,
+    _format: ImageFormat,
     name: Option<&str>,
     file_list: Option<&str>,
     dict: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let png = encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, passphrase, encrypt_type, name, file_list, dict)?;
-
-    match format {
-        ImageFormat::Png => Ok(png),
-        ImageFormat::WebP => {
-            match optimize_to_webp(&png) {
-                Ok(optimized) => reconvert_to_png(&optimized, "webp").or_else(|_| Ok(png)),
-                Err(_) => Ok(png),
-            }
-        },
-        ImageFormat::JpegXL => {
-            match optimize_to_jxl(&png) {
-                Ok(optimized) => reconvert_to_png(&optimized, "jxl").or_else(|_| Ok(png)),
-                Err(_) => Ok(png),
-            }
-        },
-    }
+    encode_to_png_with_encryption_name_and_filelist_internal(data, compression_level, passphrase, encrypt_type, name, file_list, dict)
 }
 
 fn encode_to_png_with_encryption_name_and_filelist_internal(
@@ -187,9 +136,8 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
             _ => crate::crypto::encrypt_aes(&compressed, pass)?,
         }
     } else {
-        crate::crypto::no_encryption(&compressed)
+        crate::crypto::no_encryption_in_place(compressed)
     };
-    drop(compressed);
 
     let meta_pixel = build_meta_pixel_with_name_and_filelist(&encrypted, name, file_list)?;
     drop(encrypted);
@@ -369,51 +317,6 @@ fn create_raw_deflate_from_rows(flat: &[u8], row_bytes: usize, height: usize) ->
     result
 }
 
-fn detect_sequential_pattern(data: &[u8]) -> bool {
-    if data.len() < 256 {
-        return false;
-    }
-
-    let check_len = data.len().min(256);
-    let mut sequential = 0;
-
-    for i in 0..check_len - 1 {
-        let diff = (data[i + 1] as i16 - data[i] as i16).abs();
-        if diff <= 1 {
-            sequential += 1;
-        }
-    }
-
-    sequential as f64 / (check_len - 1) as f64 > 0.6
-}
-
-fn count_unique_bytes(data: &[u8]) -> usize {
-    let mut seen = [false; 256];
-    for &byte in data {
-        seen[byte as usize] = true;
-    }
-    seen.iter().filter(|&&x| x).count()
-}
-
-fn calculate_shannon_entropy(data: &[u8]) -> f64 {
-    let mut freq = [0u32; 256];
-    for &byte in data {
-        freq[byte as usize] += 1;
-    }
-
-    let len = data.len() as f64;
-    let mut entropy = 0.0;
-
-    for &count in &freq {
-        if count > 0 {
-            let p = count as f64 / len;
-            entropy -= p * p.log2();
-        }
-    }
-
-    entropy
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,126 +413,5 @@ mod tests {
                     "MARKER_END pixel 2 (red) wrong for {}@size={}, got {:?}", label, size, p3);
             }
         }
-    }
-}
-
-fn detect_repetition_patterns(data: &[u8]) -> f64 {
-    if data.len() < 4 {
-        return 0.0;
-    }
-
-    let mut repetitions = 0;
-    let mut total_checks = 0;
-
-    for i in 0..data.len().min(1024) {
-        if i + 3 < data.len() {
-            let byte = data[i];
-            if data[i + 1] == byte && data[i + 2] == byte && data[i + 3] == byte {
-                repetitions += 1;
-            }
-            total_checks += 1;
-        }
-    }
-
-    if total_checks > 0 {
-        repetitions as f64 / total_checks as f64
-    } else {
-        0.0
-    }
-}
-
-fn optimize_to_webp(png_data: &[u8]) -> Result<Vec<u8>> {
-    use std::fs;
-
-    let tmp_dir = std::env::temp_dir();
-    let id = rand::random::<u64>();
-    let tmp_in = tmp_dir.join(format!("roxify_{}_in.png", id));
-    let tmp_out = tmp_dir.join(format!("roxify_{}_out.webp", id));
-
-    fs::write(&tmp_in, png_data)?;
-
-    let status = Command::new("cwebp")
-        .args(&["-lossless", &tmp_in.to_string_lossy(), "-o", &tmp_out.to_string_lossy()])
-        .stderr(Stdio::null())
-        .stdout(Stdio::null())
-        .status()?;
-
-    if status.success() {
-        let result = fs::read(&tmp_out)?;
-        let _ = fs::remove_file(&tmp_in);
-        let _ = fs::remove_file(&tmp_out);
-        Ok(result)
-    } else {
-        let _ = fs::remove_file(&tmp_in);
-        let _ = fs::remove_file(&tmp_out);
-        Err(anyhow::anyhow!("WebP conversion failed"))
-    }
-}
-
-fn optimize_to_jxl(png_data: &[u8]) -> Result<Vec<u8>> {
-    use std::fs;
-
-    let tmp_dir = std::env::temp_dir();
-    let id = rand::random::<u64>();
-    let tmp_in = tmp_dir.join(format!("roxify_{}_in.png", id));
-    let tmp_out = tmp_dir.join(format!("roxify_{}_out.jxl", id));
-
-    fs::write(&tmp_in, png_data)?;
-
-    let status = Command::new("cjxl")
-        .args(&[&tmp_in.to_string_lossy() as &str, &tmp_out.to_string_lossy() as &str, "-d", "0", "-e", "9"])
-        .stderr(Stdio::null())
-        .stdout(Stdio::null())
-        .status()?;
-
-    if status.success() {
-        let result = fs::read(&tmp_out)?;
-        let _ = fs::remove_file(&tmp_in);
-        let _ = fs::remove_file(&tmp_out);
-        Ok(result)
-    } else {
-        let _ = fs::remove_file(&tmp_in);
-        let _ = fs::remove_file(&tmp_out);
-        Err(anyhow::anyhow!("JXL conversion failed"))
-    }
-}
-
-fn reconvert_to_png(data: &[u8], original_format: &str) -> Result<Vec<u8>> {
-    use std::fs;
-
-    let tmp_dir = std::env::temp_dir();
-    let id = rand::random::<u64>();
-    let tmp_in = match original_format {
-        "webp" => tmp_dir.join(format!("roxify_{}_reconvert_in.webp", id)),
-        "jxl" => tmp_dir.join(format!("roxify_{}_reconvert_in.jxl", id)),
-        _ => return Err(anyhow::anyhow!("Unknown format")),
-    };
-    let tmp_out = tmp_dir.join(format!("roxify_{}_reconvert_out.png", id));
-
-    fs::write(&tmp_in, data)?;
-
-    let status = match original_format {
-        "webp" => Command::new("dwebp")
-            .args(&[&tmp_in.to_string_lossy() as &str, "-o", &tmp_out.to_string_lossy() as &str])
-            .stderr(Stdio::null())
-            .stdout(Stdio::null())
-            .status()?,
-        "jxl" => Command::new("djxl")
-            .args(&[&tmp_in.to_string_lossy() as &str, &tmp_out.to_string_lossy() as &str])
-            .stderr(Stdio::null())
-            .stdout(Stdio::null())
-            .status()?,
-        _ => return Err(anyhow::anyhow!("Unknown format")),
-    };
-
-    if status.success() {
-        let result = fs::read(&tmp_out)?;
-        let _ = fs::remove_file(&tmp_in);
-        let _ = fs::remove_file(&tmp_out);
-        Ok(result)
-    } else {
-        let _ = fs::remove_file(&tmp_in);
-        let _ = fs::remove_file(&tmp_out);
-        Err(anyhow::anyhow!("Reconversion to PNG failed"))
     }
 }

@@ -75,6 +75,11 @@ pub fn no_encryption(data: &[u8]) -> Vec<u8> {
     result
 }
 
+pub fn no_encryption_in_place(mut data: Vec<u8>) -> Vec<u8> {
+    data.insert(0, ENC_NONE);
+    data
+}
+
 pub fn decrypt_xor(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     if data.is_empty() { return Err(anyhow!("Empty xor payload")); }
     if passphrase.is_empty() { return Err(anyhow!("Passphrase required")); }
