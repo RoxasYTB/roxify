@@ -2,6 +2,8 @@ use std::io::{Write, BufWriter};
 use std::fs::File;
 use std::path::Path;
 
+use crate::png_chunk_writer::{ChunkedIdatWriter, write_png_chunk};
+
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const MARKER_START: [(u8, u8, u8); 3] = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
@@ -75,10 +77,6 @@ pub fn encode_to_png_file(
 
     let adler = crate::core::adler32_bytes(&scanlines);
 
-    const MAX_BLOCK: usize = 65535;
-    let num_blocks = (scanlines_total + MAX_BLOCK - 1) / MAX_BLOCK;
-    let idat_len = 2 + num_blocks * 5 + scanlines_total + 4;
-
     let f = File::create(output_path)?;
     let mut w = BufWriter::with_capacity(16 * 1024 * 1024, f);
 
@@ -89,15 +87,15 @@ pub fn encode_to_png_file(
     ihdr[4..8].copy_from_slice(&(height as u32).to_be_bytes());
     ihdr[8] = 8;
     ihdr[9] = 2;
-    write_chunk_small(&mut w, b"IHDR", &ihdr)?;
+    write_png_chunk(&mut w, b"IHDR", &ihdr)?;
 
-    write_idat_direct(&mut w, &scanlines, idat_len, adler)?;
+    write_idat_direct(&mut w, &scanlines, adler)?;
     drop(scanlines);
 
     if let Some(fl) = file_list {
-        write_chunk_small(&mut w, b"rXFL", fl.as_bytes())?;
+        write_png_chunk(&mut w, b"rXFL", fl.as_bytes())?;
     }
-    write_chunk_small(&mut w, b"IEND", &[])?;
+    write_png_chunk(&mut w, b"IEND", &[])?;
     w.flush()?;
 
     Ok(())
@@ -106,20 +104,14 @@ pub fn encode_to_png_file(
 fn write_idat_direct<W: Write>(
     w: &mut W,
     scanlines: &[u8],
-    idat_len: usize,
     adler: u32,
 ) -> anyhow::Result<()> {
     const MAX_BLOCK: usize = 65535;
 
-    w.write_all(&(idat_len as u32).to_be_bytes())?;
-    w.write_all(b"IDAT")?;
-
-    let mut crc = crc32fast::Hasher::new();
-    crc.update(b"IDAT");
+    let mut idat = ChunkedIdatWriter::new(w);
 
     let zlib = [0x78u8, 0x01];
-    w.write_all(&zlib)?;
-    crc.update(&zlib);
+    idat.write_all(&zlib)?;
 
     let mut offset = 0;
     while offset < scanlines.len() {
@@ -132,20 +124,15 @@ fn write_idat_direct<W: Write>(
             !chunk_size as u8,
             (!(chunk_size >> 8)) as u8,
         ];
-        w.write_all(&header)?;
-        crc.update(&header);
+        idat.write_all(&header)?;
         let slice = &scanlines[offset..offset + chunk_size];
-        w.write_all(slice)?;
-        crc.update(slice);
+        idat.write_all(slice)?;
         offset += chunk_size;
     }
 
     let adler_bytes = adler.to_be_bytes();
-    w.write_all(&adler_bytes)?;
-    crc.update(&adler_bytes);
-
-    w.write_all(&crc.finalize().to_be_bytes())?;
-    Ok(())
+    idat.write_all(&adler_bytes)?;
+    idat.finish()
 }
 
 fn build_flat_buffer(
@@ -199,14 +186,3 @@ fn build_meta_pixel(payload: &[u8], name: Option<&str>, file_list: Option<&str>)
     Ok(result)
 }
 
-fn write_chunk_small<W: Write>(w: &mut W, chunk_type: &[u8; 4], data: &[u8]) -> anyhow::Result<()> {
-    w.write_all(&(data.len() as u32).to_be_bytes())?;
-    w.write_all(chunk_type)?;
-    w.write_all(data)?;
-
-    let mut h = crc32fast::Hasher::new();
-    h.update(chunk_type);
-    h.update(data);
-    w.write_all(&h.finalize().to_be_bytes())?;
-    Ok(())
-}

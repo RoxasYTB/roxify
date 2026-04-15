@@ -17,6 +17,7 @@ mod encoder;
 mod packer;
 mod crypto;
 mod png_utils;
+mod png_chunk_writer;
 mod image_utils;
 mod audio;
 mod progress;

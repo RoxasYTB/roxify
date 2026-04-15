@@ -1,5 +1,7 @@
 use anyhow::Result;
 
+use crate::png_chunk_writer::{write_chunked_idat_bytes, write_png_chunk};
+
 const MAGIC: &[u8] = b"ROX1";
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
@@ -245,31 +247,16 @@ fn build_png(width: usize, height: usize, idat_data: &[u8], file_list: Option<&s
     ihdr_data[11] = 0;
     ihdr_data[12] = 0;
 
-    write_chunk(&mut png, b"IHDR", &ihdr_data)?;
-    write_chunk(&mut png, b"IDAT", idat_data)?;
+    write_png_chunk(&mut png, b"IHDR", &ihdr_data)?;
+    write_chunked_idat_bytes(&mut png, idat_data)?;
 
     if let Some(file_list_json) = file_list {
-        write_chunk(&mut png, b"rXFL", file_list_json.as_bytes())?;
+        write_png_chunk(&mut png, b"rXFL", file_list_json.as_bytes())?;
     }
 
-    write_chunk(&mut png, b"IEND", &[])?;
+    write_png_chunk(&mut png, b"IEND", &[])?;
 
     Ok(png)
-}
-
-fn write_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) -> Result<()> {
-    let len = data.len() as u32;
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(chunk_type);
-    out.extend_from_slice(data);
-
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(chunk_type);
-    hasher.update(data);
-    let crc = hasher.finalize();
-
-    out.extend_from_slice(&crc.to_be_bytes());
-    Ok(())
 }
 
 fn create_raw_deflate_from_rows(flat: &[u8], row_bytes: usize, height: usize) -> Vec<u8> {
