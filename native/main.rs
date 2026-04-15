@@ -144,6 +144,19 @@ fn parse_markers(v: &[String]) -> Option<Vec<u8>> {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
+    if files.trim_start().starts_with('[') {
+        serde_json::from_str::<Vec<String>>(files)
+            .map_err(|e| anyhow::anyhow!("Invalid JSON for --files: {}", e))
+    } else {
+        Ok(files
+            .split(',')
+            .map(|file| file.trim().to_string())
+            .filter(|file| !file.is_empty())
+            .collect())
+    }
+}
     match cli.command {
         Commands::TrainDict { samples, size, output } => {
             let dict = core::train_zstd_dictionary(&samples, size)?;
@@ -169,7 +182,7 @@ fn main() -> anyhow::Result<()> {
                         eprintln!("PROGRESS:{}:{}:{}", current, total, step);
                     })),
                 )?;
-                println!("(TAR archive, rXFL chunk embedded)");
+                println!("(directory payload, rXFL chunk embedded)");
                 return Ok(());
             }
 
@@ -234,7 +247,7 @@ fn main() -> anyhow::Result<()> {
             if file_list_json.is_some() {
                 eprintln!("PROGRESS:100:100:done");
                 if is_dir {
-                    println!("(TAR archive, rXFL chunk embedded)");
+                    println!("(directory payload, rXFL chunk embedded)");
                 } else {
                     println!("(rXFL chunk embedded)");
                 }
@@ -343,6 +356,11 @@ fn main() -> anyhow::Result<()> {
                         && sig == [137, 80, 78, 71, 13, 10, 26, 10]
                 });
 
+            let requested_files = match files.as_deref() {
+                Some(files_str) => Some(parse_requested_files(files_str)?),
+                None => None,
+            };
+
             if is_png_file && files.is_none() && dict.is_none() {
                 let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("out.raw"));
                 match streaming_decode::streaming_decode_to_dir_encrypted_with_progress(
@@ -355,7 +373,7 @@ fn main() -> anyhow::Result<()> {
                 ) {
                     Ok(written) => {
                         eprintln!("PROGRESS:100:100:done");
-                        println!("Unpacked {} files (TAR)", written.len());
+                        println!("Unpacked {} files", written.len());
                         return Ok(());
                     }
                     Err(e) => {
@@ -364,25 +382,31 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            if is_png_file && requested_files.is_some() && dict.is_none() {
+                let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("."));
+                std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
+                let written = streaming_decode::streaming_decode_selected_to_dir_encrypted_with_progress(
+                    &input,
+                    &out_dir,
+                    requested_files.as_deref(),
+                    passphrase.as_deref(),
+                    Some(Box::new(|current, total, step| {
+                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                    })),
+                ).map_err(|e| anyhow::anyhow!(e))?;
+                eprintln!("PROGRESS:100:100:done");
+                println!("Unpacked {} files", written.len());
+                return Ok(());
+            }
+
             let buf = read_all(&input)?;
             eprintln!("PROGRESS:20:100:decompressing");
             let dict_bytes: Option<Vec<u8>> = match dict {
                 Some(path) => Some(read_all(&path)?),
                 None => None,
             };
-                        if let Some(files_str) = files {
-                                let file_list: Option<Vec<String>> = if files_str.trim_start().starts_with('[') {
-                    match serde_json::from_str::<Vec<String>>(&files_str) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            eprintln!("Invalid JSON for --files: {}", e);
-                            std::process::exit(1);
-                        }
-                    }
-                } else {
-                    let list = files_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>();
-                    Some(list)
-                };
+                        if requested_files.is_some() {
+                                let file_list = requested_files;
 
                                 let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
 
@@ -427,7 +451,9 @@ fn main() -> anyhow::Result<()> {
                 std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
 
-                                let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice).map_err(|e| anyhow::anyhow!(e))?;
+                                let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice, Some(&|current, total, step| {
+                                    eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                                }), 0).map_err(|e| anyhow::anyhow!(e))?;
                 eprintln!("PROGRESS:100:100:done");
                 println!("Unpacked {} files", written.len());
             } else {
@@ -498,7 +524,7 @@ fn main() -> anyhow::Result<()> {
                         .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", out_dir, e))?;
                     let written = archive::tar_unpack(&out_bytes, &out_dir)
                         .map_err(|e| anyhow::anyhow!(e))?;
-                    println!("Unpacked {} files (TAR) to {:?}", written.len(), out_dir);
+                    println!("Unpacked {} files to {:?}", written.len(), out_dir);
                 } else if out_bytes.len() >= 4
                     && (u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5850u32
                         || u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5849u32)

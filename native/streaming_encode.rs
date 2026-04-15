@@ -1,8 +1,9 @@
 use std::io::{Write, BufWriter, Read};
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use rayon::prelude::*;
+use serde::Serialize;
 use walkdir::WalkDir;
-use tar::{Builder, Header};
 
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 const PIXEL_MAGIC: &[u8] = b"PXL1";
@@ -10,8 +11,34 @@ const MARKER_START: [(u8, u8, u8); 3] = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
 const MARKER_END: [(u8, u8, u8); 3] = [(0, 0, 255), (0, 255, 0), (255, 0, 0)];
 const MARKER_ZSTD: (u8, u8, u8) = (0, 255, 0);
 const MAGIC: &[u8] = b"ROX1";
+const PACK_MAGIC: u32 = 0x524f5850;
+
+const MIN_ZST_CAPACITY: usize = 16 * 1024 * 1024;
+const MB: u64 = 1024 * 1024;
+const MAX_FILE_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
+const PARALLEL_IO_FILE_THRESHOLD: u64 = MB;
+const PARALLEL_IO_BATCH_BYTES: u64 = 128 * MB;
+const PARALLEL_IO_BATCH_FILES: usize = 512;
+const PARALLEL_IO_MIN_FILES: usize = 8;
 
 pub type ProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
+
+struct DirectoryFile {
+    path: PathBuf,
+    rel_path: String,
+    size: u64,
+}
+
+#[derive(Serialize)]
+struct FileListEntry {
+    name: String,
+    size: u64,
+}
+
+struct CollectedDirectory {
+    entries: Vec<DirectoryFile>,
+    total_bytes: u64,
+}
 
 pub fn encode_dir_to_png(
     dir_path: &Path,
@@ -42,9 +69,7 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     encrypt_type: Option<&str>,
     progress: Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
-    let (zst_buf, file_list) = compress_dir_to_zst_mem(dir_path, compression_level, &progress)?;
-
-    let file_list_json = serde_json::to_string(&file_list)?;
+    let (zst_buf, file_list_json) = compress_dir_to_zst_mem(dir_path, compression_level, &progress)?;
 
     let result = write_png_from_zst_mem(
         zst_buf, output_path, name, Some(&file_list_json),
@@ -62,26 +87,19 @@ fn compress_dir_to_zst_mem(
     dir_path: &Path,
     compression_level: i32,
     progress: &Option<ProgressCallback>,
-) -> anyhow::Result<(Vec<u8>, Vec<serde_json::Value>)> {
-    let base = dir_path;
-
-    let entries: Vec<_> = WalkDir::new(dir_path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .collect();
-
-    let total_bytes: u64 = entries.iter()
-        .filter_map(|e| std::fs::metadata(e.path()).ok())
-        .map(|m| m.len())
-        .sum();
+) -> anyhow::Result<(Vec<u8>, String)> {
+    let collected = collect_directory_files(dir_path);
+    let total_bytes = collected.total_bytes;
+    let entries = collected.entries;
 
     let actual_level = compression_level.min(3);
-    let mut encoder = zstd::stream::Encoder::new(Vec::with_capacity(16 * 1024 * 1024), actual_level)
+    let mut encoder = zstd::stream::Encoder::new(
+        Vec::with_capacity(estimate_zst_capacity(total_bytes)),
+        actual_level,
+    )
         .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
 
-    let threads = num_cpus::get() as u32;
+    let threads = select_zstd_threads(total_bytes);
     if threads > 1 {
         let _ = encoder.multithread(threads);
     }
@@ -89,61 +107,221 @@ fn compress_dir_to_zst_mem(
     let _ = encoder.window_log(30);
 
     encoder.write_all(MAGIC)?;
+    encoder.write_all(&PACK_MAGIC.to_be_bytes())?;
+    encoder.write_all(&(entries.len() as u32).to_be_bytes())?;
 
-    let mut file_list = Vec::new();
+    let mut file_list = Vec::with_capacity(entries.len());
     let mut bytes_processed: u64 = 0;
     let mut last_pct: u64 = 0;
-    {
-        let mut tar_builder = Builder::new(&mut encoder);
-        for entry in entries.iter() {
-            let full = entry.path();
-            let rel = full.strip_prefix(base).unwrap_or(full);
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-
-            let metadata = match std::fs::metadata(full) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let size = metadata.len();
-
-            let mut header = Header::new_gnu();
-            header.set_size(size);
-            header.set_mode(0o644);
-            header.set_cksum();
-
-            let file = match File::open(full) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            let buf_reader = std::io::BufReader::with_capacity(
-                (size as usize).min(4 * 1024 * 1024).max(8192),
-                file,
-            );
-
-            tar_builder.append_data(&mut header, &rel_str, buf_reader)
-                .map_err(|e| anyhow::anyhow!("tar append {}: {}", rel_str, e))?;
-
-            file_list.push(serde_json::json!({"name": rel_str, "size": size}));
-
-            bytes_processed += size;
-            if let Some(ref cb) = progress {
-                let pct = if total_bytes > 0 {
-                    (bytes_processed * 89 / total_bytes).min(89)
-                } else {
-                    89
+    let mut entry_index = 0usize;
+    while entry_index < entries.len() {
+        let batch_end = select_parallel_batch_end(&entries, entry_index);
+        if batch_end > entry_index + 1 {
+            let loaded = load_small_file_batch(&entries[entry_index..batch_end])?;
+            for (entry, maybe_bytes) in entries[entry_index..batch_end].iter().zip(loaded.into_iter()) {
+                let Some(bytes) = maybe_bytes else {
+                    continue;
                 };
-                if pct > last_pct {
-                    last_pct = pct;
-                    cb(pct, 100, "compressing");
-                }
+
+                write_pack_entry_header(&mut encoder, &entry.rel_path, entry.size)?;
+                encoder.write_all(&bytes)
+                    .map_err(|e| anyhow::anyhow!("pack write {}: {}", entry.rel_path, e))?;
+
+                file_list.push(FileListEntry {
+                    name: entry.rel_path.clone(),
+                    size: entry.size,
+                });
+
+                bytes_processed += entry.size;
+                report_compress_progress(progress, total_bytes, bytes_processed, &mut last_pct);
             }
+            entry_index = batch_end;
+            continue;
         }
-        tar_builder.finish().map_err(|e| anyhow::anyhow!("tar finish: {}", e))?;
+
+        let entry = &entries[entry_index];
+        if write_directory_entry(&mut encoder, entry)? {
+            file_list.push(FileListEntry {
+                name: entry.rel_path.clone(),
+                size: entry.size,
+            });
+
+            bytes_processed += entry.size;
+            report_compress_progress(progress, total_bytes, bytes_processed, &mut last_pct);
+        }
+        entry_index += 1;
     }
 
     let zst_buf = encoder.finish().map_err(|e| anyhow::anyhow!("zstd finish: {}", e))?;
+    let file_list_json = serde_json::to_string(&file_list)?;
 
-    Ok((zst_buf, file_list))
+    Ok((zst_buf, file_list_json))
+}
+
+fn write_pack_entry_header<W: Write>(writer: &mut W, rel_path: &str, size: u64) -> anyhow::Result<()> {
+    let name_bytes = rel_path.as_bytes();
+    let name_len = u16::try_from(name_bytes.len())
+        .map_err(|_| anyhow::anyhow!("path too long for pack entry: {}", rel_path))?;
+    writer.write_all(&name_len.to_be_bytes())?;
+    writer.write_all(name_bytes)?;
+    writer.write_all(&size.to_be_bytes())?;
+    Ok(())
+}
+
+fn write_directory_entry<W: Write>(writer: &mut W, entry: &DirectoryFile) -> anyhow::Result<bool> {
+    let file = match File::open(&entry.path) {
+        Ok(file) => file,
+        Err(_) => return Ok(false),
+    };
+
+    write_pack_entry_header(writer, &entry.rel_path, entry.size)?;
+
+    let mut buf_reader = std::io::BufReader::with_capacity(file_buffer_capacity(entry.size), file);
+    std::io::copy(&mut buf_reader, writer)
+        .map_err(|e| anyhow::anyhow!("pack write {}: {}", entry.rel_path, e))?;
+
+    Ok(true)
+}
+
+fn load_small_file_batch(entries: &[DirectoryFile]) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
+    entries.par_iter().map(load_directory_entry_bytes).collect()
+}
+
+fn load_directory_entry_bytes(entry: &DirectoryFile) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut file = match File::open(&entry.path) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+
+    let reserve = usize::try_from(entry.size.min(PARALLEL_IO_BATCH_BYTES)).unwrap_or(MAX_FILE_BUFFER_CAPACITY);
+    let mut bytes = Vec::with_capacity(reserve.max(8192));
+    file.read_to_end(&mut bytes)
+        .map_err(|e| anyhow::anyhow!("pack read {}: {}", entry.rel_path, e))?;
+
+    Ok(Some(bytes))
+}
+
+fn select_parallel_batch_end(entries: &[DirectoryFile], start: usize) -> usize {
+    let Some(first) = entries.get(start) else {
+        return start;
+    };
+    if !should_parallelize_entry(first) {
+        return start + 1;
+    }
+
+    let mut end = start;
+    let mut batch_bytes = 0u64;
+    while end < entries.len() {
+        let entry = &entries[end];
+        if !should_parallelize_entry(entry) {
+            break;
+        }
+        if end > start {
+            if end - start >= PARALLEL_IO_BATCH_FILES {
+                break;
+            }
+            if batch_bytes.saturating_add(entry.size) > PARALLEL_IO_BATCH_BYTES {
+                break;
+            }
+        }
+        batch_bytes = batch_bytes.saturating_add(entry.size);
+        end += 1;
+    }
+
+    if end - start >= PARALLEL_IO_MIN_FILES {
+        end
+    } else {
+        start + 1
+    }
+}
+
+fn should_parallelize_entry(entry: &DirectoryFile) -> bool {
+    entry.size <= PARALLEL_IO_FILE_THRESHOLD
+}
+
+fn file_buffer_capacity(size: u64) -> usize {
+    usize::try_from(size)
+        .unwrap_or(MAX_FILE_BUFFER_CAPACITY)
+        .min(MAX_FILE_BUFFER_CAPACITY)
+        .max(8192)
+}
+
+fn report_compress_progress(
+    progress: &Option<ProgressCallback>,
+    total_bytes: u64,
+    bytes_processed: u64,
+    last_pct: &mut u64,
+) {
+    if let Some(ref cb) = progress {
+        let pct = if total_bytes > 0 {
+            (bytes_processed * 89 / total_bytes).min(89)
+        } else {
+            89
+        };
+        if pct > *last_pct {
+            *last_pct = pct;
+            cb(pct, 100, "compressing");
+        }
+    }
+}
+
+fn collect_directory_files(dir_path: &Path) -> CollectedDirectory {
+    let mut entries = Vec::new();
+    let mut total_bytes = 0u64;
+
+    for entry in WalkDir::new(dir_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let size = match entry.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(_) => continue,
+        };
+        let path = entry.into_path();
+        let rel = path.strip_prefix(dir_path).unwrap_or(path.as_path());
+        let rel_path = normalize_rel_path(rel);
+
+        total_bytes += size;
+        entries.push(DirectoryFile {
+            path,
+            rel_path,
+            size,
+        });
+    }
+
+    CollectedDirectory {
+        entries,
+        total_bytes,
+    }
+}
+
+fn normalize_rel_path(path: &Path) -> String {
+    let rel_path = path.to_string_lossy();
+    if rel_path.contains('\\') {
+        rel_path.replace('\\', "/")
+    } else {
+        rel_path.into_owned()
+    }
+}
+
+fn estimate_zst_capacity(total_bytes: u64) -> usize {
+    let capped = total_bytes.min(usize::MAX as u64) as usize;
+    (capped / 3).max(MIN_ZST_CAPACITY)
+}
+
+fn select_zstd_threads(total_bytes: u64) -> u32 {
+    let max_threads = num_cpus::get().max(1) as u32;
+    if total_bytes <= 32 * MB {
+        1
+    } else if total_bytes <= 128 * MB {
+        max_threads.min(2)
+    } else if total_bytes <= 512 * MB {
+        max_threads.min(4)
+    } else {
+        max_threads.min(8)
+    }
 }
 
 fn write_png_from_zst_mem(
@@ -312,12 +490,17 @@ fn write_idat_streaming<W: Write, R: Read>(
     let fl_chunk_data = file_list_chunk.unwrap_or(&[]);
     let payload_total = header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
     let padding_after = total_data_bytes - payload_total.min(total_data_bytes);
-
     let marker_end_bytes = build_marker_end_bytes();
 
     let mut flat_pos: usize = 0;
     let mut scanline_pos: usize = 0;
     let mut deflate_block_remaining: usize = 0;
+
+    let mut adler = simd_adler32::Adler32::new();
+
+    let buf_size = 1024 * 1024;
+    let mut transfer_buf = vec![0u8; buf_size];
+    let zero_buf = vec![0u8; buf_size];
 
     let mut header_pos: usize = 0;
     let mut zst_remaining = zst_size;
@@ -326,12 +509,6 @@ fn write_idat_streaming<W: Write, R: Read>(
     let mut hmac_finalized: Option<[u8; 32]> = None;
     let mut fl_pos: usize = 0;
     let mut zero_remaining = padding_after;
-
-    let mut adler = simd_adler32::Adler32::new();
-
-    let buf_size = 1024 * 1024;
-    let mut transfer_buf = vec![0u8; buf_size];
-    let zero_buf = vec![0u8; buf_size];
 
     let mut last_png_pct: u64 = 89;
 
