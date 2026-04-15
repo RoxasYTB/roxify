@@ -27,6 +27,16 @@ import { decodeRobustImage, isRobustImage } from './robust-image.js';
 import { DecodeOptions, DecodeResult } from './types.js';
 import { parallelZstdDecompress } from './zstd.js';
 
+const HEADER_VERSION_V1 = 1;
+const HEADER_VERSION_V2 = 2;
+
+type PixelPayloadHeader = {
+  version: number;
+  name?: string;
+  payloadOffset: number;
+  payloadLen: number;
+};
+
 function isColorMatch(
   r1: number,
   g1: number,
@@ -36,6 +46,59 @@ function isColorMatch(
   b2: number,
 ): boolean {
   return Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2) < 50;
+}
+
+function readPayloadLength(
+  buf: Buffer,
+  idx: number,
+  version: number,
+): { payloadLen: number; nextIdx: number } {
+  if (version === HEADER_VERSION_V1) {
+    if (idx + 4 > buf.length) {
+      throw new DataFormatError('Truncated payload length');
+    }
+    return { payloadLen: buf.readUInt32BE(idx), nextIdx: idx + 4 };
+  }
+
+  if (version === HEADER_VERSION_V2) {
+    if (idx + 8 > buf.length) {
+      throw new DataFormatError('Truncated payload length');
+    }
+    const payloadLen = buf.readBigUInt64BE(idx);
+    if (payloadLen > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new DataFormatError('Payload too large for JS decoder');
+    }
+    return { payloadLen: Number(payloadLen), nextIdx: idx + 8 };
+  }
+
+  throw new DataFormatError(`Unsupported pixel header version ${version}`);
+}
+
+function readPixelPayloadHeader(buf: Buffer, idx: number): PixelPayloadHeader {
+  if (idx + 2 > buf.length) {
+    throw new DataFormatError('Pixel payload header truncated');
+  }
+
+  const version = buf[idx++];
+  const nameLen = buf[idx++];
+  let name: string | undefined;
+  if (nameLen > 0) {
+    if (idx + nameLen > buf.length) {
+      throw new DataFormatError('Pixel payload name truncated');
+    }
+    name = buf.subarray(idx, idx + nameLen).toString('utf8');
+    idx += nameLen;
+  }
+
+  const { payloadLen, nextIdx } = readPayloadLength(buf, idx, version);
+  const available = buf.length - nextIdx;
+  if (available < payloadLen) {
+    throw new DataFormatError(
+      `Pixel payload truncated: expected ${payloadLen} bytes but only ${available} available`,
+    );
+  }
+
+  return { version, name, payloadOffset: nextIdx, payloadLen };
 }
 
 /**
@@ -391,18 +454,12 @@ export async function decodePngToBinary(
 
     // The WAV payload starts with PIXEL_MAGIC ("PXL1")
     if (pcmData.length >= 4 && pcmData.subarray(0, 4).equals(PIXEL_MAGIC)) {
-      let idx = 4; // skip PIXEL_MAGIC
-      const version = pcmData[idx++];
-      const nameLen = pcmData[idx++];
-      let name: string | undefined;
-      if (nameLen > 0) {
-        name = pcmData.subarray(idx, idx + nameLen).toString('utf8');
-        idx += nameLen;
-      }
-      const payloadLen = pcmData.readUInt32BE(idx);
-      idx += 4;
-      const rawPayload = pcmData.subarray(idx, idx + payloadLen);
-      idx += payloadLen;
+      const header = readPixelPayloadHeader(pcmData, 4);
+      let idx = header.payloadOffset;
+      const version = header.version;
+      const name = header.name;
+      const rawPayload = pcmData.subarray(idx, idx + header.payloadLen);
+      idx += header.payloadLen;
 
       // Check for rXFL file list after payload
       let fileListJson: string | undefined;
@@ -803,26 +860,16 @@ export async function decodePngToBinary(
         throw new DataFormatError('Pixel mode data too short');
       }
 
-      let idx = 8 + PIXEL_MAGIC.length;
-      const version = logicalData[idx++];
-      const nameLen = logicalData[idx++];
-      let name: string | undefined;
-      if (nameLen > 0 && nameLen < 256) {
-        name = logicalData.slice(idx, idx + nameLen).toString('utf8');
-        idx += nameLen;
-      }
-
-      const payloadLen = logicalData.readUInt32BE(idx);
-      idx += 4;
-
-      const available = logicalData.length - idx;
-      if (available < payloadLen) {
-        throw new DataFormatError(
-          `Pixel payload truncated: expected ${payloadLen} bytes but only ${available} available`,
-        );
-      }
-
-      const rawPayload = logicalData.slice(idx, idx + payloadLen);
+      const header = readPixelPayloadHeader(
+        logicalData,
+        8 + PIXEL_MAGIC.length,
+      );
+      const version = header.version;
+      const name = header.name;
+      const rawPayload = logicalData.slice(
+        header.payloadOffset,
+        header.payloadOffset + header.payloadLen,
+      );
       let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
 
       try {
@@ -1211,37 +1258,13 @@ export async function decodePngToBinary(
       }
 
       if (idx > 0) {
-        const version = pixelBytes[idx++];
-        const nameLen = pixelBytes[idx++];
-        let name: string | undefined;
-        if (nameLen > 0 && nameLen < 256) {
-          name = pixelBytes.slice(idx, idx + nameLen).toString('utf8');
-          idx += nameLen;
-        }
-
-        const payloadLen = pixelBytes.readUInt32BE(idx);
-        idx += 4;
-
-        if (idx + 4 <= pixelBytes.length) {
-          const marker = pixelBytes.slice(idx, idx + 4).toString('utf8');
-          if (marker === 'rXFL') {
-            idx += 4;
-            if (idx + 4 <= pixelBytes.length) {
-              const jsonLen = pixelBytes.readUInt32BE(idx);
-              idx += 4;
-              idx += jsonLen;
-            }
-          }
-        }
-
-        const available = pixelBytes.length - idx;
-        if (available < payloadLen) {
-          throw new DataFormatError(
-            `Pixel payload truncated: expected ${payloadLen} bytes but only ${available} available`,
-          );
-        }
-
-        const rawPayload = pixelBytes.slice(idx, idx + payloadLen);
+        const header = readPixelPayloadHeader(pixelBytes, idx);
+        const version = header.version;
+        const name = header.name;
+        const rawPayload = pixelBytes.slice(
+          header.payloadOffset,
+          header.payloadOffset + header.payloadLen,
+        );
         let payload = tryDecryptIfNeeded(rawPayload, opts.passphrase);
 
         try {
@@ -1487,12 +1510,12 @@ export async function decodePngToBinary(
               }
 
               if (ii > 0) {
-                const version2 = pixelBytes2[ii++];
-                const nameLen2 = pixelBytes2[ii++];
-                const payloadLen2 = pixelBytes2.readUInt32BE(ii + nameLen2);
+                const header2 = readPixelPayloadHeader(pixelBytes2, ii);
+                const version2 = header2.version;
+                const name2 = header2.name;
                 const rawPayload2 = pixelBytes2.slice(
-                  ii + nameLen2 + 4,
-                  ii + nameLen2 + 4 + payloadLen2,
+                  header2.payloadOffset,
+                  header2.payloadOffset + header2.payloadLen,
                 );
                 let payload2 = tryDecryptIfNeeded(rawPayload2, opts.passphrase);
                 payload2 = await tryDecompress(payload2, (info) => {
@@ -1511,13 +1534,13 @@ export async function decodePngToBinary(
                   if (unpacked2) {
                     if (opts.onProgress) opts.onProgress({ phase: 'done' });
                     progressBar?.stop();
-                    return { files: unpacked2.files, meta: { name } };
+                    return { files: unpacked2.files, meta: { name: name2 } };
                   }
                 }
 
                 if (opts.onProgress) opts.onProgress({ phase: 'done' });
                 progressBar?.stop();
-                return { buf: payload2, meta: { name } };
+                return { buf: payload2, meta: { name: name2 } };
               }
             }
 

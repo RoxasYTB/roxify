@@ -3,16 +3,16 @@ import * as zlib from 'zlib';
 import { unpackBuffer } from '../pack.js';
 import { bytesToWav } from './audio.js';
 import {
-  COMPRESSION_MARKERS,
-  ENC_AES,
-  ENC_NONE,
-  ENC_XOR,
-  MAGIC,
-  MARKER_END,
-  MARKER_START,
-  PIXEL_MAGIC,
-  PIXEL_MAGIC_BLOCK,
-  PNG_HEADER,
+    COMPRESSION_MARKERS,
+    ENC_AES,
+    ENC_NONE,
+    ENC_XOR,
+    MAGIC,
+    MARKER_END,
+    MARKER_START,
+    PIXEL_MAGIC,
+    PIXEL_MAGIC_BLOCK,
+    PNG_HEADER,
 } from './constants.js';
 import { crc32 } from './crc.js';
 import { colorsToBytes } from './helpers.js';
@@ -21,6 +21,18 @@ import { encodeRobustAudio } from './robust-audio.js';
 import { encodeRobustImage } from './robust-image.js';
 import { EncodeOptions } from './types.js';
 import { parallelZstdCompress } from './zstd.js';
+
+const HEADER_VERSION_V2 = 2;
+
+function writePayloadLength(payloadLen: number): Buffer {
+  if (!Number.isSafeInteger(payloadLen) || payloadLen < 0) {
+    throw new RangeError(`Invalid payload length: ${payloadLen}`);
+  }
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64BE(BigInt(payloadLen), 0);
+  return buf;
+}
+
 /**
  * Encode a buffer or array of buffers into a PNG image (ROX format).
  *
@@ -343,9 +355,8 @@ export async function encodeBinaryToPng(
     const nameBuf =
       opts.name ? Buffer.from(opts.name, 'utf8') : Buffer.alloc(0);
     const nameLen = nameBuf.length;
-    const payloadLenBuf = Buffer.alloc(4);
-    payloadLenBuf.writeUInt32BE(payloadTotalLen, 0);
-    const version = 1;
+    const payloadLenBuf = writePayloadLength(payloadTotalLen);
+    const version = HEADER_VERSION_V2;
     let wavPayload: Buffer[] = [
       PIXEL_MAGIC,
       Buffer.from([version]),
@@ -391,9 +402,8 @@ export async function encodeBinaryToPng(
     const nameBuf =
       opts.name ? Buffer.from(opts.name, 'utf8') : Buffer.alloc(0);
     const nameLen = nameBuf.length;
-    const payloadLenBuf = Buffer.alloc(4);
-    payloadLenBuf.writeUInt32BE(payloadTotalLen, 0);
-    const version = 1;
+    const payloadLenBuf = writePayloadLength(payloadTotalLen);
+    const version = HEADER_VERSION_V2;
     let metaPixel: Buffer[] = [
       Buffer.from([version]),
       Buffer.from([nameLen]),
