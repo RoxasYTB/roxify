@@ -5,6 +5,8 @@ use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+use crate::png_chunk_writer::{ChunkedIdatWriter, write_png_chunk};
+
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const MARKER_START: [(u8, u8, u8); 3] = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
@@ -398,13 +400,6 @@ fn write_png_from_zst_mem(
 
     let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
 
-    let stride = row_bytes + 1;
-    let scanlines_total = height * stride;
-
-    const MAX_BLOCK: usize = 65535;
-    let num_blocks = (scanlines_total + MAX_BLOCK - 1) / MAX_BLOCK;
-    let idat_len = 2 + num_blocks * 5 + scanlines_total + 4;
-
     let out_file = File::create(output_path)?;
     let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 16 * 1024 * 1024 }
         else if total_data_bytes > 16 * 1024 * 1024 { 8 * 1024 * 1024 }
@@ -418,7 +413,7 @@ fn write_png_from_zst_mem(
     ihdr[4..8].copy_from_slice(&(height as u32).to_be_bytes());
     ihdr[8] = 8;
     ihdr[9] = 2;
-    write_chunk_hdr(&mut w, b"IHDR", &ihdr)?;
+    write_png_chunk(&mut w, b"IHDR", &ihdr)?;
 
     let mut zst_reader = std::io::Cursor::new(zst_buf);
 
@@ -433,15 +428,14 @@ fn write_png_from_zst_mem(
         height,
         row_bytes,
         marker_end_pos,
-        idat_len,
         total_data_bytes,
         progress,
     )?;
 
     if let Some(fl) = file_list {
-        write_chunk_hdr(&mut w, b"rXFL", fl.as_bytes())?;
+        write_png_chunk(&mut w, b"rXFL", fl.as_bytes())?;
     }
-    write_chunk_hdr(&mut w, b"IEND", &[])?;
+    write_png_chunk(&mut w, b"IEND", &[])?;
     w.flush()?;
 
     Ok(())
@@ -470,22 +464,16 @@ fn write_idat_streaming<W: Write, R: Read>(
     height: usize,
     row_bytes: usize,
     marker_end_pos: usize,
-    idat_len: usize,
     total_data_bytes: usize,
     progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
-    w.write_all(&(idat_len as u32).to_be_bytes())?;
-    w.write_all(b"IDAT")?;
-
-    let mut crc = crc32fast::Hasher::new();
-    crc.update(b"IDAT");
+    let mut idat = ChunkedIdatWriter::new(w);
 
     let stride = row_bytes + 1;
     let scanlines_total = height * stride;
 
     let zlib = [0x78u8, 0x01];
-    w.write_all(&zlib)?;
-    crc.update(&zlib);
+    idat.write_all(&zlib)?;
 
     let fl_chunk_data = file_list_chunk.unwrap_or(&[]);
     let payload_total = header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
@@ -524,14 +512,12 @@ fn write_idat_streaming<W: Write, R: Read>(
                 !block_size as u8,
                 (!(block_size >> 8)) as u8,
             ];
-            w.write_all(&header)?;
-            crc.update(&header);
+            idat.write_all(&header)?;
             deflate_block_remaining = block_size;
         }
 
         let filter_byte = [0u8];
-        w.write_all(&filter_byte)?;
-        crc.update(&filter_byte);
+        idat.write_all(&filter_byte)?;
         adler.write(&filter_byte);
         scanline_pos += 1;
         deflate_block_remaining -= 1;
@@ -549,8 +535,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     !block_size as u8,
                     (!(block_size >> 8)) as u8,
                 ];
-                w.write_all(&header)?;
-                crc.update(&header);
+                idat.write_all(&header)?;
                 deflate_block_remaining = block_size;
             }
 
@@ -567,8 +552,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     let me_remaining = 9 - me_offset;
                     let take = need.min(me_remaining);
                     let slice = &marker_end_bytes[me_offset..me_offset + take];
-                    w.write_all(slice)?;
-                    crc.update(slice);
+                    idat.write_all(slice)?;
                     adler.write(slice);
                     flat_pos += take;
                     chunk_written += take;
@@ -582,8 +566,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     let avail = header_bytes.len() - header_pos;
                     let take = need.min(avail);
                     let slice = &header_bytes[header_pos..header_pos + take];
-                    w.write_all(slice)?;
-                    crc.update(slice);
+                    idat.write_all(slice)?;
                     adler.write(slice);
                     header_pos += take;
                     flat_pos += take;
@@ -599,8 +582,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     if let Some(ref mut enc) = encryptor {
                         enc.encrypt_chunk(&mut transfer_buf[..got]);
                     }
-                    w.write_all(&transfer_buf[..got])?;
-                    crc.update(&transfer_buf[..got]);
+                    idat.write_all(&transfer_buf[..got])?;
                     adler.write(&transfer_buf[..got]);
                     zst_remaining -= got;
                     flat_pos += got;
@@ -618,8 +600,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                         let avail = hmac_trailer_len - hmac_pos;
                         let take = need.min(avail);
                         let slice = &hmac_bytes[hmac_pos..hmac_pos + take];
-                        w.write_all(slice)?;
-                        crc.update(slice);
+                        idat.write_all(slice)?;
                         adler.write(slice);
                         hmac_pos += take;
                         flat_pos += take;
@@ -637,8 +618,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     let avail = fl_chunk_data.len() - fl_pos;
                     let take = need.min(avail);
                     let slice = &fl_chunk_data[fl_pos..fl_pos + take];
-                    w.write_all(slice)?;
-                    crc.update(slice);
+                    idat.write_all(slice)?;
                     adler.write(slice);
                     fl_pos += take;
                     flat_pos += take;
@@ -654,8 +634,7 @@ fn write_idat_streaming<W: Write, R: Read>(
                     };
                     let take = need.min(zero_remaining).min(buf_size).min(max_before_marker);
                     if take == 0 { break; }
-                    w.write_all(&zero_buf[..take])?;
-                    crc.update(&zero_buf[..take]);
+                    idat.write_all(&zero_buf[..take])?;
                     adler.write(&zero_buf[..take]);
                     zero_remaining -= take;
                     flat_pos += take;
@@ -678,11 +657,8 @@ fn write_idat_streaming<W: Write, R: Read>(
 
     let adler_val = adler.finish();
     let adler_bytes = adler_val.to_be_bytes();
-    w.write_all(&adler_bytes)?;
-    crc.update(&adler_bytes);
-
-    w.write_all(&crc.finalize().to_be_bytes())?;
-    Ok(())
+    idat.write_all(&adler_bytes)?;
+    idat.finish()
 }
 
 fn build_marker_end_bytes() -> [u8; 9] {
@@ -695,13 +671,3 @@ fn build_marker_end_bytes() -> [u8; 9] {
     buf
 }
 
-fn write_chunk_hdr<W: Write>(w: &mut W, chunk_type: &[u8; 4], data: &[u8]) -> anyhow::Result<()> {
-    w.write_all(&(data.len() as u32).to_be_bytes())?;
-    w.write_all(chunk_type)?;
-    w.write_all(data)?;
-    let mut h = crc32fast::Hasher::new();
-    h.update(chunk_type);
-    h.update(data);
-    w.write_all(&h.finalize().to_be_bytes())?;
-    Ok(())
-}

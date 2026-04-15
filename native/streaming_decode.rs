@@ -50,14 +50,15 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
         cb(2, 100, "parsing_png");
     }
 
-    let (width, height, idat_data_start, idat_data_end) = parse_png_header(data)?;
+    let (width, height, idat_ranges) = parse_png_header(data)?;
     let total_expected = parse_rxfl_total_bytes(data).unwrap_or(0);
 
     if let Some(ref cb) = progress {
         cb(5, 100, "reading_header");
     }
 
-    let mut reader = DeflatePixelReader::new(data, width, height, idat_data_start, idat_data_end);
+    let mut reader = DeflatePixelReader::new(data, width, height, idat_ranges)
+        .map_err(|e| format!("init deflate reader: {}", e))?;
 
     let mut marker_buf = [0u8; MARKER_BYTES];
     reader.read_exact(&mut marker_buf).map_err(|e| format!("read markers: {}", e))?;
@@ -155,18 +156,27 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     }
 }
 
-fn parse_png_header(data: &[u8]) -> Result<(usize, usize, usize, usize), String> {
+fn parse_png_header(data: &[u8]) -> Result<(usize, usize, Vec<(usize, usize)>), String> {
     let mut pos = 8;
 
     let mut width = 0usize;
     let mut height = 0usize;
-    let mut idat_start = 0usize;
-    let mut idat_end = 0usize;
+    let mut idat_ranges = Vec::new();
 
     while pos + 12 <= data.len() {
         let chunk_len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         let chunk_type = &data[pos + 4..pos + 8];
         let chunk_data_start = pos + 8;
+        let chunk_data_end = chunk_data_start
+            .checked_add(chunk_len)
+            .ok_or_else(|| "PNG chunk length overflow".to_string())?;
+        let chunk_end = chunk_data_end
+            .checked_add(4)
+            .ok_or_else(|| "PNG chunk CRC overflow".to_string())?;
+
+        if chunk_end > data.len() {
+            return Err(format!("Invalid PNG chunk length for {:?}", chunk_type));
+        }
 
         if chunk_type == b"IHDR" {
             if chunk_len < 13 {
@@ -185,23 +195,22 @@ fn parse_png_header(data: &[u8]) -> Result<(usize, usize, usize, usize), String>
                 data[chunk_data_start + 7],
             ]) as usize;
         } else if chunk_type == b"IDAT" {
-            idat_start = chunk_data_start;
-            idat_end = chunk_data_start + chunk_len;
+            idat_ranges.push((chunk_data_start, chunk_data_end));
         } else if chunk_type == b"IEND" {
             break;
         }
 
-        pos = chunk_data_start + chunk_len + 4;
+        pos = chunk_end;
     }
 
     if width == 0 || height == 0 {
         return Err("IHDR not found".into());
     }
-    if idat_start == 0 {
+    if idat_ranges.is_empty() {
         return Err("IDAT not found".into());
     }
 
-    Ok((width, height, idat_start, idat_end))
+    Ok((width, height, idat_ranges))
 }
 
 fn parse_rxfl_total_bytes(data: &[u8]) -> Option<u64> {
@@ -231,8 +240,10 @@ fn parse_rxfl_total_bytes(data: &[u8]) -> Option<u64> {
 struct DeflatePixelReader<'a> {
     data: &'a [u8],
     height: usize,
+    idat_ranges: Vec<(usize, usize)>,
+    range_index: usize,
     offset: usize,
-    idat_end: usize,
+    range_end: usize,
     block_remaining: usize,
     current_row: usize,
     col_in_row: usize,
@@ -241,19 +252,82 @@ struct DeflatePixelReader<'a> {
 }
 
 impl<'a> DeflatePixelReader<'a> {
-    fn new(data: &'a [u8], width: usize, height: usize, idat_data_start: usize, idat_data_end: usize) -> Self {
+    fn new(data: &'a [u8], width: usize, height: usize, idat_ranges: Vec<(usize, usize)>) -> Result<Self, String> {
+        let Some(&(offset, range_end)) = idat_ranges.first() else {
+            return Err("IDAT not found".to_string());
+        };
         let row_bytes = width * 3;
-        Self {
+        let mut reader = Self {
             data,
             height,
-            offset: idat_data_start + 2,
-            idat_end: idat_data_end,
+            idat_ranges,
+            range_index: 0,
+            offset,
+            range_end,
             block_remaining: 0,
             current_row: 0,
             col_in_row: 0,
             scanline_filter_pending: true,
             row_bytes,
+        };
+        reader.skip_stream_bytes(2)
+            .map_err(|e| format!("read zlib header: {}", e))?;
+        Ok(reader)
+    }
+
+    fn advance_range(&mut self) -> bool {
+        while self.offset >= self.range_end {
+            self.range_index += 1;
+            let Some(&(offset, end)) = self.idat_ranges.get(self.range_index) else {
+                return false;
+            };
+            self.offset = offset;
+            self.range_end = end;
         }
+        true
+    }
+
+    fn read_stream_bytes(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        let mut written = 0;
+        while written < buf.len() {
+            if !self.advance_range() {
+                break;
+            }
+            let available = self.range_end - self.offset;
+            if available == 0 {
+                continue;
+            }
+            let take = available.min(buf.len() - written);
+            buf[written..written + take].copy_from_slice(&self.data[self.offset..self.offset + take]);
+            self.offset += take;
+            written += take;
+        }
+        Ok(written)
+    }
+
+    fn read_stream_exact(&mut self, buf: &mut [u8]) -> Result<(), std::io::Error> {
+        let got = self.read_stream_bytes(buf)?;
+        if got == buf.len() {
+            return Ok(());
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"))
+    }
+
+    fn skip_stream_bytes(&mut self, count: usize) -> Result<(), std::io::Error> {
+        let mut remaining = count;
+        while remaining > 0 {
+            if !self.advance_range() {
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"));
+            }
+            let available = self.range_end - self.offset;
+            if available == 0 {
+                continue;
+            }
+            let take = available.min(remaining);
+            self.offset += take;
+            remaining -= take;
+        }
+        Ok(())
     }
 
     fn ensure_block(&mut self) -> Result<(), std::io::Error> {
@@ -261,13 +335,11 @@ impl<'a> DeflatePixelReader<'a> {
             return Ok(());
         }
 
-        if self.offset + 5 > self.idat_end {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "No more deflate blocks"));
-        }
+        let mut header = [0u8; 5];
+        self.read_stream_exact(&mut header)?;
 
-        let len_lo = self.data[self.offset + 1] as usize;
-        let len_hi = self.data[self.offset + 2] as usize;
-        self.offset += 5;
+        let len_lo = header[1] as usize;
+        let len_hi = header[2] as usize;
 
         self.block_remaining = len_lo | (len_hi << 8);
         Ok(())
@@ -277,14 +349,16 @@ impl<'a> DeflatePixelReader<'a> {
         let mut written = 0;
         while written < count {
             self.ensure_block()?;
-            let avail = self.block_remaining.min(count - written).min(self.idat_end - self.offset);
+            let avail = self.block_remaining.min(count - written);
             if avail == 0 {
                 break;
             }
-            buf[written..written + avail].copy_from_slice(&self.data[self.offset..self.offset + avail]);
-            self.offset += avail;
-            self.block_remaining -= avail;
-            written += avail;
+            let got = self.read_stream_bytes(&mut buf[written..written + avail])?;
+            if got == 0 {
+                break;
+            }
+            self.block_remaining -= got;
+            written += got;
         }
         Ok(written)
     }
@@ -293,11 +367,11 @@ impl<'a> DeflatePixelReader<'a> {
         let mut remaining = count;
         while remaining > 0 {
             self.ensure_block()?;
-            let skip = self.block_remaining.min(remaining).min(self.idat_end - self.offset);
+            let skip = self.block_remaining.min(remaining);
             if skip == 0 {
                 break;
             }
-            self.offset += skip;
+            self.skip_stream_bytes(skip)?;
             self.block_remaining -= skip;
             remaining -= skip;
         }
@@ -469,4 +543,54 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
     }
 
     Ok(written)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_png_header_collects_all_idat_ranges() {
+        let mut png = Vec::new();
+        png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+
+        let mut ihdr = [0u8; 13];
+        ihdr[0..4].copy_from_slice(&1u32.to_be_bytes());
+        ihdr[4..8].copy_from_slice(&1u32.to_be_bytes());
+        ihdr[8] = 8;
+        ihdr[9] = 2;
+
+        crate::png_chunk_writer::write_png_chunk(&mut png, b"IHDR", &ihdr).unwrap();
+        crate::png_chunk_writer::write_png_chunk(&mut png, b"IDAT", &[1, 2, 3]).unwrap();
+        crate::png_chunk_writer::write_png_chunk(&mut png, b"IDAT", &[4, 5]).unwrap();
+        crate::png_chunk_writer::write_png_chunk(&mut png, b"IEND", &[]).unwrap();
+
+        let (_, _, ranges) = parse_png_header(&png).unwrap();
+
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(&png[ranges[0].0..ranges[0].1], &[1, 2, 3]);
+        assert_eq!(&png[ranges[1].0..ranges[1].1], &[4, 5]);
+    }
+
+    #[test]
+    fn deflate_reader_reads_across_idat_boundaries() {
+        let scanline = [0u8, 10, 11, 12, 13, 14, 15];
+        let mut deflate = vec![0x78, 0x01, 0x01, 0x07, 0x00, 0xF8, 0xFF];
+        deflate.extend_from_slice(&scanline);
+        deflate.extend_from_slice(&crate::core::adler32_bytes(&scanline).to_be_bytes());
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&deflate[0..4]);
+        data.extend_from_slice(&[200, 201, 202]);
+        data.extend_from_slice(&deflate[4..12]);
+        data.extend_from_slice(&[203, 204]);
+        data.extend_from_slice(&deflate[12..]);
+
+        let ranges = vec![(0, 4), (7, 15), (17, 23)];
+        let mut reader = DeflatePixelReader::new(&data, 2, 1, ranges).unwrap();
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+
+        assert_eq!(out, vec![10, 11, 12, 13, 14, 15]);
+    }
 }

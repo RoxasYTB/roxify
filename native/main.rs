@@ -11,6 +11,7 @@ mod encoder;
 mod packer;
 mod crypto;
 mod png_utils;
+mod png_chunk_writer;
 mod audio;
 mod reconstitution;
 mod archive;
@@ -255,31 +256,38 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
         }
         Commands::List { input } => {
             let mut file = File::open(&input)?;
-            let chunks = png_utils::extract_png_chunks_streaming(&mut file).map_err(|e| anyhow::anyhow!(e))?;
+            let mut chunk_scan_error: Option<anyhow::Error> = None;
 
-            if let Some(rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
-                println!("{}", String::from_utf8_lossy(&rxfl_chunk.data));
-                return Ok(());
-            }
+            match png_utils::extract_png_chunks_streaming(&mut file) {
+                Ok(chunks) => {
+                    if let Some(rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
+                        println!("{}", String::from_utf8_lossy(&rxfl_chunk.data));
+                        return Ok(());
+                    }
 
-            if let Some(meta_chunk) = chunks.iter().find(|c| c.name == "rOXm") {
-                if let Some(pos) = meta_chunk.data.windows(4).position(|w| w == b"rXFL") {
-                    if pos + 8 <= meta_chunk.data.len() {
-                        let json_len = u32::from_be_bytes([
-                            meta_chunk.data[pos + 4],
-                            meta_chunk.data[pos + 5],
-                            meta_chunk.data[pos + 6],
-                            meta_chunk.data[pos + 7],
-                        ]) as usize;
+                    if let Some(meta_chunk) = chunks.iter().find(|c| c.name == "rOXm") {
+                        if let Some(pos) = meta_chunk.data.windows(4).position(|w| w == b"rXFL") {
+                            if pos + 8 <= meta_chunk.data.len() {
+                                let json_len = u32::from_be_bytes([
+                                    meta_chunk.data[pos + 4],
+                                    meta_chunk.data[pos + 5],
+                                    meta_chunk.data[pos + 6],
+                                    meta_chunk.data[pos + 7],
+                                ]) as usize;
 
-                        let json_start = pos + 8;
-                        let json_end = json_start + json_len;
+                                let json_start = pos + 8;
+                                let json_end = json_start + json_len;
 
-                        if json_end <= meta_chunk.data.len() {
-                            println!("{}", String::from_utf8_lossy(&meta_chunk.data[json_start..json_end]));
-                            return Ok(());
+                                if json_end <= meta_chunk.data.len() {
+                                    println!("{}", String::from_utf8_lossy(&meta_chunk.data[json_start..json_end]));
+                                    return Ok(());
+                                }
+                            }
                         }
                     }
+                }
+                Err(err) => {
+                    chunk_scan_error = Some(anyhow::anyhow!(err));
                 }
             }
 
@@ -289,11 +297,14 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                     println!("{}", json);
                     return Ok(());
                 }
-                Err(_) => {}
+                Err(pixel_err) => {
+                    if let Some(chunk_err) = chunk_scan_error {
+                        return Err(anyhow::anyhow!("chunk scan: {}; pixel scan: {}", chunk_err, pixel_err));
+                    }
+                }
             }
 
-            eprintln!("No file list found in PNG");
-            std::process::exit(1);
+            return Err(anyhow::anyhow!("No file list found in PNG"));
         }
         Commands::Havepassphrase { input } => {
             let buf = read_all(&input)?;
