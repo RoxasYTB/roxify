@@ -255,13 +255,50 @@ fn unpack_entries_sequential(buf: &[u8], start: usize, out_dir: &Path, files_opt
     Ok(written)
 }
 
-pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, files_opt: Option<&[String]>) -> Result<Vec<String>> {
+fn unpack_progress_percent(total_expected: u64, bytes_processed: u64, file_count: usize, processed_files: usize) -> u64 {
+    if total_expected > 0 {
+        return 10 + (bytes_processed.saturating_mul(89) / total_expected).min(89);
+    }
+    if file_count > 0 {
+        return 10 + ((processed_files as u64).saturating_mul(89) / file_count as u64).min(89);
+    }
+    10
+}
+
+fn report_unpack_progress(
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    total_expected: u64,
+    bytes_processed: u64,
+    file_count: usize,
+    processed_files: usize,
+    last_pct: &mut u64,
+) {
+    if let Some(cb) = progress {
+        let pct = unpack_progress_percent(total_expected, bytes_processed, file_count, processed_files);
+        if pct > *last_pct {
+            *last_pct = pct;
+            cb(pct, 100, "extracting");
+        }
+    }
+}
+
+pub fn unpack_stream_to_dir<R: std::io::Read>(
+    reader: &mut R,
+    out_dir: &Path,
+    files_opt: Option<&[String]>,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    total_expected: u64,
+) -> Result<Vec<String>> {
     let mut written = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
     let mut pos: usize = 0;
     let mut temp = [0u8; 64 * 1024];
     let files_filter: Option<std::collections::HashSet<String>> = files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
     let mut requested = files_filter.as_ref().map(|s| s.len()).unwrap_or(usize::MAX);
+    let mut file_count = 0usize;
+    let mut processed_files = 0usize;
+    let mut bytes_processed = 0u64;
+    let mut last_pct = 10u64;
 
         let mut header_parsed = false;
     let debug = std::env::var("ROX_DEBUG").is_ok();
@@ -280,10 +317,10 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, fi
                 if debug { eprintln!("[rox debug] magic_header=0x{:08x}", magic_header); }
                 if magic_header == 0x524f5850u32 {
                                         pos += 4;
-                                        let _file_count = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap()) as usize;
+                                        file_count = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap()) as usize;
                     pos += 4;
                     header_parsed = true;
-                    if debug { eprintln!("[rox debug] header parsed, file_count={}", _file_count); }
+                    if debug { eprintln!("[rox debug] header parsed, file_count={}", file_count); }
                 } else if magic_header == 0x524f5831u32 {
                                         if debug { eprintln!("[rox debug] found ROX1 outer magic, skipping 4 bytes"); }
                     pos += 4;
@@ -310,6 +347,8 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, fi
             let content_start = pos + 2 + name_len + 8;
             let content_end = content_start + size;
             let content = &buf[content_start..content_end];
+            processed_files = processed_files.saturating_add(1);
+            bytes_processed = bytes_processed.saturating_add(size as u64);
 
                         let p = Path::new(&name);
             let mut safe = std::path::PathBuf::new();
@@ -328,9 +367,17 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, fi
                 written.push(safe.to_string_lossy().to_string());
                 if let Some(_set) = files_filter.as_ref() {
                     requested = requested.saturating_sub(1);
-                    if requested == 0 { return Ok(written); }
+                    report_unpack_progress(progress, total_expected, bytes_processed, file_count, processed_files, &mut last_pct);
+                    if requested == 0 {
+                        if let Some(cb) = progress {
+                            cb(99, 100, "finishing");
+                        }
+                        return Ok(written);
+                    }
                 }
             }
+
+            report_unpack_progress(progress, total_expected, bytes_processed, file_count, processed_files, &mut last_pct);
 
             pos = content_end;                         if pos > 0 {
                 buf.drain(0..pos);
@@ -342,6 +389,10 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(reader: &mut R, out_dir: &Path, fi
             Ok(0) => break,             Ok(n) => buf.extend_from_slice(&temp[..n]),
             Err(e) => return Err(anyhow::anyhow!("Stream read error: {}", e)),
         }
+    }
+
+    if let Some(cb) = progress {
+        cb(99, 100, "finishing");
     }
 
     Ok(written)
@@ -390,7 +441,7 @@ mod stream_tests {
         let tmpdir = std::env::temp_dir().join(format!("rox_unpack_test_{}", ms));
         let _ = std::fs::create_dir_all(&tmpdir);
 
-        let out = unpack_stream_to_dir(&mut dec2, &tmpdir, None)?;
+        let out = unpack_stream_to_dir(&mut dec2, &tmpdir, None, None, 0)?;
 
                 assert_eq!(out.len(), 2);
         assert!(tmpdir.join("file1.txt").exists());
@@ -432,7 +483,7 @@ mod stream_tests {
         let tmpdir = std::env::temp_dir().join(format!("rox_unpack_png_test_{}", ms));
         let _ = std::fs::create_dir_all(&tmpdir);
 
-        let out = unpack_stream_to_dir(&mut dec, &tmpdir, None)?;
+        let out = unpack_stream_to_dir(&mut dec, &tmpdir, None, None, 0)?;
 
         assert_eq!(out.len(), 2);
         assert!(tmpdir.join("file1.txt").exists());

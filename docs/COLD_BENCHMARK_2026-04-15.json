@@ -1,0 +1,108 @@
+{
+      "timestamp": "2026-04-15T15:13:56+0200",
+      "roxify_bin": "/mnt/windata/C/Users/Yohan/Desktop/_Projets/roxify/target/release/roxify_native",
+      "cold_method": "os.posix_fadvise(POSIX_FADV_DONTNEED)",
+      "runs": 1,
+      "datasets": [
+            {
+                  "label": "glados",
+                  "path": "/home/yohan/.roxify-bench-ext4/Glados-Disc",
+                  "encode": {
+                        "label": "glados",
+                        "operation": "encode",
+                        "runs": [
+                              {
+                                    "run": 1,
+                                    "seconds": 2.882673703,
+                                    "throughput_mib_s": 72.2161416252822,
+                                    "source_bytes": 218287909,
+                                    "result_bytes": 57497494
+                              }
+                        ],
+                        "min_seconds": 2.882673703,
+                        "median_seconds": 2.882673703,
+                        "mean_seconds": 2.882673703,
+                        "max_seconds": 2.882673703,
+                        "min_throughput_mib_s": 72.2161416252822,
+                        "median_throughput_mib_s": 72.2161416252822,
+                        "mean_throughput_mib_s": 72.2161416252822,
+                        "max_throughput_mib_s": 72.2161416252822,
+                        "source_bytes": 218287909,
+                        "result_bytes": 57497494
+                  },
+                  "decode": {
+                        "label": "glados",
+                        "operation": "decode",
+                        "runs": [
+                              {
+                                    "run": 1,
+                                    "seconds": 0.954227915,
+                                    "throughput_mib_s": 218.16126852181296,
+                                    "source_bytes": 218287909,
+                                    "result_bytes": 218287909
+                              }
+                        ],
+                        "min_seconds": 0.954227915,
+                        "median_seconds": 0.954227915,
+                        "mean_seconds": 0.954227915,
+                        "max_seconds": 0.954227915,
+                        "min_throughput_mib_s": 218.16126852181296,
+                        "median_throughput_mib_s": 218.16126852181296,
+                        "mean_throughput_mib_s": 218.16126852181296,
+                        "max_throughput_mib_s": 218.16126852181296,
+                        "source_bytes": 218287909,
+                        "result_bytes": 218287909
+                  }
+            },
+            {
+                  "label": "gmod",
+                  "path": "/home/yohan/.roxify-bench-ext4/Gmod",
+                  "encode": {
+                        "label": "gmod",
+                        "operation": "encode",
+                        "runs": [
+                              {
+                                    "run": 1,
+                                    "seconds": 6.126882541,
+                                    "throughput_mib_s": 227.6867411495828,
+                                    "source_bytes": 1462773921,
+                                    "result_bytes": 431057544
+                              }
+                        ],
+                        "min_seconds": 6.126882541,
+                        "median_seconds": 6.126882541,
+                        "mean_seconds": 6.126882541,
+                        "max_seconds": 6.126882541,
+                        "min_throughput_mib_s": 227.6867411495828,
+                        "median_throughput_mib_s": 227.6867411495828,
+                        "mean_throughput_mib_s": 227.6867411495828,
+                        "max_throughput_mib_s": 227.6867411495828,
+                        "source_bytes": 1462773921,
+                        "result_bytes": 431057544
+                  },
+                  "decode": {
+                        "label": "gmod",
+                        "operation": "decode",
+                        "runs": [
+                              {
+                                    "run": 1,
+                                    "seconds": 5.849681592,
+                                    "throughput_mib_s": 238.47621400015598,
+                                    "source_bytes": 1462773921,
+                                    "result_bytes": 1462773921
+                              }
+                        ],
+                        "min_seconds": 5.849681592,
+                        "median_seconds": 5.849681592,
+                        "mean_seconds": 5.849681592,
+                        "max_seconds": 5.849681592,
+                        "min_throughput_mib_s": 238.47621400015598,
+                        "median_throughput_mib_s": 238.47621400015598,
+                        "mean_throughput_mib_s": 238.47621400015598,
+                        "max_throughput_mib_s": 238.47621400015598,
+                        "source_bytes": 1462773921,
+                        "result_bytes": 1462773921
+                  }
+            }
+      ]
+}

@@ -57,27 +57,29 @@ The core compression and image-processing logic is written in Rust and exposed t
 
 ## Benchmarks
 
-All measurements taken on Linux x64 (Intel i7-6700K @ 4.0 GHz, 32 GB RAM). Roxify uses its native Rust CLI (`roxify_native`) with streaming Zstd L3 + multi-threaded + LDM + window_log(30). ZIP uses `zip -r -q -9` (maximum compression).
+All measurements below use Roxify native Rust CLI (`roxify_native`) with streaming directory packing, Zstd L3, multi-threading, long-distance matching, and `window_log(30)`.
 
-### Real-world directory encoding: Roxify vs ZIP
+### Cold-cache throughput on ext4
 
-| Dataset | Original | ZIP -9 | Roxify PNG | ZIP time | Roxify time | Speedup |
-| --- | --- | --- | --- | --- | --- | --- |
-| Test A (19 638 files, 177 MB) | 177 MB | 87.7 MB (49.6%) | 54.9 MB (31.0%) | 17.6 s | 1.2 s | 14.7x |
-| Test B (3 936 files, 1.4 GB) | 1.4 GB | 513 MB (36.7%) | 409 MB (29.2%) | 1 min 46 s | 6.7 s | 15.9x |
+Measured with targeted page-cache eviction (`POSIX_FADV_DONTNEED`) before both encode and decode. Raw manifest lives in `docs/COLD_BENCHMARK_2026-04-15.json`.
 
-### Decompression
+| Dataset | Files | Source | Output PNG | Encode | Encode throughput | Decode | Decode throughput |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Glados-Disc | 19,645 | 208.18 MiB | 54.83 MiB | 2.883 s | 72.22 MiB/s | 0.954 s | 218.16 MiB/s |
+| Gmod | 3,936 | 1.36 GiB | 411.09 MiB | 6.127 s | 227.69 MiB/s | 5.850 s | 238.48 MiB/s |
 
-| Dataset | unzip | Roxify decode | Speedup |
-| --- | --- | --- | --- |
-| Test A (177 MB) | 2.4 s | 1.3 s | 1.8x |
-| Test B (1.4 GB) | 8.4 s | 2.9 s | 2.9x |
+### High-latency source filesystem encode
 
-Roxify produces a valid PNG image instead of a ZIP archive. On these real-world datasets it compresses 20-37% smaller than ZIP -9 while encoding 15x faster, thanks to multi-threaded Zstd with long-distance matching.
+Roxify 1.13.4 adds adaptive parallel preload for small files before feeding Zstd. This specifically targets metadata-heavy trees on slower filesystems such as NTFS, APFS, exFAT, and network-backed mounts.
+
+| Dataset | Source FS | Before 1.13.4 | Roxify 1.13.4 | Speedup |
+| --- | --- | --- | --- | --- |
+| Glados-Disc (19,645 files) | NTFS under Linux | 81.608 s | 2.189 s | 37.3x |
+| Gmod (3,936 files) | NTFS under Linux | 22.578 s | 4.517 s | 5.0x |
 
 ### Data integrity
 
-100% lossless roundtrip verified by byte-exact diff on all datasets. Start and end markers verified in every output PNG.
+All benchmark runs completed with byte-exact roundtrip validation. Decode output matched original logical source bytes on every dataset.
 
 ---
 
