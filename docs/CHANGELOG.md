@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.5] - 2026-04-15
+
+### Fix: large PNG decode stability, memory usage, and Portal 2 validation
+
+- **Fixed**: PNG output for giant archives no longer writes invalid oversized `IDAT` chunks. Native encoder now splits payload across multiple valid `IDAT` chunks and native decode scans them all.
+- **Fixed**: Streaming decode no longer trusts a truncated 32-bit payload length for oversized unencrypted PNG payloads. New PNG metadata uses a 64-bit payload length header (`v2`), while decoders stay backward-compatible with existing `v1` archives.
+- **Fixed**: Removed catastrophic full in-memory fallback after streaming decode failure for whole-PNG directory extraction. Failures now return explicit errors instead of consuming all RAM.
+- **Fixed**: Pack extraction now writes files sequentially to disk instead of buffering large content in memory.
+- **Improved**: Linux decode path now gives kernel cache hints (`POSIX_FADV_SEQUENTIAL` / `POSIX_FADV_DONTNEED`) for input and extracted output files to keep resident memory bounded on huge archives.
+- **Improved**: Pure TypeScript fallback now reads and writes the same `v2` 64-bit payload header as native paths, while continuing to decode legacy `v1` archives.
+- **Validated**: Real-world decode of `Portal 2` (`/home/yohan/Portal2.png`, 3,731 files) completed successfully end-to-end with stable memory and no fallback.
+- **Docs**: README now includes a `Portal 2` ZIP vs PNG comparative benchmark reference table.
+
 ## [1.13.3] - 2026-04-14
 
 ### Performance: SIMD Adler32, streaming decode progress, zero-copy optimizations

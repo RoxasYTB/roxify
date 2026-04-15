@@ -77,6 +77,17 @@ Roxify 1.13.4 adds adaptive parallel preload for small files before feeding Zstd
 | Glados-Disc (19,645 files) | NTFS under Linux | 81.608 s | 2.189 s | 37.3x |
 | Gmod (3,936 files) | NTFS under Linux | 22.578 s | 4.517 s | 5.0x |
 
+### Portal 2 comparative reference: ZIP vs PNG
+
+Measured on the full `Portal 2` game directory (`3,731 files`, `193 folders`, `12.83 GiB` logical source) to compare classic ZIP packaging against Roxify PNG packing on the same dataset.
+
+| Format | Time (s) | Time (min:sec) | Throughput | Compression ratio |
+| --- | ---: | --- | ---: | ---: |
+| ZIP Encode | 633,87 | 10 min 33 s | 21,73 Mo/s | 36,08% |
+| ZIP Decode | 232,88 | 3 min 52 s | 59,15 Mo/s | - |
+| PNG Encode | 157,80 | 2 min 37 s | 87,30 Mo/s | 41,09% |
+| PNG Decode | 156,00 | 2 min 36 s | 88,30 Mo/s | - |
+
 ### Data integrity
 
 All benchmark runs completed with byte-exact roundtrip validation. Decode output matched original logical source bytes on every dataset.
