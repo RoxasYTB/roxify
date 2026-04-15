@@ -7,6 +7,8 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 struct PngSignature([u8; 8]);
 
 const PNG_SIG: PngSignature = PngSignature([137, 80, 78, 71, 13, 10, 26, 10]);
+const HEADER_VERSION_V1: u8 = 1;
+const HEADER_VERSION_V2: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub struct PngChunk {
@@ -367,21 +369,10 @@ fn extract_payload_from_embedded_nn(png_data: &[u8]) -> Result<Vec<u8>, String> 
         }
         found.ok_or("PXL1 not found in reconstructed pixels")?
     };
-    let mut idx = pos + 4;
-    if idx + 2 > logical_rgb.len() { return Err("Truncated header in embedded NN".to_string()); }
-    let _version = logical_rgb[idx]; idx += 1;
-    let name_len = logical_rgb[idx] as usize; idx += 1;
-    if idx + name_len > logical_rgb.len() { return Err("Truncated name in embedded NN".to_string()); }
-    idx += name_len;
-    if idx + 4 > logical_rgb.len() { return Err("Truncated payload length in embedded NN".to_string()); }
-    let payload_len = ((logical_rgb[idx] as u32) << 24)
-        | ((logical_rgb[idx+1] as u32) << 16)
-        | ((logical_rgb[idx+2] as u32) << 8)
-        | (logical_rgb[idx+3] as u32);
-    idx += 4;
-    let end = idx + (payload_len as usize);
+    let header = parse_pixel_payload_header(&logical_rgb, pos)?;
+    let end = header.payload_offset + header.payload_len;
     if end > logical_rgb.len() { return Err("Truncated payload in embedded NN".to_string()); }
-    Ok(logical_rgb[idx..end].to_vec())
+    Ok(logical_rgb[header.payload_offset..end].to_vec())
 }
 
 pub fn extract_name_from_png(png_data: &[u8]) -> Option<String> {
@@ -420,6 +411,64 @@ fn extract_name_direct(png_data: &[u8]) -> Option<String> {
     String::from_utf8(raw[idx..idx + name_len].to_vec()).ok()
 }
 
+struct PixelPayloadHeader {
+    payload_offset: usize,
+    payload_len: usize,
+}
+
+fn parse_pixel_payload_header(buf: &[u8], pos: usize) -> Result<PixelPayloadHeader, String> {
+    let mut idx = pos + 4;
+    if idx + 2 > buf.len() {
+        return Err("Truncated header".to_string());
+    }
+
+    let version = buf[idx];
+    idx += 1;
+    let name_len = buf[idx] as usize;
+    idx += 1;
+    if idx + name_len > buf.len() {
+        return Err("Truncated name".to_string());
+    }
+    idx += name_len;
+
+    let payload_len = match version {
+        HEADER_VERSION_V1 => {
+            if idx + 4 > buf.len() {
+                return Err("Truncated payload length".to_string());
+            }
+            let len = u32::from_be_bytes([buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]) as u64;
+            idx += 4;
+            len
+        }
+        HEADER_VERSION_V2 => {
+            if idx + 8 > buf.len() {
+                return Err("Truncated payload length64".to_string());
+            }
+            let len = u64::from_be_bytes([
+                buf[idx],
+                buf[idx + 1],
+                buf[idx + 2],
+                buf[idx + 3],
+                buf[idx + 4],
+                buf[idx + 5],
+                buf[idx + 6],
+                buf[idx + 7],
+            ]);
+            idx += 8;
+            len
+        }
+        other => return Err(format!("Unsupported header version {}", other)),
+    };
+
+    let payload_len = usize::try_from(payload_len)
+        .map_err(|_| "Payload too large for this platform".to_string())?;
+
+    Ok(PixelPayloadHeader {
+        payload_offset: idx,
+        payload_len,
+    })
+}
+
 fn extract_name_from_embedded_nn(png_data: &[u8]) -> Result<String, String> {
     let (pixels, width, height) = decode_to_rgba_grid(png_data)?;
     let logical_rgb = reconstruct_logical_pixels_from_nn(&pixels, width, height)?;
@@ -435,21 +484,10 @@ fn extract_name_from_embedded_nn(png_data: &[u8]) -> Result<String, String> {
 fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
     let raw = decode_to_rgb(png_data)?;
     let pos = find_pixel_header(&raw)?;
-    let mut idx = pos + 4;
-    if idx + 2 > raw.len() { return Err("Truncated header".to_string()); }
-    let _version = raw[idx]; idx += 1;
-    let name_len = raw[idx] as usize; idx += 1;
-    if idx + name_len > raw.len() { return Err("Truncated name".to_string()); }
-    idx += name_len;
-    if idx + 4 > raw.len() { return Err("Truncated payload length".to_string()); }
-    let payload_len = ((raw[idx] as u32) << 24)
-        | ((raw[idx+1] as u32) << 16)
-        | ((raw[idx+2] as u32) << 8)
-        | (raw[idx+3] as u32);
-    idx += 4;
-    let end = idx + (payload_len as usize);
+    let header = parse_pixel_payload_header(&raw, pos)?;
+    let end = header.payload_offset + header.payload_len;
     if end > raw.len() { return Err("Truncated payload".to_string()); }
-    let payload = raw[idx..end].to_vec();
+    let payload = raw[header.payload_offset..end].to_vec();
     Ok(payload)
 }
 
@@ -482,19 +520,8 @@ fn extract_file_list_from_embedded_nn(png_data: &[u8]) -> Result<String, String>
     let (pixels, width, height) = decode_to_rgba_grid(png_data)?;
     let logical_rgb = reconstruct_logical_pixels_from_nn(&pixels, width, height)?;
     let pos = find_pixel_header(&logical_rgb)?;
-    let mut idx = pos + 4;
-    if idx + 2 > logical_rgb.len() { return Err("Truncated".to_string()); }
-    idx += 1;
-    let name_len = logical_rgb[idx] as usize; idx += 1;
-    if idx + name_len > logical_rgb.len() { return Err("Truncated".to_string()); }
-    idx += name_len;
-    if idx + 4 > logical_rgb.len() { return Err("Truncated".to_string()); }
-    let payload_len = ((logical_rgb[idx] as u32) << 24)
-        | ((logical_rgb[idx+1] as u32) << 16)
-        | ((logical_rgb[idx+2] as u32) << 8)
-        | (logical_rgb[idx+3] as u32);
-    idx += 4;
-    idx += payload_len as usize;
+    let header = parse_pixel_payload_header(&logical_rgb, pos)?;
+    let mut idx = header.payload_offset + header.payload_len;
     if idx + 8 > logical_rgb.len() { return Err("No file list in embedded NN".to_string()); }
     if &logical_rgb[idx..idx + 4] != b"rXFL" { return Err("No rXFL marker in embedded NN".to_string()); }
     idx += 4;
@@ -511,19 +538,8 @@ fn extract_file_list_from_embedded_nn(png_data: &[u8]) -> Result<String, String>
 fn extract_file_list_direct(png_data: &[u8]) -> Result<String, String> {
     let raw = decode_to_rgb(png_data)?;
     let pos = find_pixel_header(&raw)?;
-    let mut idx = pos + 4;
-    if idx + 2 > raw.len() { return Err("Truncated header".to_string()); }
-    idx += 1;
-    let name_len = raw[idx] as usize; idx += 1;
-    if idx + name_len > raw.len() { return Err("Truncated name".to_string()); }
-    idx += name_len;
-    if idx + 4 > raw.len() { return Err("Truncated payload length".to_string()); }
-    let payload_len = ((raw[idx] as u32) << 24)
-        | ((raw[idx+1] as u32) << 16)
-        | ((raw[idx+2] as u32) << 8)
-        | (raw[idx+3] as u32);
-    idx += 4;
-    idx += payload_len as usize;
+    let header = parse_pixel_payload_header(&raw, pos)?;
+    let mut idx = header.payload_offset + header.payload_len;
     if idx + 8 > raw.len() { return Err("No file list in pixel data".to_string()); }
     if &raw[idx..idx + 4] != b"rXFL" { return Err("No rXFL marker in pixel data".to_string()); }
     idx += 4;

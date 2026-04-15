@@ -1,10 +1,13 @@
-use std::io::Read;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use cipher::{KeyIvInit, StreamCipher};
 
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const MARKER_BYTES: usize = 12;
 const PACK_MAGIC: [u8; 4] = 0x524f5850u32.to_be_bytes();
+const HEADER_VERSION_V1: u8 = 1;
+const HEADER_VERSION_V2: u8 = 2;
 
 type Aes256Ctr = ctr::Ctr64BE<aes::Aes256>;
 
@@ -38,26 +41,19 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
     passphrase: Option<&str>,
     progress: Option<DecodeProgressCallback>,
 ) -> Result<Vec<String>, String> {
-    let file = std::fs::File::open(png_path).map_err(|e| format!("open: {}", e))?;
-    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| format!("mmap: {}", e))? };
-    let data = &mmap[..];
-
-    if data.len() < 8 || &data[0..8] != &[137, 80, 78, 71, 13, 10, 26, 10] {
-        return Err("Not a PNG file".into());
-    }
+    let mut meta_file = File::open(png_path).map_err(|e| format!("open: {}", e))?;
+    let (width, height, idat_ranges, total_expected) = parse_png_metadata(&mut meta_file)?;
 
     if let Some(ref cb) = progress {
         cb(2, 100, "parsing_png");
     }
 
-    let (width, height, idat_ranges) = parse_png_header(data)?;
-    let total_expected = parse_rxfl_total_bytes(data).unwrap_or(0);
-
     if let Some(ref cb) = progress {
         cb(5, 100, "reading_header");
     }
 
-    let mut reader = DeflatePixelReader::new(data, width, height, idat_ranges)
+    let data_file = File::open(png_path).map_err(|e| format!("open data: {}", e))?;
+    let mut reader = DeflatePixelReader::new(data_file, width, height, idat_ranges)
         .map_err(|e| format!("init deflate reader: {}", e))?;
 
     let mut marker_buf = [0u8; MARKER_BYTES];
@@ -79,25 +75,22 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
         reader.read_exact(&mut name_buf).map_err(|e| format!("read name: {}", e))?;
     }
 
-    let mut plen_buf = [0u8; 4];
-    reader.read_exact(&mut plen_buf).map_err(|e| format!("read payload_len: {}", e))?;
-    let payload_len = u32::from_be_bytes(plen_buf) as u64;
+    let payload_len = read_payload_len(&mut reader, hdr[0])?;
 
     if let Some(ref cb) = progress {
         cb(8, 100, "decrypting");
     }
 
-    let payload_reader = reader.take(payload_len);
+    let mut enc_byte = [0u8; 1];
+    reader.read_exact(&mut enc_byte).map_err(|e| format!("read first byte: {}", e))?;
+    let remaining_payload_len = payload_len.saturating_sub(1);
 
-    let first_byte_reader = FirstByteReader::new(payload_reader);
-    let (enc_byte, remaining_reader) = first_byte_reader.into_parts()?;
-
-    match enc_byte {
+    match enc_byte[0] {
         0x00 => {
             if let Some(ref cb) = progress {
                 cb(10, 100, "decompressing");
             }
-            let mut decoder = zstd::stream::Decoder::new(remaining_reader)
+            let mut decoder = zstd::stream::Decoder::new(reader)
                 .map_err(|e| format!("zstd decoder: {}", e))?;
             decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
             read_rox1_and_unpack_with_progress(decoder, out_dir, files_opt, progress, total_expected)
@@ -106,7 +99,7 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
             let pass = passphrase.ok_or("Passphrase required for AES-CTR decryption")?;
             let mut salt = [0u8; 16];
             let mut iv = [0u8; 16];
-            let mut r = remaining_reader;
+            let mut r = reader.take(remaining_payload_len);
             r.read_exact(&mut salt).map_err(|e| format!("read salt: {}", e))?;
             r.read_exact(&mut iv).map_err(|e| format!("read iv: {}", e))?;
 
@@ -115,7 +108,7 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
                 .map_err(|e| format!("AES-CTR init: {}", e))?;
 
             let hmac_size = 32u64;
-            let encrypted_data_len = payload_len - 1 - 16 - 16 - hmac_size;
+            let encrypted_data_len = remaining_payload_len - 16 - 16 - hmac_size;
             let ctr_reader = CtrDecryptReader::new(r.take(encrypted_data_len), cipher);
 
             if let Some(ref cb) = progress {
@@ -126,7 +119,23 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
             decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max: {}", e))?;
             read_rox1_and_unpack_with_progress(decoder, out_dir, files_opt, progress, total_expected)
         }
-        _ => Err(format!("Unsupported encryption (enc=0x{:02x}) in streaming decode", enc_byte)),
+        _ => Err(format!("Unsupported encryption (enc=0x{:02x}) in streaming decode", enc_byte[0])),
+    }
+}
+
+fn read_payload_len<R: Read>(reader: &mut R, version: u8) -> Result<u64, String> {
+    match version {
+        HEADER_VERSION_V1 => {
+            let mut plen_buf = [0u8; 4];
+            reader.read_exact(&mut plen_buf).map_err(|e| format!("read payload_len: {}", e))?;
+            Ok(u32::from_be_bytes(plen_buf) as u64)
+        }
+        HEADER_VERSION_V2 => {
+            let mut plen_buf = [0u8; 8];
+            reader.read_exact(&mut plen_buf).map_err(|e| format!("read payload_len64: {}", e))?;
+            Ok(u64::from_be_bytes(plen_buf))
+        }
+        other => Err(format!("Unsupported header version {}", other)),
     }
 }
 
@@ -156,51 +165,59 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     }
 }
 
-fn parse_png_header(data: &[u8]) -> Result<(usize, usize, Vec<(usize, usize)>), String> {
-    let mut pos = 8;
+fn parse_png_metadata(file: &mut File) -> Result<(usize, usize, Vec<(u64, u64)>, u64), String> {
+    let mut sig = [0u8; 8];
+    file.read_exact(&mut sig).map_err(|e| format!("read sig: {}", e))?;
+    if sig != [137, 80, 78, 71, 13, 10, 26, 10] {
+        return Err("Not a PNG file".into());
+    }
 
     let mut width = 0usize;
     let mut height = 0usize;
     let mut idat_ranges = Vec::new();
+    let mut total_expected = 0u64;
 
-    while pos + 12 <= data.len() {
-        let chunk_len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-        let chunk_type = &data[pos + 4..pos + 8];
-        let chunk_data_start = pos + 8;
+    loop {
+        let mut header = [0u8; 8];
+        match file.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(format!("read chunk header: {}", err)),
+        }
+
+        let chunk_len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
+        let chunk_type = &header[4..8];
+        let chunk_data_start = file.stream_position().map_err(|e| format!("stream position: {}", e))?;
         let chunk_data_end = chunk_data_start
             .checked_add(chunk_len)
             .ok_or_else(|| "PNG chunk length overflow".to_string())?;
-        let chunk_end = chunk_data_end
-            .checked_add(4)
-            .ok_or_else(|| "PNG chunk CRC overflow".to_string())?;
-
-        if chunk_end > data.len() {
-            return Err(format!("Invalid PNG chunk length for {:?}", chunk_type));
-        }
 
         if chunk_type == b"IHDR" {
             if chunk_len < 13 {
                 return Err("Invalid IHDR".into());
             }
-            width = u32::from_be_bytes([
-                data[chunk_data_start],
-                data[chunk_data_start + 1],
-                data[chunk_data_start + 2],
-                data[chunk_data_start + 3],
-            ]) as usize;
-            height = u32::from_be_bytes([
-                data[chunk_data_start + 4],
-                data[chunk_data_start + 5],
-                data[chunk_data_start + 6],
-                data[chunk_data_start + 7],
-            ]) as usize;
+            let mut ihdr = [0u8; 13];
+            file.read_exact(&mut ihdr).map_err(|e| format!("read IHDR: {}", e))?;
+            width = u32::from_be_bytes([ihdr[0], ihdr[1], ihdr[2], ihdr[3]]) as usize;
+            height = u32::from_be_bytes([ihdr[4], ihdr[5], ihdr[6], ihdr[7]]) as usize;
+            if chunk_len > 13 {
+                file.seek(SeekFrom::Current((chunk_len - 13) as i64)).map_err(|e| format!("seek IHDR: {}", e))?;
+            }
         } else if chunk_type == b"IDAT" {
             idat_ranges.push((chunk_data_start, chunk_data_end));
+            file.seek(SeekFrom::Current(chunk_len as i64)).map_err(|e| format!("seek IDAT: {}", e))?;
+        } else if chunk_type == b"rXFL" {
+            let json_len = usize::try_from(chunk_len).map_err(|_| "rXFL too large".to_string())?;
+            let mut json = vec![0u8; json_len];
+            file.read_exact(&mut json).map_err(|e| format!("read rXFL: {}", e))?;
+            total_expected = parse_rxfl_total_bytes(&json).unwrap_or(total_expected);
         } else if chunk_type == b"IEND" {
             break;
+        } else {
+            file.seek(SeekFrom::Current(chunk_len as i64)).map_err(|e| format!("seek chunk: {}", e))?;
         }
 
-        pos = chunk_end;
+        file.seek(SeekFrom::Current(4)).map_err(|e| format!("seek crc: {}", e))?;
     }
 
     if width == 0 || height == 0 {
@@ -210,40 +227,26 @@ fn parse_png_header(data: &[u8]) -> Result<(usize, usize, Vec<(usize, usize)>), 
         return Err("IDAT not found".into());
     }
 
-    Ok((width, height, idat_ranges))
+    Ok((width, height, idat_ranges, total_expected))
 }
 
-fn parse_rxfl_total_bytes(data: &[u8]) -> Option<u64> {
-    let mut pos = 8;
-    while pos + 12 <= data.len() {
-        let chunk_len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-        let chunk_type = &data[pos + 4..pos + 8];
-        let chunk_data_start = pos + 8;
-
-        if chunk_type == b"rXFL" && chunk_data_start + chunk_len <= data.len() {
-            let json_bytes = &data[chunk_data_start..chunk_data_start + chunk_len];
-            if let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(json_bytes) {
-                let total: u64 = entries.iter()
-                    .filter_map(|e| e.get("size").and_then(|s| s.as_u64()))
-                    .sum();
-                return Some(total);
-            }
-        } else if chunk_type == b"IEND" {
-            break;
-        }
-
-        pos = chunk_data_start + chunk_len + 4;
+fn parse_rxfl_total_bytes(json_bytes: &[u8]) -> Option<u64> {
+    if let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(json_bytes) {
+        return Some(entries.iter()
+            .filter_map(|e| e.get("size").and_then(|s| s.as_u64()))
+            .sum());
     }
     None
 }
 
-struct DeflatePixelReader<'a> {
-    data: &'a [u8],
+struct DeflatePixelReader {
+    file: File,
     height: usize,
-    idat_ranges: Vec<(usize, usize)>,
+    idat_ranges: Vec<(u64, u64)>,
     range_index: usize,
-    offset: usize,
-    range_end: usize,
+    offset: u64,
+    range_end: u64,
+    dropped_until: u64,
     block_remaining: usize,
     current_row: usize,
     col_in_row: usize,
@@ -251,19 +254,22 @@ struct DeflatePixelReader<'a> {
     row_bytes: usize,
 }
 
-impl<'a> DeflatePixelReader<'a> {
-    fn new(data: &'a [u8], width: usize, height: usize, idat_ranges: Vec<(usize, usize)>) -> Result<Self, String> {
+impl DeflatePixelReader {
+    fn new(mut file: File, width: usize, height: usize, idat_ranges: Vec<(u64, u64)>) -> Result<Self, String> {
         let Some(&(offset, range_end)) = idat_ranges.first() else {
             return Err("IDAT not found".to_string());
         };
+        crate::io_advice::advise_file_sequential(&file);
+        file.seek(SeekFrom::Start(offset)).map_err(|e| format!("seek first IDAT: {}", e))?;
         let row_bytes = width * 3;
         let mut reader = Self {
-            data,
+            file,
             height,
             idat_ranges,
             range_index: 0,
             offset,
             range_end,
+            dropped_until: offset,
             block_remaining: 0,
             current_row: 0,
             col_in_row: 0,
@@ -275,32 +281,48 @@ impl<'a> DeflatePixelReader<'a> {
         Ok(reader)
     }
 
-    fn advance_range(&mut self) -> bool {
+    fn advance_range(&mut self) -> Result<bool, std::io::Error> {
         while self.offset >= self.range_end {
+            crate::io_advice::advise_drop(&self.file, self.dropped_until, self.range_end.saturating_sub(self.dropped_until));
+            self.dropped_until = self.range_end;
             self.range_index += 1;
             let Some(&(offset, end)) = self.idat_ranges.get(self.range_index) else {
-                return false;
+                return Ok(false);
             };
+            self.file.seek(SeekFrom::Start(offset))?;
             self.offset = offset;
             self.range_end = end;
+            self.dropped_until = offset;
         }
-        true
+        Ok(true)
+    }
+
+    fn maybe_drop_consumed(&mut self) {
+        let consumed = self.offset.saturating_sub(self.dropped_until);
+        if consumed >= crate::io_advice::INPUT_DROP_GRANULARITY {
+            crate::io_advice::advise_drop(&self.file, self.dropped_until, consumed);
+            self.dropped_until = self.offset;
+        }
     }
 
     fn read_stream_bytes(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         let mut written = 0;
         while written < buf.len() {
-            if !self.advance_range() {
+            if !self.advance_range()? {
                 break;
             }
-            let available = self.range_end - self.offset;
+            let available = usize::try_from(self.range_end - self.offset).unwrap_or(buf.len() - written);
             if available == 0 {
                 continue;
             }
             let take = available.min(buf.len() - written);
-            buf[written..written + take].copy_from_slice(&self.data[self.offset..self.offset + take]);
-            self.offset += take;
-            written += take;
+            let read = self.file.read(&mut buf[written..written + take])?;
+            if read == 0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"));
+            }
+            self.offset += read as u64;
+            written += read;
+            self.maybe_drop_consumed();
         }
         Ok(written)
     }
@@ -316,16 +338,18 @@ impl<'a> DeflatePixelReader<'a> {
     fn skip_stream_bytes(&mut self, count: usize) -> Result<(), std::io::Error> {
         let mut remaining = count;
         while remaining > 0 {
-            if !self.advance_range() {
+            if !self.advance_range()? {
                 return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"));
             }
-            let available = self.range_end - self.offset;
+            let available = usize::try_from(self.range_end - self.offset).unwrap_or(remaining);
             if available == 0 {
                 continue;
             }
             let take = available.min(remaining);
-            self.offset += take;
+            self.file.seek(SeekFrom::Current(take as i64))?;
+            self.offset += take as u64;
             remaining -= take;
+            self.maybe_drop_consumed();
         }
         Ok(())
     }
@@ -379,7 +403,7 @@ impl<'a> DeflatePixelReader<'a> {
     }
 }
 
-impl<'a> Read for DeflatePixelReader<'a> {
+impl Read for DeflatePixelReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut filled = 0;
 
@@ -413,22 +437,6 @@ impl<'a> Read for DeflatePixelReader<'a> {
         }
 
         Ok(filled)
-    }
-}
-
-struct FirstByteReader<R: Read> {
-    inner: R,
-}
-
-impl<R: Read> FirstByteReader<R> {
-    fn new(inner: R) -> Self {
-        Self { inner }
-    }
-
-    fn into_parts(mut self) -> Result<(u8, impl Read), String> {
-        let mut byte = [0u8; 1];
-        self.inner.read_exact(&mut byte).map_err(|e| format!("read first byte: {}", e))?;
-        Ok((byte[0], self.inner))
     }
 }
 
@@ -516,6 +524,8 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
             std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
         );
         std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;
+        let file = f.into_inner().map_err(|e| format!("flush {:?}: {}", dest, e.error()))?;
+        crate::io_advice::sync_and_drop(&file, entry_size);
         written.push(safe.to_string_lossy().to_string());
         if files_filter.is_some() {
             remaining = remaining.saturating_sub(1);
@@ -548,6 +558,7 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_png_header_collects_all_idat_ranges() {
@@ -565,11 +576,18 @@ mod tests {
         crate::png_chunk_writer::write_png_chunk(&mut png, b"IDAT", &[4, 5]).unwrap();
         crate::png_chunk_writer::write_png_chunk(&mut png, b"IEND", &[]).unwrap();
 
-        let (_, _, ranges) = parse_png_header(&png).unwrap();
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let path = std::env::temp_dir().join(format!("rox_png_header_test_{}.png", ms));
+        std::fs::write(&path, &png).unwrap();
+
+        let mut file = File::open(&path).unwrap();
+        let (_, _, ranges, _) = parse_png_metadata(&mut file).unwrap();
 
         assert_eq!(ranges.len(), 2);
-        assert_eq!(&png[ranges[0].0..ranges[0].1], &[1, 2, 3]);
-        assert_eq!(&png[ranges[1].0..ranges[1].1], &[4, 5]);
+        assert_eq!(&png[ranges[0].0 as usize..ranges[0].1 as usize], &[1, 2, 3]);
+        assert_eq!(&png[ranges[1].0 as usize..ranges[1].1 as usize], &[4, 5]);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -586,11 +604,18 @@ mod tests {
         data.extend_from_slice(&[203, 204]);
         data.extend_from_slice(&deflate[12..]);
 
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let path = std::env::temp_dir().join(format!("rox_deflate_reader_test_{}.bin", ms));
+        std::fs::write(&path, &data).unwrap();
+
         let ranges = vec![(0, 4), (7, 15), (17, 23)];
-        let mut reader = DeflatePixelReader::new(&data, 2, 1, ranges).unwrap();
+        let file = File::open(&path).unwrap();
+        let mut reader = DeflatePixelReader::new(file, 2, 1, ranges).unwrap();
         let mut out = Vec::new();
         reader.read_to_end(&mut out).unwrap();
 
         assert_eq!(out, vec![10, 11, 12, 13, 14, 15]);
+
+        let _ = std::fs::remove_file(path);
     }
 }
