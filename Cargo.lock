@@ -920,6 +920,7 @@ dependencies = [
  "ctr",
  "hmac",
  "image",
+ "libc",
  "libsais",
  "memmap2",
  "mimalloc",

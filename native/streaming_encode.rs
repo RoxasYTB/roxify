@@ -22,6 +22,7 @@ const PARALLEL_IO_FILE_THRESHOLD: u64 = MB;
 const PARALLEL_IO_BATCH_BYTES: u64 = 128 * MB;
 const PARALLEL_IO_BATCH_FILES: usize = 512;
 const PARALLEL_IO_MIN_FILES: usize = 8;
+const HEADER_VERSION_V2: u8 = 2;
 
 pub type ProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
 
@@ -347,12 +348,12 @@ fn write_png_from_zst_mem(
 
     let encrypted_payload_len = enc_header_len + zst_size + hmac_trailer_len;
 
-    let version = 1u8;
+    let version = HEADER_VERSION_V2;
     let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
     let name_len = name_bytes.len().min(255) as u8;
-    let payload_len_bytes = (encrypted_payload_len as u32).to_be_bytes();
+    let payload_len_bytes = (encrypted_payload_len as u64).to_be_bytes();
 
-    let mut meta_header = Vec::with_capacity(1 + 1 + name_len as usize + 4);
+    let mut meta_header = Vec::with_capacity(1 + 1 + name_len as usize + 8);
     meta_header.push(version);
     meta_header.push(name_len);
     if name_len > 0 {

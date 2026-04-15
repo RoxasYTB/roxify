@@ -5,6 +5,7 @@ use crate::png_chunk_writer::{write_chunked_idat_bytes, write_png_chunk};
 const MAGIC: &[u8] = b"ROX1";
 const PIXEL_MAGIC: &[u8] = b"PXL1";
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
+const HEADER_VERSION_V2: u8 = 2;
 
 const MARKER_START: [(u8, u8, u8); 3] = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
 const MARKER_END: [(u8, u8, u8); 3] = [(0, 0, 255), (0, 255, 0), (255, 0, 0)];
@@ -206,12 +207,12 @@ fn build_flat_pixel_buffer(
 }
 
 fn build_meta_pixel_with_name_and_filelist(payload: &[u8], name: Option<&str>, file_list: Option<&str>) -> Result<Vec<u8>> {
-    let version = 1u8;
+    let version = HEADER_VERSION_V2;
     let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
     let name_len = name_bytes.len().min(255) as u8;
-    let payload_len_bytes = (payload.len() as u32).to_be_bytes();
+    let payload_len_bytes = (payload.len() as u64).to_be_bytes();
 
-    let mut result = Vec::with_capacity(1 + 1 + name_len as usize + 4 + payload.len() + 256);
+    let mut result = Vec::with_capacity(1 + 1 + name_len as usize + 8 + payload.len() + 256);
     result.push(version);
     result.push(name_len);
 

@@ -10,6 +10,7 @@ const MARKER_START: [(u8, u8, u8); 3] = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
 const MARKER_END: [(u8, u8, u8); 3] = [(0, 0, 255), (0, 255, 0), (255, 0, 0)];
 const MARKER_ZSTD: (u8, u8, u8) = (0, 255, 0);
 const MAGIC: &[u8] = b"ROX1";
+const HEADER_VERSION_V2: u8 = 2;
 
 pub fn encode_to_png_file(
     data: &[u8],
@@ -162,12 +163,12 @@ fn build_flat_buffer(
 }
 
 fn build_meta_pixel(payload: &[u8], name: Option<&str>, file_list: Option<&str>) -> anyhow::Result<Vec<u8>> {
-    let version = 1u8;
+    let version = HEADER_VERSION_V2;
     let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
     let name_len = name_bytes.len().min(255) as u8;
-    let payload_len_bytes = (payload.len() as u32).to_be_bytes();
+    let payload_len_bytes = (payload.len() as u64).to_be_bytes();
 
-    let mut result = Vec::with_capacity(1 + 1 + name_len as usize + 4 + payload.len() + 256);
+    let mut result = Vec::with_capacity(1 + 1 + name_len as usize + 8 + payload.len() + 256);
     result.push(version);
     result.push(name_len);
     if name_len > 0 {

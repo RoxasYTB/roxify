@@ -12,6 +12,7 @@ mod packer;
 mod crypto;
 mod png_utils;
 mod png_chunk_writer;
+mod io_advice;
 mod audio;
 mod reconstitution;
 mod archive;
@@ -388,7 +389,7 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                         return Ok(());
                     }
                     Err(e) => {
-                        eprintln!("Streaming decode failed ({}), falling back to in-memory", e);
+                        return Err(anyhow::anyhow!("Streaming decode failed: {}", e));
                     }
                 }
             }

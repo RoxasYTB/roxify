@@ -290,9 +290,6 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     total_expected: u64,
 ) -> Result<Vec<String>> {
     let mut written = Vec::new();
-    let mut buf: Vec<u8> = Vec::new();
-    let mut pos: usize = 0;
-    let mut temp = [0u8; 64 * 1024];
     let files_filter: Option<std::collections::HashSet<String>> = files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
     let mut requested = files_filter.as_ref().map(|s| s.len()).unwrap_or(usize::MAX);
     let mut file_count = 0usize;
@@ -300,94 +297,59 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     let mut bytes_processed = 0u64;
     let mut last_pct = 10u64;
 
-        let mut header_parsed = false;
-    let debug = std::env::var("ROX_DEBUG").is_ok();
-    if debug { eprintln!("[rox debug] unpack_stream_to_dir called (out_dir={:?})", out_dir); }
+    let mut magic = read_pack_u32(reader)?;
+    if magic == 0x524f5831u32 {
+        magic = read_pack_u32(reader)?;
+    }
+    if magic == 0x524f5849u32 {
+        let index_len = read_pack_u32(reader)? as u64;
+        discard_pack_bytes(reader, index_len, &mut bytes_processed, file_count, processed_files, total_expected, progress, &mut last_pct)?;
+        magic = read_pack_u32(reader)?;
+    }
+    if magic != 0x524f5850u32 {
+        return Err(anyhow::anyhow!("Invalid pack magic: 0x{:08x}", magic));
+    }
 
-        loop {
-                loop {
-                        if !header_parsed {
-                if pos + 8 > buf.len() { break; }
-                if debug {
-                    eprintln!("[rox debug] buf.len={} pos={} first16={:?}", buf.len(), pos, &buf[0..std::cmp::min(16, buf.len())]);
-                    eprintln!("[rox debug] after first debug");
-                }
-                if debug { eprintln!("[rox debug] before reading magic_header"); }
-                let magic_header = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap());
-                if debug { eprintln!("[rox debug] magic_header=0x{:08x}", magic_header); }
-                if magic_header == 0x524f5850u32 {
-                                        pos += 4;
-                                        file_count = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap()) as usize;
-                    pos += 4;
-                    header_parsed = true;
-                    if debug { eprintln!("[rox debug] header parsed, file_count={}", file_count); }
-                } else if magic_header == 0x524f5831u32 {
-                                        if debug { eprintln!("[rox debug] found ROX1 outer magic, skipping 4 bytes"); }
-                    pos += 4;
-                    continue;                 } else {
-                                    }
-            }
+    file_count = read_pack_u32(reader)? as usize;
 
-                        if pos + 8 > buf.len() { break; }
-            let magic = u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap());
-            if magic == 0x524f5849u32 {
-                                if pos + 8 > buf.len() { break; }
-                let index_len = u32::from_be_bytes(buf[pos+4..pos+8].try_into().unwrap()) as usize;
-                if pos + 8 + index_len > buf.len() { break; }
-                                pos += 8 + index_len;
-            }
+    for _ in 0..file_count {
+        let name_len = read_pack_u16(reader)? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        read_pack_exact(reader, &mut name_bytes)?;
+        let name = String::from_utf8_lossy(&name_bytes).to_string();
+        let size = read_pack_u64(reader)?;
 
-                                    if pos + 2 > buf.len() { break; }
-            let name_len = u16::from_be_bytes(buf[pos..pos+2].try_into().unwrap()) as usize;
-            if pos + 2 + name_len + 8 > buf.len() { break; }
-            let name = String::from_utf8_lossy(&buf[pos+2..pos+2+name_len]).to_string();
-            let size = u64::from_be_bytes(buf[pos+2+name_len..pos+2+name_len+8].try_into().unwrap()) as usize;
-            if pos + 2 + name_len + 8 + size > buf.len() { break; }
+        let should_write = match &files_filter {
+            Some(set) => set.contains(&name),
+            None => true,
+        };
 
-            let content_start = pos + 2 + name_len + 8;
-            let content_end = content_start + size;
-            let content = &buf[content_start..content_end];
-            processed_files = processed_files.saturating_add(1);
-            bytes_processed = bytes_processed.saturating_add(size as u64);
-
-                        let p = Path::new(&name);
-            let mut safe = std::path::PathBuf::new();
-            for comp in p.components() {
-                if let std::path::Component::Normal(osstr) = comp {
-                    safe.push(osstr);
-                }
-            }
+        if should_write {
+            let safe = sanitize_pack_path(&name);
             let dest = out_dir.join(&safe);
-
-            if files_filter.is_none() || files_filter.as_ref().map_or(false, |s| s.contains(&name)) {
-                if let Some(parent) = dest.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
-                }
-                std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
-                written.push(safe.to_string_lossy().to_string());
-                if let Some(_set) = files_filter.as_ref() {
-                    requested = requested.saturating_sub(1);
-                    report_unpack_progress(progress, total_expected, bytes_processed, file_count, processed_files, &mut last_pct);
-                    if requested == 0 {
-                        if let Some(cb) = progress {
-                            cb(99, 100, "finishing");
-                        }
-                        return Ok(written);
-                    }
-                }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
             }
-
-            report_unpack_progress(progress, total_expected, bytes_processed, file_count, processed_files, &mut last_pct);
-
-            pos = content_end;                         if pos > 0 {
-                buf.drain(0..pos);
-                pos = 0;
+            let file = std::fs::File::create(&dest).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+            let mut writer = std::io::BufWriter::with_capacity(file_buffer_capacity(size), file);
+            copy_pack_bytes(reader, &mut writer, size, &mut bytes_processed, file_count, processed_files, total_expected, progress, &mut last_pct)?;
+            finalize_output_file(writer, size, &dest)?;
+            written.push(safe.to_string_lossy().to_string());
+            if files_filter.is_some() {
+                requested = requested.saturating_sub(1);
             }
+        } else {
+            discard_pack_bytes(reader, size, &mut bytes_processed, file_count, processed_files, total_expected, progress, &mut last_pct)?;
         }
 
-                match reader.read(&mut temp) {
-            Ok(0) => break,             Ok(n) => buf.extend_from_slice(&temp[..n]),
-            Err(e) => return Err(anyhow::anyhow!("Stream read error: {}", e)),
+        processed_files = processed_files.saturating_add(1);
+        report_unpack_progress(progress, total_expected, bytes_processed, file_count, processed_files, &mut last_pct);
+
+        if requested == 0 {
+            if let Some(cb) = progress {
+                cb(99, 100, "finishing");
+            }
+            return Ok(written);
         }
     }
 
@@ -398,11 +360,124 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     Ok(written)
 }
 
+fn read_pack_exact<R: std::io::Read>(reader: &mut R, buf: &mut [u8]) -> Result<()> {
+    reader.read_exact(buf).map_err(|e| anyhow::anyhow!("Stream read error: {}", e))
+}
+
+fn read_pack_u16<R: std::io::Read>(reader: &mut R) -> Result<u16> {
+    let mut buf = [0u8; 2];
+    read_pack_exact(reader, &mut buf)?;
+    Ok(u16::from_be_bytes(buf))
+}
+
+fn read_pack_u32<R: std::io::Read>(reader: &mut R) -> Result<u32> {
+    let mut buf = [0u8; 4];
+    read_pack_exact(reader, &mut buf)?;
+    Ok(u32::from_be_bytes(buf))
+}
+
+fn read_pack_u64<R: std::io::Read>(reader: &mut R) -> Result<u64> {
+    let mut buf = [0u8; 8];
+    read_pack_exact(reader, &mut buf)?;
+    Ok(u64::from_be_bytes(buf))
+}
+
+fn sanitize_pack_path(name: &str) -> std::path::PathBuf {
+    let p = Path::new(name);
+    let mut safe = std::path::PathBuf::new();
+    for comp in p.components() {
+        if let std::path::Component::Normal(osstr) = comp {
+            safe.push(osstr);
+        }
+    }
+    safe
+}
+
+fn file_buffer_capacity(size: u64) -> usize {
+    usize::try_from(size)
+        .unwrap_or(4 * 1024 * 1024)
+        .min(4 * 1024 * 1024)
+        .max(8192)
+}
+
+fn finalize_output_file(
+    mut writer: std::io::BufWriter<std::fs::File>,
+    size: u64,
+    dest: &Path,
+) -> Result<()> {
+    std::io::Write::flush(&mut writer).map_err(|e| anyhow::anyhow!("Cannot flush {:?}: {}", dest, e))?;
+    let file = writer.into_inner().map_err(|e| anyhow::anyhow!("Cannot finalize {:?}: {}", dest, e.error()))?;
+    crate::io_advice::sync_and_drop(&file, size);
+    Ok(())
+}
+
+fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
+    reader: &mut R,
+    writer: &mut W,
+    mut remaining: u64,
+    bytes_processed: &mut u64,
+    file_count: usize,
+    processed_files: usize,
+    total_expected: u64,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    last_pct: &mut u64,
+) -> Result<()> {
+    let mut buf = vec![0u8; 1024 * 1024];
+    while remaining > 0 {
+        let take = remaining.min(buf.len() as u64) as usize;
+        let read = reader.read(&mut buf[..take]).map_err(|e| anyhow::anyhow!("Stream read error: {}", e))?;
+        if read == 0 {
+            return Err(anyhow::anyhow!("Truncated pack content"));
+        }
+        writer.write_all(&buf[..read]).map_err(|e| anyhow::anyhow!("Stream write error: {}", e))?;
+        remaining -= read as u64;
+        *bytes_processed = bytes_processed.saturating_add(read as u64);
+        report_unpack_progress(progress, total_expected, *bytes_processed, file_count, processed_files, last_pct);
+    }
+    Ok(())
+}
+
+fn discard_pack_bytes<R: std::io::Read>(
+    reader: &mut R,
+    mut remaining: u64,
+    bytes_processed: &mut u64,
+    file_count: usize,
+    processed_files: usize,
+    total_expected: u64,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    last_pct: &mut u64,
+) -> Result<()> {
+    let mut buf = vec![0u8; 1024 * 1024];
+    while remaining > 0 {
+        let take = remaining.min(buf.len() as u64) as usize;
+        let read = reader.read(&mut buf[..take]).map_err(|e| anyhow::anyhow!("Stream read error: {}", e))?;
+        if read == 0 {
+            return Err(anyhow::anyhow!("Truncated pack content"));
+        }
+        remaining -= read as u64;
+        *bytes_processed = bytes_processed.saturating_add(read as u64);
+        report_unpack_progress(progress, total_expected, *bytes_processed, file_count, processed_files, last_pct);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod stream_tests {
     use super::*;
     use std::io::{Write, Read};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct ChunkedReader<R> {
+        inner: R,
+        max_chunk: usize,
+    }
+
+    impl<R: Read> Read for ChunkedReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let limit = buf.len().min(self.max_chunk);
+            self.inner.read(&mut buf[..limit])
+        }
+    }
 
     #[test]
     fn test_unpack_stream_to_dir() -> Result<()> {
@@ -491,6 +566,37 @@ mod stream_tests {
 
                 let _ = std::fs::remove_file(tmpdir.join("file1.txt"));
         let _ = std::fs::remove_file(tmpdir.join("file2.txt"));
+        let _ = std::fs::remove_dir(&tmpdir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_unpack_stream_to_dir_large_file_small_reads() -> Result<()> {
+        let large = vec![0x5a; 2 * 1024 * 1024];
+        let mut parts: Vec<u8> = Vec::new();
+        parts.extend_from_slice(&0x524f5850u32.to_be_bytes());
+        parts.extend_from_slice(&(1u32.to_be_bytes()));
+        let name = b"big.bin";
+        parts.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name);
+        parts.extend_from_slice(&(large.len() as u64).to_be_bytes());
+        parts.extend_from_slice(&large);
+
+        let reader = std::io::Cursor::new(parts);
+        let mut reader = ChunkedReader { inner: reader, max_chunk: 37 };
+
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let tmpdir = std::env::temp_dir().join(format!("rox_unpack_large_stream_test_{}", ms));
+        let _ = std::fs::create_dir_all(&tmpdir);
+
+        let out = unpack_stream_to_dir(&mut reader, &tmpdir, None, None, large.len() as u64)?;
+
+        assert_eq!(out, vec!["big.bin".to_string()]);
+        let restored = std::fs::read(tmpdir.join("big.bin"))?;
+        assert_eq!(restored.len(), large.len());
+        assert_eq!(restored, large);
+
+        let _ = std::fs::remove_file(tmpdir.join("big.bin"));
         let _ = std::fs::remove_dir(&tmpdir);
         Ok(())
     }
