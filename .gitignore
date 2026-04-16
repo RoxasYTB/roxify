@@ -19,6 +19,8 @@ test/*
 *.png
 *.tgz
 test-*
+__pycache__/
+*.pyc
 # Integration test output directory
 output-tests/
 # Ignore platform-specific native artifacts
