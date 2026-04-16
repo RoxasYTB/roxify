@@ -57,40 +57,39 @@ The core compression and image-processing logic is written in Rust and exposed t
 
 ## Benchmarks
 
-All measurements below use Roxify native Rust CLI (`roxify_native`) with streaming directory packing, Zstd L3, multi-threading, long-distance matching, and `window_log(30)`.
+All measurements below use Roxify native Rust CLI (`roxify_native`) against `zip -qry` / `unzip -qq`, with targeted page-cache eviction (`POSIX_FADV_DONTNEED`) before both encode and decode. `Saved` = `100 - final_size / source_size`. ZIP runs preserve symlinks so extracted trees stay logically identical to source.
 
-### Cold-cache throughput on ext4
+### Comparative archive benchmark on ext4
 
-Measured with targeted page-cache eviction (`POSIX_FADV_DONTNEED`) before both encode and decode. Raw manifest lives in `docs/COLD_BENCHMARK_2026-04-15.json`.
+| Dataset / Format | Files | Source | Final size | Saved | Encode | Encode throughput | Decode | Decode throughput |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Glados-Disc** | **19,645** | **208.18 MiB** | - | - | - | - | - | - |
+| PNG (Roxify) | - | - | 54.83 MiB | 73.66% | 1.63 s | 127.36 MiB/s | 1.98 s | 104.94 MiB/s |
+| ZIP | - | - | 82.44 MiB | 60.40% | 13.27 s | 15.69 MiB/s | 2.68 s | 77.69 MiB/s |
+| **Gmod** | **3,936** | **1.36 GiB** | - | - | - | - | - | - |
+| PNG (Roxify) | - | - | 411.09 MiB | 70.53% | 7.06 s | 197.59 MiB/s | 8.14 s | 171.29 MiB/s |
+| ZIP | - | - | 516.44 MiB | 62.98% | 44.07 s | 31.66 MiB/s | 12.51 s | 111.54 MiB/s |
+| **Portal 2** | **3,731** | **12.83 GiB** | - | - | - | - | - | - |
+| PNG (Roxify) | - | - | 7.62 GiB | 40.60% | 1 min 33.07 s | 141.16 MiB/s | 2 min 07.51 s | 103.03 MiB/s |
+| ZIP | - | - | 8.20 GiB | 36.08% | 9 min 00.66 s | 24.30 MiB/s | 3 min 18.63 s | 66.14 MiB/s |
 
-| Dataset | Files | Source | Output PNG | Encode | Encode throughput | Decode | Decode throughput |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Glados-Disc | 19,645 | 208.18 MiB | 54.83 MiB | 2.883 s | 72.22 MiB/s | 0.954 s | 218.16 MiB/s |
-| Gmod | 3,936 | 1.36 GiB | 411.09 MiB | 6.127 s | 227.69 MiB/s | 5.850 s | 238.48 MiB/s |
+### Comparative archive benchmark on NTFS
 
-### High-latency source filesystem encode
-
-Roxify 1.13.4 adds adaptive parallel preload for small files before feeding Zstd. This specifically targets metadata-heavy trees on slower filesystems such as NTFS, APFS, exFAT, and network-backed mounts.
-
-| Dataset | Source FS | Before 1.13.4 | Roxify 1.13.4 | Speedup |
-| --- | --- | --- | --- | --- |
-| Glados-Disc (19,645 files) | NTFS under Linux | 81.608 s | 2.189 s | 37.3x |
-| Gmod (3,936 files) | NTFS under Linux | 22.578 s | 4.517 s | 5.0x |
-
-### Portal 2 comparative reference: ZIP vs PNG
-
-Measured on the full `Portal 2` game directory (`3,731 files`, `193 folders`, `12.83 GiB` logical source) to compare classic ZIP packaging against Roxify PNG packing on the same dataset.
-
-| Format | Time (s) | Time (min:sec) | Throughput | Compression ratio |
-| --- | ---: | --- | ---: | ---: |
-| ZIP Encode | 633,87 | 10 min 33 s | 21,73 Mo/s | 36,08% |
-| ZIP Decode | 232,88 | 3 min 52 s | 59,15 Mo/s | - |
-| PNG Encode | 157,80 | 2 min 37 s | 87,30 Mo/s | 41,09% |
-| PNG Decode | 156,00 | 2 min 36 s | 88,30 Mo/s | - |
+| Dataset / Format | Files | Source | Final size | Saved | Encode | Encode throughput | Decode | Decode throughput |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Glados-Disc** | **19,645** | **208.18 MiB** | - | - | - | - | - | - |
+| PNG (Roxify) | - | - | 54.64 MiB | 73.75% | 1 min 11.55 s | 2.91 MiB/s | 3.90 s | 53.31 MiB/s |
+| ZIP | - | - | 82.44 MiB | 60.40% | 1 min 55.28 s | 1.81 MiB/s | 11.99 s | 17.36 MiB/s |
+| **Gmod** | **3,936** | **1.36 GiB** | - | - | - | - | - | - |
+| PNG (Roxify) | - | - | 409.10 MiB | 70.67% | 19.68 s | 70.87 MiB/s | 22.47 s | 62.08 MiB/s |
+| ZIP | - | - | 516.45 MiB | 62.98% | 57.07 s | 24.44 MiB/s | 33.86 s | 41.19 MiB/s |
+| **Portal 2** | **3,731** | **12.83 GiB** | - | - | - | - | - | - |
+| PNG (Roxify) | - | - | 7.56 GiB | 41.09% | 2 min 40.95 s | 81.62 MiB/s | 3 min 13.14 s | 68.02 MiB/s |
+| ZIP | - | - | 8.20 GiB | 36.08% | 10 min 58.95 s | 19.94 MiB/s | 4 min 01.80 s | 54.33 MiB/s |
 
 ### Data integrity
 
-All benchmark runs completed with byte-exact roundtrip validation. Decode output matched original logical source bytes on every dataset.
+All benchmark runs completed with successful roundtrip extraction on the measured datasets. ZIP runs used `-y` to preserve symlinks instead of dereferencing them during archive creation.
 
 ---
 

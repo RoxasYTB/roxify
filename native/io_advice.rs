@@ -34,7 +34,7 @@ pub fn advise_drop(file: &File, offset: u64, len: u64) {
 }
 
 pub fn sync_and_drop(file: &File, len: u64) {
-    if len == 0 {
+    if len < INPUT_DROP_GRANULARITY {
         return;
     }
 
