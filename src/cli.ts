@@ -1,21 +1,20 @@
 #!/usr/bin/env node
 
 import {
-    mkdirSync,
-    readdirSync,
-    readFileSync,
-    statSync,
-    writeFileSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync
 } from 'fs';
 import { open } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import * as cliProgress from './stub-progress.js';
 import {
-    decodeWithRustCLI,
-    encodeWithRustCLI,
-    havepassphraseWithRustCLI,
-    isRustBinaryAvailable,
-    listWithRustCLI,
+  decodeWithRustCLI,
+  encodeWithRustCLI,
+  havepassphraseWithRustCLI,
+  isRustBinaryAvailable,
+  listWithRustCLI,
 } from './utils/rust-cli-wrapper.js';
 
 async function loadJsEngine() {
@@ -113,6 +112,7 @@ Options:
   -e, --encrypt <type>      auto|aes|xor|none
   --no-compress             Disable compression
   --dict <file>             Use zstd dictionary when compressing
+  --ram-budget-mb <mb>      Max RAM budget used by native encode/decode paths
   --force-ts                Force TypeScript encoder (slower but supports encryption)
   -o, --output <path>       Output file path
   -s, --sizes               Show file sizes in 'list' output (default)
@@ -209,6 +209,14 @@ function parseArgs(args: string[]) {
         i += 2;
       } else if (key === 'dict') {
         parsed.dict = args[i + 1];
+        i += 2;
+      } else if (key === 'ram-budget-mb') {
+        const v = Number(args[i + 1]);
+        if (!Number.isFinite(v) || v <= 0) {
+          console.error(`Invalid --ram-budget-mb: ${args[i + 1]}`);
+          process.exit(1);
+        }
+        parsed.ramBudgetMb = Math.floor(v);
         i += 2;
       } else {
         const value = args[i + 1];
@@ -362,6 +370,7 @@ async function encodeCommand(args: string[]) {
         parsed.passphrase,
         encryptType,
         fileName,
+        parsed.ramBudgetMb,
         (current, total, step) => {
           const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
           const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -656,241 +665,51 @@ async function decodeCommand(args: string[]) {
 
   const resolvedOutput = parsed.output || outputPath || '.';
 
-  if (isRustBinaryAvailable() && !parsed.forceTs && !parsed.lossyResilient) {
-    try {
-      console.log(' ');
-      console.log('Decoding... (Using native Rust decoder)\n');
-      const startTime = Date.now();
-
-      const decodeBar = new cliProgress.SingleBar(
-        { format: ' {bar} {percentage}% | {step} | {elapsed}s' },
-        cliProgress.Presets.shades_classic,
-      );
-      decodeBar.start(100, 0, { step: 'Decoding', elapsed: '0' });
-
-      await decodeWithRustCLI(
-        resolvedInput,
-        resolvedOutput,
-        parsed.passphrase,
-        parsed.files,
-        parsed.dict,
-        (current, total, step) => {
-          const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
-          const elapsed = Math.floor((Date.now() - startTime) / 1000);
-          decodeBar.update(Math.min(pct, 99), {
-            step: step || 'Decoding',
-            elapsed: String(elapsed),
-          });
-        },
-      );
-
-      const decodeTime = Date.now() - startTime;
-      decodeBar.update(100, { step: 'done', elapsed: String(Math.floor(decodeTime / 1000)) });
-      decodeBar.stop();
-
-      console.log(`\nSuccess!`);
-      console.log(`  Time: ${decodeTime}ms`);
-      console.log(`  Output: ${resolve(resolvedOutput)}`);
-      console.log(' ');
-      return;
-    } catch (err: any) {
-      console.warn('\nRust decoder failed, falling back to TypeScript decoder...');
-      console.warn(`Reason: ${err.message}\n`);
-    }
+  if (!isRustBinaryAvailable()) {
+    console.error('Error: Rust decoder binary not found');
+    process.exit(1);
   }
 
   try {
-    const options: any = {};
-    if (parsed.passphrase) {
-      options.passphrase = parsed.passphrase;
-    }
-    if (parsed.debug) {
-      options.debugDir = dirname(resolvedInput);
-    }
-    if (parsed.files) {
-      options.files = parsed.files;
-    }
-    if (parsed.dict) {
-      try {
-        options.dict = readFileSync(parsed.dict);
-      } catch (e) {
-        console.error(`Failed to read dictionary file: ${parsed.dict}`);
-        process.exit(1);
-      }
-    }
     console.log(' ');
-    console.log(`Decoding...`);
+    console.log('Decoding... (Using native Rust decoder)\n');
+    const startTime = Date.now();
 
-    console.log(' ');
     const decodeBar = new cliProgress.SingleBar(
-      {
-        format: ' {bar} {percentage}% | {step} | {elapsed}s',
-      },
+      { format: ' {bar} {percentage}% | {step} | {elapsed}s' },
       cliProgress.Presets.shades_classic,
     );
-    let barStarted = false;
-    const startDecode = Date.now();
-    let currentPct = 0;
-    let targetPct = 0;
-    let currentStep = 'Decoding';
-    const heartbeat = setInterval(() => {
-      if (currentPct < targetPct) {
-        currentPct = Math.min(currentPct + 2, targetPct);
-      }
-      if (!barStarted && targetPct > 0) {
-        decodeBar.start(100, Math.floor(currentPct), {
-          step: currentStep,
-          elapsed: String(Math.floor((Date.now() - startDecode) / 1000)),
+    decodeBar.start(100, 0, { step: 'Decoding', elapsed: '0' });
+
+    await decodeWithRustCLI(
+      resolvedInput,
+      resolvedOutput,
+      parsed.passphrase,
+      parsed.files,
+      parsed.dict,
+      parsed.ramBudgetMb,
+      (current, total, step) => {
+        const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        decodeBar.update(Math.min(pct, 99), {
+          step: step || 'Decoding',
+          elapsed: String(elapsed),
         });
-        barStarted = true;
-      } else if (barStarted) {
-        decodeBar.update(Math.floor(currentPct), {
-          step: currentStep,
-          elapsed: String(Math.floor((Date.now() - startDecode) / 1000)),
-        });
-      }
-    }, 100);
+      },
+    );
 
-    options.onProgress = (info: any) => {
-      if (info.phase === 'decompress_start') {
-        targetPct = 50;
-        currentStep = 'Decompressing';
-      } else if (
-        info.phase === 'decompress_progress' &&
-        info.loaded &&
-        info.total
-      ) {
-        targetPct = 50 + Math.floor((info.loaded / info.total) * 40);
-        currentStep = `Decompressing (${info.loaded}/${info.total})`;
-      } else if (info.phase === 'decompress_done') {
-        targetPct = 90;
-        currentStep = 'Decompressed';
-      } else if (info.phase === 'done') {
-        targetPct = 100;
-        currentStep = 'Done';
-      }
-    };
+    const decodeTime = Date.now() - startTime;
+    decodeBar.update(100, { step: 'done', elapsed: String(Math.floor(decodeTime / 1000)) });
+    decodeBar.stop();
 
-    const inputBuffer = await readLargeFile(resolvedInput);
-    const js = await loadJsEngine();
-    const result = await js.decodePngToBinary(inputBuffer, options);
-    const decodeTime = Date.now() - startDecode;
-    clearInterval(heartbeat);
-    if (barStarted) {
-      currentPct = 100;
-      decodeBar.update(100, {
-        step: 'done',
-        elapsed: String(Math.floor(decodeTime / 1000)),
-      });
-      decodeBar.stop();
-    }
-
-    if (result.files) {
-      const baseDir = parsed.output || outputPath || '.';
-      const totalBytes = result.files.reduce(
-        (s: number, f: any) => s + f.buf.length,
-        0,
-      );
-      const extractBar = new cliProgress.SingleBar(
-        { format: ' {bar} {percentage}% | {step} | {elapsed}s' },
-        cliProgress.Presets.shades_classic,
-      );
-      const extractStart = Date.now();
-      extractBar.start(totalBytes, 0, { step: 'Writing files', elapsed: '0' });
-      let written = 0;
-      for (const file of result.files) {
-        const fullPath = join(baseDir, file.path);
-        const dir = dirname(fullPath);
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(fullPath, file.buf);
-        written += file.buf.length;
-        extractBar.update(written, {
-          step: `Writing ${file.path}`,
-          elapsed: String(Math.floor((Date.now() - extractStart) / 1000)),
-        });
-      }
-      extractBar.update(totalBytes, {
-        step: 'Done',
-        elapsed: String(Math.floor((Date.now() - extractStart) / 1000)),
-      });
-      extractBar.stop();
-      console.log(`\nSuccess!`);
-      console.log(
-        `Unpacked ${result.files.length} files to directory : ${resolve(
-          baseDir,
-        )}`,
-      );
-      console.log(`Time: ${decodeTime}ms`);
-    } else if (result.buf) {
-      const unpacked = js.unpackBuffer(result.buf);
-      if (unpacked) {
-        const baseDir = parsed.output || outputPath || '.';
-
-        for (const file of unpacked.files) {
-          const fullPath = join(baseDir, file.path);
-          const dir = dirname(fullPath);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(fullPath, file.buf);
-        }
-
-        console.log(`\nSuccess!`);
-        console.log(`Time: ${decodeTime}ms`);
-        console.log(
-          `Unpacked ${unpacked.files.length} files to current directory`,
-        );
-      } else {
-        let finalOutput = resolvedOutput;
-        if (!parsed.output && !outputPath && result.meta?.name) {
-          finalOutput = result.meta.name;
-        }
-        writeFileSync(finalOutput, result.buf);
-        console.log(`\nSuccess!`);
-        if (result.meta?.name) {
-          console.log(`  Original name: ${result.meta.name}`);
-        }
-        const outputSize = (result.buf.length / 1024 / 1024).toFixed(2);
-        console.log(`  Output size:   ${outputSize} MB`);
-        console.log(`  Time:          ${decodeTime}ms`);
-        console.log(`  Saved:         ${finalOutput}`);
-      }
-    } else {
-      console.log(`\nSuccess!`);
-      console.log(`Time: ${decodeTime}ms`);
-    }
-
+    console.log(`\nSuccess!`);
+    console.log(`  Time: ${decodeTime}ms`);
+    console.log(`  Output: ${resolve(resolvedOutput)}`);
     console.log(' ');
   } catch (err: any) {
-    if (
-      (err.message && err.message.includes('passphrase required')) ||
-      (err.message && err.message.includes('passphrase') && !parsed.passphrase)
-    ) {
-      console.log(' ');
-      console.error(
-        'File appears to be encrypted. Provide a passphrase with -p',
-      );
-    } else if (
-      (err.message && err.message.includes('Incorrect passphrase')) ||
-      (err.message && err.message.includes('Incorrect passphrase'))
-    ) {
-      console.log(' ');
-      console.error('Incorrect passphrase');
-    } else if (
-      (err.message && err.message.includes('data format error')) ||
-      (err.message &&
-        (err.message.includes('decompression failed') ||
-          err.message.includes('missing ROX1') ||
-          err.message.includes('Pixel payload truncated') ||
-          err.message.includes('Marker START not found')))
-    ) {
-      console.log(' ');
-      console.error(
-        'Data corrupted or unsupported format. Use --verbose for details.',
-      );
-    } else {
-      console.log(' ');
-      console.error('Failed to decode file. Use --verbose for details.');
-    }
-
+    console.log(' ');
+    console.error('Error: Rust decoder failed.');
+    console.error(`Reason: ${err.message}`);
     if (parsed.verbose) {
       console.error('Details:', err.stack || err.message);
     }

@@ -519,8 +519,12 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
             }
         }
 
+        // NTFS optimization: larger buffer reduces syscalls (16MB max, 256KB min)
+        let buffer_size = (entry_size as usize)
+            .min(16 * 1024 * 1024)  // 16MB max buffer
+            .max(256 * 1024);       // 256KB min buffer for NTFS
         let mut f = std::io::BufWriter::with_capacity(
-            (entry_size as usize).min(4 * 1024 * 1024).max(8192),
+            buffer_size,
             std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
         );
         std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;

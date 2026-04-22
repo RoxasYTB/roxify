@@ -908,7 +908,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "roxify_native"
-version = "1.13.5"
+version = "1.13.6"
 dependencies = [
  "aes",
  "aes-gcm",
