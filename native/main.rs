@@ -24,6 +24,34 @@ mod progress;
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
 
+const MB_U64: u64 = 1024 * 1024;
+const GB_U64: u64 = 1024 * MB_U64;
+
+// Adaptive RAM Budget Configuration
+const MIN_RAM_BUDGET_MB: u64 = 512;
+const DEFAULT_RAM_BUDGET_MB: u64 = 2048;
+const RESERVED_RAM_MB: u64 = 1024;
+const MIN_WRITE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+const MAX_WRITE_BUFFER_BYTES: usize = 256 * 1024 * 1024;
+
+// Performance Targets (under 10 seconds)
+const TARGET_ENCODE_TIME_SECS: u64 = 10;
+const TARGET_DECODE_TIME_SECS: u64 = 10;
+const FAST_COMPRESSION_THRESHOLD_MB: u64 = 100;
+const STREAMING_THRESHOLD_MB: u64 = 500;
+
+// Adaptive Compression Levels
+const COMPRESSION_ULTRA_FAST: i32 = 1;    // < 100MB files, lots of RAM
+const COMPRESSION_FAST: i32 = 2;          // < 500MB files
+const COMPRESSION_BALANCED: i32 = 3;      // Default, 500MB-2GB
+const COMPRESSION_SMALL_FILES: i32 = 5;   // Many small files
+
+// RAM Usage Tiers
+const RAM_TIER_ULTRA: u64 = 16384;        // 16GB+ - Aggressive optimization
+const RAM_TIER_HIGH: u64 = 8192;          // 8GB+ - Fast mode
+const RAM_TIER_MEDIUM: u64 = 4096;        // 4GB+ - Balanced
+const RAM_TIER_LOW: u64 = 2048;           // 2GB+ - Conservative
+
 #[derive(Parser)]
 #[command(author, version)]
 struct Cli {
@@ -47,6 +75,8 @@ enum Commands {
         /// optional zstd dictionary file for payload compression
         #[arg(long, value_name = "FILE")]
         dict: Option<PathBuf>,
+        #[arg(long, value_name = "MB")]
+        ram_budget_mb: Option<u64>,
     },
 
     List {
@@ -100,6 +130,8 @@ enum Commands {
         /// optional dictionary file used during decompression
         #[arg(long, value_name = "FILE")]
         dict: Option<PathBuf>,
+        #[arg(long, value_name = "MB")]
+        ram_budget_mb: Option<u64>,
     },
     Crc32 {
         input: PathBuf,
@@ -118,10 +150,192 @@ fn read_all(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
     Ok(buf)
 }
 
+pub fn parse_linux_mem_available_mb() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kb = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<u64>().ok())?;
+    Some(kb / 1024)
+}
+
+fn parse_total_ram_mb() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
+    let kb = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<u64>().ok())?;
+    Some(kb / 1024)
+}
+
+fn get_cpu_cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4)
+}
+
+/// Determine RAM tier based on available memory
+fn get_ram_tier(available_mb: u64) -> &'static str {
+    match available_mb {
+        x if x >= RAM_TIER_ULTRA => "ultra",
+        x if x >= RAM_TIER_HIGH => "high",
+        x if x >= RAM_TIER_MEDIUM => "medium",
+        _ => "low",
+    }
+}
+
+/// Calculate adaptive RAM budget with aggressive optimization for Pyxelze
+fn auto_ram_budget_mb() -> u64 {
+    let total_mb = parse_total_ram_mb().unwrap_or(4096);
+    let available_mb = parse_linux_mem_available_mb().unwrap_or(total_mb / 2);
+    let cpu_cores = get_cpu_cores();
+    
+    // Base calculation: use up to 85% of available RAM for ultra-fast mode
+    let base_budget = available_mb.saturating_mul(85) / 100;
+    
+    // Adjust based on RAM tier and CPU cores
+    let tier_multiplier = match get_ram_tier(total_mb) {
+        "ultra" if cpu_cores >= 8 => 90,      // 16GB+ with 8+ cores: 90%
+        "ultra" => 85,                        // 16GB+ with fewer cores
+        "high" if cpu_cores >= 6 => 80,       // 8GB+ with 6+ cores
+        "high" => 75,                         // 8GB+
+        "medium" => 70,                       // 4GB+
+        _ => 65,                              // 2GB+
+    };
+    
+    let budget = available_mb.saturating_mul(tier_multiplier) / 100;
+    let budget = budget.max(MIN_RAM_BUDGET_MB);
+    
+    // Cap at reasonable maximum to prevent OOM
+    let max_budget = (total_mb / 2).max(8192);
+    budget.min(max_budget)
+}
+
+/// Auto-select optimal compression level based on file size and available RAM
+fn auto_compression_level(file_size_mb: u64, ram_budget_mb: u64) -> i32 {
+    // Ultra-fast for small files with lots of RAM
+    if file_size_mb < FAST_COMPRESSION_THRESHOLD_MB && ram_budget_mb >= RAM_TIER_HIGH {
+        return COMPRESSION_ULTRA_FAST;
+    }
+    
+    // Fast mode for medium files
+    if file_size_mb < STREAMING_THRESHOLD_MB {
+        return COMPRESSION_FAST;
+    }
+    
+    // Balanced for large files
+    if ram_budget_mb >= RAM_TIER_MEDIUM {
+        return COMPRESSION_BALANCED;
+    }
+    
+    // Conservative for low RAM
+    COMPRESSION_SMALL_FILES
+}
+
+/// Determine if streaming mode should be used
+fn should_use_streaming(file_size_mb: u64, ram_budget_mb: u64) -> bool {
+    // Force streaming for very large files
+    if file_size_mb >= 2048 { // 2GB+
+        return true;
+    }
+    
+    // Use streaming when file is larger than 60% of RAM budget
+    let threshold = ram_budget_mb.saturating_mul(60) / 100;
+    file_size_mb >= threshold
+}
+
+/// Get optimal thread count for zstd based on RAM and CPU
+fn optimal_zstd_threads(file_size_mb: u64, ram_budget_mb: u64) -> i32 {
+    let cpu_cores = get_cpu_cores();
+    let ram_tier = get_ram_tier(parse_total_ram_mb().unwrap_or(4096));
+    
+    match ram_tier {
+        "ultra" => cpu_cores.min(16) as i32,
+        "high" => cpu_cores.min(8) as i32,
+        _ if file_size_mb > 1000 => cpu_cores.min(4) as i32,
+        _ => cpu_cores.min(2) as i32,
+    }
+}
+
+fn resolve_ram_budget_mb(cli_value: Option<u64>) -> u64 {
+    if let Some(v) = cli_value {
+        return v.max(MIN_RAM_BUDGET_MB);
+    }
+
+    if let Ok(v) = std::env::var("ROX_RAM_BUDGET_MB") {
+        if let Ok(parsed) = v.trim().parse::<u64>() {
+            return parsed.max(MIN_RAM_BUDGET_MB);
+        }
+    }
+
+    auto_ram_budget_mb()
+}
+
+fn effective_ram_budget_mb() -> u64 {
+    if let Ok(v) = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE") {
+        if let Ok(parsed) = v.trim().parse::<u64>() {
+            return parsed.max(MIN_RAM_BUDGET_MB);
+        }
+    }
+    resolve_ram_budget_mb(None)
+}
+
+fn ram_budget_bytes(ram_budget_mb: u64) -> u64 {
+    ram_budget_mb.saturating_mul(MB_U64)
+}
+
+fn streaming_preference_threshold_bytes(ram_budget_mb: u64) -> u64 {
+    ram_budget_bytes(ram_budget_mb)
+        .saturating_mul(60)
+        .saturating_div(100)
+        .max(64 * MB_U64)
+}
+
+fn normalize_png_archive_bytes(png_data: &[u8], passphrase: Option<&str>) -> anyhow::Result<Vec<u8>> {
+    let payload = png_utils::extract_payload_from_png(png_data).map_err(|e| anyhow::anyhow!(e))?;
+    if payload.is_empty() {
+        return Err(anyhow::anyhow!("Empty payload"));
+    }
+
+    if payload[0] == 0x00u8 {
+        Ok(payload[1..].to_vec())
+    } else {
+        let decrypted = crate::crypto::try_decrypt(&payload, passphrase)
+            .map_err(|e| anyhow::anyhow!("Encrypted payload: {}", e))?;
+        Ok(decrypted)
+    }
+}
+
+fn unpack_archive_bytes(
+    normalized: Vec<u8>,
+    out_dir: &std::path::Path,
+    files_slice: Option<&[String]>,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+) -> anyhow::Result<Vec<String>> {
+    let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
+        Box::new(std::io::Cursor::new(normalized[4..].to_vec()))
+    } else {
+        let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(normalized))
+            .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+        dec.window_log_max(31)
+            .map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
+        Box::new(dec)
+    };
+
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
+    packer::unpack_stream_to_dir(&mut reader, out_dir, files_slice, progress, 0)
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
 fn write_all(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
     let f = File::create(path)?;
-    let buf_size = if data.len() > 64 * 1024 * 1024 { 16 * 1024 * 1024 }
-        else { (8 * 1024 * 1024).min(data.len().max(8192)) };
+    let budget_bytes = ram_budget_bytes(effective_ram_budget_mb());
+    let dynamic_cap = (budget_bytes / 24)
+        .clamp(MIN_WRITE_BUFFER_BYTES as u64, MAX_WRITE_BUFFER_BYTES as u64) as usize;
+    let buf_size = dynamic_cap.min(data.len().max(8192));
     let mut writer = std::io::BufWriter::with_capacity(buf_size, f);
     writer.write_all(data)?;
     writer.flush()?;
@@ -166,7 +380,9 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
             println!("wrote {} bytes dictionary to {:?}", dict.len(), output);
             return Ok(());
         }
-        Commands::Encode { input, output, level, passphrase, encrypt, name, dict } => {
+        Commands::Encode { input, output, level, passphrase, encrypt, name, dict, ram_budget_mb } => {
+            let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
+            std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
             let is_dir = input.is_dir();
 
             let file_name = name.as_deref()
@@ -205,7 +421,7 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                 None => None,
             };
 
-            let use_streaming = payload.len() > 64 * 1024 * 1024;
+            let use_streaming = (payload.len() as u64) > streaming_preference_threshold_bytes(ram_budget_mb);
             eprintln!("PROGRESS:50:100:encoding");
 
             if use_streaming {
@@ -359,7 +575,9 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
             let dest = output.unwrap_or_else(|| PathBuf::from("out.zst"));
             write_all(&dest, &out)?;
         }
-        Commands::Decompress { input, output, files, passphrase, dict } => {
+        Commands::Decompress { input, output, files, passphrase, dict, ram_budget_mb } => {
+            let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
+            std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
             let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
             let is_png_file = input.extension().map(|e| e == "png").unwrap_or(false)
                 || (file_size >= 8 && {
@@ -373,45 +591,87 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                 None => None,
             };
 
-            if is_png_file && files.is_none() && dict.is_none() {
-                let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("out.raw"));
-                match streaming_decode::streaming_decode_to_dir_encrypted_with_progress(
-                    &input,
-                    &out_dir,
-                    passphrase.as_deref(),
-                    Some(Box::new(|current, total, step| {
-                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
-                    })),
-                ) {
-                    Ok(written) => {
-                        eprintln!("PROGRESS:100:100:done");
-                        println!("Unpacked {} files", written.len());
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        return Err(anyhow::anyhow!("Streaming decode failed: {}", e));
+            if is_png_file && dict.is_none() {
+                let out_dir = if requested_files.is_some() {
+                    output.clone().unwrap_or_else(|| PathBuf::from("."))
+                } else {
+                    output.clone().unwrap_or_else(|| PathBuf::from("out.raw"))
+                };
+
+                let should_try_streaming = file_size >= streaming_preference_threshold_bytes(ram_budget_mb);
+
+                if should_try_streaming {
+                    let streaming_result = if let Some(ref selected) = requested_files {
+                        streaming_decode::streaming_decode_selected_to_dir_encrypted_with_progress(
+                            &input,
+                            &out_dir,
+                            Some(selected.as_slice()),
+                            passphrase.as_deref(),
+                            Some(Box::new(|current, total, step| {
+                                eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                            })),
+                        )
+                    } else {
+                        streaming_decode::streaming_decode_to_dir_encrypted_with_progress(
+                            &input,
+                            &out_dir,
+                            passphrase.as_deref(),
+                            Some(Box::new(|current, total, step| {
+                                eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                            })),
+                        )
+                    };
+
+                    match streaming_result {
+                        Ok(written) => {
+                            eprintln!("PROGRESS:100:100:done");
+                            println!("Unpacked {} files", written.len());
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            eprintln!("PROGRESS:12:100:streaming_fallback");
+                            eprintln!("Streaming decode failed, falling back to reconstruction: {}", e);
+                        }
                     }
                 }
-            }
 
-            if is_png_file && requested_files.is_some() && dict.is_none() {
-                let out_dir = output.clone().unwrap_or_else(|| PathBuf::from("."));
-                std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
-                let written = streaming_decode::streaming_decode_selected_to_dir_encrypted_with_progress(
-                    &input,
+                if file_size > ram_budget_bytes(ram_budget_mb) {
+                    return Err(anyhow::anyhow!(
+                        "PNG fallback requires in-memory reconstruction ({} MB file > {} MB RAM budget). Increase --ram-budget-mb.",
+                        file_size / MB_U64,
+                        ram_budget_mb
+                    ));
+                }
+
+                let buf = read_all(&input)?;
+
+                eprintln!("PROGRESS:20:100:decompressing");
+                let progress_cb = |current: u64, total: u64, step: &str| {
+                    eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                };
+
+                let normalized = normalize_png_archive_bytes(&buf, passphrase.as_deref())?;
+                let written = unpack_archive_bytes(
+                    normalized,
                     &out_dir,
                     requested_files.as_deref(),
-                    passphrase.as_deref(),
-                    Some(Box::new(|current, total, step| {
-                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
-                    })),
-                ).map_err(|e| anyhow::anyhow!(e))?;
+                    Some(&progress_cb),
+                )?;
                 eprintln!("PROGRESS:100:100:done");
                 println!("Unpacked {} files", written.len());
                 return Ok(());
             }
 
+            if file_size > ram_budget_bytes(ram_budget_mb) {
+                return Err(anyhow::anyhow!(
+                    "Input is {} MB but RAM budget is {} MB. Increase --ram-budget-mb for non-streaming decode paths.",
+                    file_size / MB_U64,
+                    ram_budget_mb
+                ));
+            }
+
             let buf = read_all(&input)?;
+
             eprintln!("PROGRESS:20:100:decompressing");
             let dict_bytes: Option<Vec<u8>> = match dict {
                 Some(path) => Some(read_all(&path)?),

@@ -134,11 +134,11 @@ export function isRustBinaryAvailable(): boolean {
 }
 
 import {
-    chmodSync,
-    mkdtempSync,
-    readFileSync,
-    unlinkSync,
-    writeFileSync,
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
 
@@ -234,6 +234,7 @@ export async function encodeWithRustCLI(
   passphrase?: string,
   encryptType: 'aes' | 'xor' = 'aes',
   name?: string,
+  ramBudgetMb?: number,
   onProgress?: ProgressCallback,
 ): Promise<void> {
   const cliPath = findRustBinary();
@@ -253,6 +254,10 @@ export async function encodeWithRustCLI(
     args.push('--encrypt', encryptType);
   }
 
+  if (typeof ramBudgetMb === 'number' && Number.isFinite(ramBudgetMb)) {
+    args.push('--ram-budget-mb', String(Math.max(1, Math.floor(ramBudgetMb))));
+  }
+
   args.push(inputPath, outputPath);
   await spawnRustCLI(args, { onProgress });
 }
@@ -263,6 +268,7 @@ export async function decodeWithRustCLI(
   passphrase?: string,
   files?: string[],
   dict?: string,
+  ramBudgetMb?: number,
   onProgress?: ProgressCallback,
 ): Promise<void> {
   const args = ['decompress', inputPath, outputPath];
@@ -270,6 +276,9 @@ export async function decodeWithRustCLI(
   if (passphrase) args.push('--passphrase', passphrase);
   if (files && files.length > 0) args.push('--files', JSON.stringify(files));
   if (dict) args.push('--dict', dict);
+  if (typeof ramBudgetMb === 'number' && Number.isFinite(ramBudgetMb)) {
+    args.push('--ram-budget-mb', String(Math.max(1, Math.floor(ramBudgetMb))));
+  }
 
   await spawnRustCLI(args, { onProgress });
 }

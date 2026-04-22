@@ -316,14 +316,24 @@ fn estimate_zst_capacity(total_bytes: u64) -> usize {
 
 fn select_zstd_threads(total_bytes: u64) -> u32 {
     let max_threads = num_cpus::get().max(1) as u32;
-    if total_bytes <= 32 * MB {
+    let ram_mb = crate::parse_linux_mem_available_mb().unwrap_or(4096);
+    
+    // Aggressive multi-threading for Pyxelze speed target (<10s)
+    if total_bytes <= 16 * MB {
+        // Small files: single thread to avoid overhead
         1
-    } else if total_bytes <= 128 * MB {
+    } else if total_bytes <= 64 * MB {
+        // Small-medium files: 2 threads
         max_threads.min(2)
-    } else if total_bytes <= 512 * MB {
+    } else if total_bytes <= 256 * MB || ram_mb >= 8192 {
+        // Medium files or high RAM: up to 4 threads
         max_threads.min(4)
-    } else {
+    } else if total_bytes <= 1024 * MB || ram_mb >= 4096 {
+        // Large files or medium RAM: up to 8 threads  
         max_threads.min(8)
+    } else {
+        // Very large files: use all available cores up to 16
+        max_threads.min(16)
     }
 }
 

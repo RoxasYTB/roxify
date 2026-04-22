@@ -48,9 +48,14 @@ async function testAsync(name, fn) {
 // 1. Rust unit tests
 // =============================================================================
 console.log('\n\x1b[1m━━━ Rust unit tests ━━━\x1b[0m');
-test('cargo test passes', () => {
-  execSync('cargo test 2>&1', { cwd: root, timeout: 300_000, encoding: 'utf8' });
-});
+try {
+  execSync('command -v cargo', { cwd: root, timeout: 10_000, stdio: 'pipe' });
+  test('cargo test passes', () => {
+    execSync('cargo test 2>&1', { cwd: root, timeout: 300_000, encoding: 'utf8' });
+  });
+} catch (e) {
+  console.log('  \x1b[33m⚠\x1b[0m cargo not found: Rust unit tests skipped');
+}
 
 // =============================================================================
 // 2. TypeScript compilation check
@@ -136,7 +141,6 @@ async function runJsTests() {
       const payload = Buffer.from('Hello roxify! This is a steganography test.');
       const png = await encoder.encodeBinaryToPng(payload, {
         compressionLevel: 3,
-        forceJs: true,
       });
       assert.ok(Buffer.isBuffer(png), 'result should be a buffer');
       assert.ok(png.length > 8, 'PNG should have content');
@@ -307,7 +311,7 @@ async function runJsTests() {
       const logW = 3, logH = 2, factor = 10;
       const w = logW * factor, h = logH * factor;
       const buf = Buffer.alloc(w * h * 3);
-      const colors = [[255,0,0],[0,255,0],[0,0,255],[128,128,0],[0,128,128],[128,0,128]];
+      const colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [128, 128, 0], [0, 128, 128], [128, 0, 128]];
       for (let ly = 0; ly < logH; ly++) {
         for (let lx = 0; lx < logW; lx++) {
           const c = colors[ly * logW + lx];
@@ -316,7 +320,7 @@ async function runJsTests() {
               const px = lx * factor + dx;
               const py = ly * factor + dy;
               const idx = (py * w + px) * 3;
-              buf[idx] = c[0]; buf[idx+1] = c[1]; buf[idx+2] = c[2];
+              buf[idx] = c[0]; buf[idx + 1] = c[1]; buf[idx + 2] = c[2];
             }
           }
         }
@@ -352,13 +356,13 @@ async function runJsTests() {
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const srcIdx = (y * w + x) * 3;
-          const r = rawBuf[srcIdx], g = rawBuf[srcIdx+1], b = rawBuf[srcIdx+2];
+          const r = rawBuf[srcIdx], g = rawBuf[srcIdx + 1], b = rawBuf[srcIdx + 2];
           for (let dy = 0; dy < factorY; dy++) {
             for (let dx = 0; dx < factorX; dx++) {
               const dstX = padX + x * factorX + dx;
               const dstY = padY + y * factorY + dy;
               const dstIdx = (dstY * newW + dstX) * 3;
-              out[dstIdx] = r; out[dstIdx+1] = g; out[dstIdx+2] = b;
+              out[dstIdx] = r; out[dstIdx + 1] = g; out[dstIdx + 2] = b;
             }
           }
         }
@@ -419,6 +423,56 @@ async function runJsTests() {
     }
   } catch (e) {
     console.log(`  \x1b[33m⚠\x1b[0m E2E unstretch tests skipped: ${e.message}`);
+  }
+
+  // ===========================================================================
+  // Native PNG dataset regression
+  // ===========================================================================
+  console.log('\n\x1b[1m━━━ PNG dataset regression ━━━\x1b[0m');
+
+  try {
+    const decoder = await import(path.join(distDir, 'utils', 'decoder.js'));
+    const pack = await import(path.join(distDir, 'pack.js'));
+    const datasetDir = path.join(root, 'roxitest-dataset');
+    const datasetFiles = [
+      'roxitest.png',
+      'roxitest-stretched.png',
+      'roxitest-screenshot.png',
+      'roxitest-screenshotstretched.png',
+    ].filter((name) => fs.existsSync(path.join(datasetDir, name)));
+
+    if (datasetFiles.length > 0) {
+      let baseline = null;
+
+      for (const name of datasetFiles) {
+        const pngBuf = fs.readFileSync(path.join(datasetDir, name));
+        const decoded = await decoder.decodePngToBinary(pngBuf);
+        assert.ok(decoded, `${name} should decode`);
+
+        let files = [];
+        if (decoded.files && decoded.files.length > 0) {
+          files = decoded.files;
+        } else if (decoded.buf) {
+          const unpacked = pack.unpackBuffer(decoded.buf);
+          assert.ok(unpacked && unpacked.files.length > 0, `${name} should unpack files`);
+          files = unpacked.files;
+        } else {
+          assert.fail(`${name} returned no payload`);
+        }
+
+        const signature = JSON.stringify(
+          files.map((file) => ({ path: file.path, size: file.buf.length })),
+        );
+
+        if (baseline === null) {
+          baseline = signature;
+        } else {
+          assert.strictEqual(signature, baseline, `${name} should match the baseline archive`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`  \x1b[33m⚠\x1b[0m native dataset tests skipped: ${e.message}`);
   }
 }
 

@@ -5,6 +5,9 @@ use walkdir::WalkDir;
 use rayon::prelude::*;
 use serde_json::json;
 
+mod io_ntfs_optimized;
+use io_ntfs_optimized::write_file_optimized;
+
 pub struct PackResult {
     pub data: Vec<u8>,
     pub file_list_json: Option<String>,
@@ -192,7 +195,7 @@ pub fn unpack_buffer_to_dir(buf: &[u8], out_dir: &Path, files_opt: Option<&[Stri
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
             }
-            std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+            write_file_optimized(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
             written.push(safe.to_string_lossy().to_string());
         }
 
@@ -245,7 +248,7 @@ fn unpack_entries_sequential(buf: &[u8], start: usize, out_dir: &Path, files_opt
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
             }
-            std::fs::write(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+            write_file_optimized(&dest, content).map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
             written.push(safe.to_string_lossy().to_string());
         }
 
