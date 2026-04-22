@@ -267,7 +267,7 @@ jobs:
     name: Publish to npm
     needs: [build-and-upload, universal-macos]
     runs-on: ubuntu-latest
-    if: needs.build-and-upload.result == 'success' && needs.universal-macos.result == 'success' && github.event_name == 'release'
+    if: needs.build-and-upload.result == 'success' && needs.universal-macos.result == 'success' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''))
     steps:
       - uses: actions/checkout@v4
 
