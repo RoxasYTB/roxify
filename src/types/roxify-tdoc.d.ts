@@ -16,13 +16,10 @@ import type {
  * import { encodeBinaryToPng } from 'roxify';
  *
  * const png = await encodeBinaryToPng(Buffer.from('hello'), {
- *   mode: 'screenshot',
  *   name: 'hello.txt',
- *   compressionLevel: 19,
- *   outputFormat: 'png',
+ *   compressionLevel: 3,
  * });
- *
- *  * ```
+ * ```
  */
 export function encodeBinaryToPng(
   input: Buffer | Buffer[],

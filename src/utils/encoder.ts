@@ -5,6 +5,35 @@ import { EncodeOptions } from './types.js';
  * Encode a buffer or array of buffers into a PNG image (ROX format).
  * This function uses the native Rust encoder directly.
  *
+ * @example
+ * ```js
+ * import { readFileSync, writeFileSync } from 'fs';
+ * import { encodeBinaryToPng } from 'roxify';
+ *
+ * // Encode a file with a custom filename
+ * const input = readFileSync('config.json');
+ * const png = await encodeBinaryToPng(input, { name: 'config.json' });
+ * writeFileSync('config.png', png);
+ * ```
+ *
+ * @example
+ * ```js
+ * // Encode without filename
+ * const input = Buffer.from('Hello World');
+ * const png = await encodeBinaryToPng(input);
+ * ```
+ *
+ * @example
+ * ```js
+ * // Encode with encryption (AES)
+ * const input = readFileSync('secret.txt');
+ * const png = await encodeBinaryToPng(input, {
+ *   name: 'secret.txt',
+ *   passphrase: 'my-secret-key',
+ *   encrypt: 'aes'
+ * });
+ * ```
+ *
  * @param input - The buffer or array of buffers to encode.
  * @param opts - Optional encoding options.
  * @returns A Promise that resolves to a PNG Buffer containing the encoded data.
