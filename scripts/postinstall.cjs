@@ -180,3 +180,33 @@ try {
             }
       }
 } catch (e) { }
+
+// Cleanup: remove CLI binaries for other platforms from dist/
+try {
+      const os = platform();
+      const distFiles = existsSync(distDir) ? readdirSync(distDir) : [];
+      for (const f of distFiles) {
+            // Windows: keep roxify_native.exe, remove others
+            if (os === 'win32') {
+                  if (f === 'roxify_native.exe' || f === 'roxify_native') continue;
+                  if (f.match(/^roxify_native/) || f === 'rox-macos-universal') {
+                        try { unlinkSync(join(distDir, f)); console.log(`roxify: removed dist/${f}`); } catch (e) { }
+                  }
+            }
+            // Linux: keep roxify_native, remove others
+            else if (os === 'linux') {
+                  if (f === 'roxify_native') continue;
+                  if (f.match(/^roxify_native/) || f === 'rox-macos-universal') {
+                        try { unlinkSync(join(distDir, f)); console.log(`roxify: removed dist/${f}`); } catch (e) { }
+                  }
+            }
+            // macOS: keep rox-macos-universal (or roxify_native-macos-*), remove others
+            else if (os === 'darwin') {
+                  if (f === 'rox-macos-universal') continue;
+                  if (f.match(/^roxify_native-macos-/)) continue;
+                  if (f.match(/^roxify_native/)) {
+                        try { unlinkSync(join(distDir, f)); console.log(`roxify: removed dist/${f}`); } catch (e) { }
+                  }
+            }
+      }
+} catch (e) { }
