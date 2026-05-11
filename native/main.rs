@@ -6,20 +6,20 @@ use std::io::{Read, Write};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod core;
-mod encoder;
-mod packer;
-mod crypto;
-mod png_utils;
-mod png_chunk_writer;
-mod io_advice;
-mod audio;
-mod reconstitution;
 mod archive;
+mod audio;
+mod core;
+mod crypto;
+mod encoder;
+mod io_advice;
+mod packer;
+mod png_chunk_writer;
+mod png_utils;
+mod progress;
+mod reconstitution;
 mod streaming;
 mod streaming_decode;
 mod streaming_encode;
-mod progress;
 
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
@@ -41,16 +41,16 @@ const FAST_COMPRESSION_THRESHOLD_MB: u64 = 100;
 const STREAMING_THRESHOLD_MB: u64 = 500;
 
 // Adaptive Compression Levels
-const COMPRESSION_ULTRA_FAST: i32 = 1;    // < 100MB files, lots of RAM
-const COMPRESSION_FAST: i32 = 2;          // < 500MB files
-const COMPRESSION_BALANCED: i32 = 3;      // Default, 500MB-2GB
-const COMPRESSION_SMALL_FILES: i32 = 5;   // Many small files
+const COMPRESSION_ULTRA_FAST: i32 = 1; // < 100MB files, lots of RAM
+const COMPRESSION_FAST: i32 = 2; // < 500MB files
+const COMPRESSION_BALANCED: i32 = 3; // Default, 500MB-2GB
+const COMPRESSION_SMALL_FILES: i32 = 5; // Many small files
 
 // RAM Usage Tiers
-const RAM_TIER_ULTRA: u64 = 16384;        // 16GB+ - Aggressive optimization
-const RAM_TIER_HIGH: u64 = 8192;          // 8GB+ - Fast mode
-const RAM_TIER_MEDIUM: u64 = 4096;        // 4GB+ - Balanced
-const RAM_TIER_LOW: u64 = 2048;           // 2GB+ - Conservative
+const RAM_TIER_ULTRA: u64 = 16384; // 16GB+ - Aggressive optimization
+const RAM_TIER_HIGH: u64 = 8192; // 8GB+ - Fast mode
+const RAM_TIER_MEDIUM: u64 = 4096; // 4GB+ - Balanced
+const RAM_TIER_LOW: u64 = 2048; // 2GB+ - Conservative
 
 #[derive(Parser)]
 #[command(author, version)]
@@ -191,23 +191,23 @@ fn auto_ram_budget_mb() -> u64 {
     let total_mb = parse_total_ram_mb().unwrap_or(4096);
     let available_mb = parse_linux_mem_available_mb().unwrap_or(total_mb / 2);
     let cpu_cores = get_cpu_cores();
-    
+
     // Base calculation: use up to 85% of available RAM for ultra-fast mode
     let base_budget = available_mb.saturating_mul(85) / 100;
-    
+
     // Adjust based on RAM tier and CPU cores
     let tier_multiplier = match get_ram_tier(total_mb) {
-        "ultra" if cpu_cores >= 8 => 90,      // 16GB+ with 8+ cores: 90%
-        "ultra" => 85,                        // 16GB+ with fewer cores
-        "high" if cpu_cores >= 6 => 80,       // 8GB+ with 6+ cores
-        "high" => 75,                         // 8GB+
-        "medium" => 70,                       // 4GB+
-        _ => 65,                              // 2GB+
+        "ultra" if cpu_cores >= 8 => 90, // 16GB+ with 8+ cores: 90%
+        "ultra" => 85,                   // 16GB+ with fewer cores
+        "high" if cpu_cores >= 6 => 80,  // 8GB+ with 6+ cores
+        "high" => 75,                    // 8GB+
+        "medium" => 70,                  // 4GB+
+        _ => 65,                         // 2GB+
     };
-    
+
     let budget = available_mb.saturating_mul(tier_multiplier) / 100;
     let budget = budget.max(MIN_RAM_BUDGET_MB);
-    
+
     // Cap at reasonable maximum to prevent OOM
     let max_budget = (total_mb / 2).max(8192);
     budget.min(max_budget)
@@ -219,17 +219,17 @@ fn auto_compression_level(file_size_mb: u64, ram_budget_mb: u64) -> i32 {
     if file_size_mb < FAST_COMPRESSION_THRESHOLD_MB && ram_budget_mb >= RAM_TIER_HIGH {
         return COMPRESSION_ULTRA_FAST;
     }
-    
+
     // Fast mode for medium files
     if file_size_mb < STREAMING_THRESHOLD_MB {
         return COMPRESSION_FAST;
     }
-    
+
     // Balanced for large files
     if ram_budget_mb >= RAM_TIER_MEDIUM {
         return COMPRESSION_BALANCED;
     }
-    
+
     // Conservative for low RAM
     COMPRESSION_SMALL_FILES
 }
@@ -237,10 +237,11 @@ fn auto_compression_level(file_size_mb: u64, ram_budget_mb: u64) -> i32 {
 /// Determine if streaming mode should be used
 fn should_use_streaming(file_size_mb: u64, ram_budget_mb: u64) -> bool {
     // Force streaming for very large files
-    if file_size_mb >= 2048 { // 2GB+
+    if file_size_mb >= 2048 {
+        // 2GB+
         return true;
     }
-    
+
     // Use streaming when file is larger than 60% of RAM budget
     let threshold = ram_budget_mb.saturating_mul(60) / 100;
     file_size_mb >= threshold
@@ -250,7 +251,7 @@ fn should_use_streaming(file_size_mb: u64, ram_budget_mb: u64) -> bool {
 fn optimal_zstd_threads(file_size_mb: u64, ram_budget_mb: u64) -> i32 {
     let cpu_cores = get_cpu_cores();
     let ram_tier = get_ram_tier(parse_total_ram_mb().unwrap_or(4096));
-    
+
     match ram_tier {
         "ultra" => cpu_cores.min(16) as i32,
         "high" => cpu_cores.min(8) as i32,
@@ -293,7 +294,10 @@ fn streaming_preference_threshold_bytes(ram_budget_mb: u64) -> u64 {
         .max(64 * MB_U64)
 }
 
-fn normalize_png_archive_bytes(png_data: &[u8], passphrase: Option<&str>) -> anyhow::Result<Vec<u8>> {
+fn normalize_png_archive_bytes(
+    png_data: &[u8],
+    passphrase: Option<&str>,
+) -> anyhow::Result<Vec<u8>> {
     let payload = png_utils::extract_payload_from_png(png_data).map_err(|e| anyhow::anyhow!(e))?;
     if payload.is_empty() {
         return Err(anyhow::anyhow!("Empty payload"));
@@ -315,7 +319,8 @@ fn unpack_archive_bytes(
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
 ) -> anyhow::Result<Vec<String>> {
     let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
-        Box::new(std::io::Cursor::new(normalized[4..].to_vec()))
+        // ROX1 indicates raw pack format, pass directly to packer (it will handle ROX1/ROXI/ROXP)
+        Box::new(std::io::Cursor::new(normalized))
     } else {
         let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(normalized))
             .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
@@ -334,7 +339,8 @@ fn write_all(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
     let f = File::create(path)?;
     let budget_bytes = ram_budget_bytes(effective_ram_budget_mb());
     let dynamic_cap = (budget_bytes / 24)
-        .clamp(MIN_WRITE_BUFFER_BYTES as u64, MAX_WRITE_BUFFER_BYTES as u64) as usize;
+        .clamp(MIN_WRITE_BUFFER_BYTES as u64, MAX_WRITE_BUFFER_BYTES as u64)
+        as usize;
     let buf_size = dynamic_cap.min(data.len().max(8192));
     let mut writer = std::io::BufWriter::with_capacity(buf_size, f);
     writer.write_all(data)?;
@@ -348,44 +354,68 @@ fn parse_markers(v: &[String]) -> Option<Vec<u8>> {
     }
     let mut out = Vec::new();
     for s in v {
-        let parts: Vec<&str> = s.split(|c| c == ':' || c == ',' ).collect();
+        let parts: Vec<&str> = s.split(|c| c == ':' || c == ',').collect();
         if parts.len() >= 3 {
-            if let (Ok(r), Ok(g), Ok(b)) = (parts[0].parse::<u8>(), parts[1].parse::<u8>(), parts[2].parse::<u8>()) {
-                out.push(r); out.push(g); out.push(b);
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                parts[0].parse::<u8>(),
+                parts[1].parse::<u8>(),
+                parts[2].parse::<u8>(),
+            ) {
+                out.push(r);
+                out.push(g);
+                out.push(b);
             }
         }
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
-    if files.trim_start().starts_with('[') {
-        serde_json::from_str::<Vec<String>>(files)
-            .map_err(|e| anyhow::anyhow!("Invalid JSON for --files: {}", e))
-    } else {
-        Ok(files
-            .split(',')
-            .map(|file| file.trim().to_string())
-            .filter(|file| !file.is_empty())
-            .collect())
+    fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
+        if files.trim_start().starts_with('[') {
+            serde_json::from_str::<Vec<String>>(files)
+                .map_err(|e| anyhow::anyhow!("Invalid JSON for --files: {}", e))
+        } else {
+            Ok(files
+                .split(',')
+                .map(|file| file.trim().to_string())
+                .filter(|file| !file.is_empty())
+                .collect())
+        }
     }
-}
     match cli.command {
-        Commands::TrainDict { samples, size, output } => {
+        Commands::TrainDict {
+            samples,
+            size,
+            output,
+        } => {
             let dict = core::train_zstd_dictionary(&samples, size)?;
             write_all(&output, &dict)?;
             println!("wrote {} bytes dictionary to {:?}", dict.len(), output);
             return Ok(());
         }
-        Commands::Encode { input, output, level, passphrase, encrypt, name, dict, ram_budget_mb } => {
+        Commands::Encode {
+            input,
+            output,
+            level,
+            passphrase,
+            encrypt,
+            name,
+            dict,
+            ram_budget_mb,
+        } => {
             let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
             std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
             let is_dir = input.is_dir();
 
-            let file_name = name.as_deref()
+            let file_name = name
+                .as_deref()
                 .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
             if is_dir && dict.is_none() {
@@ -407,7 +437,9 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
             let (payload, file_list_json) = if is_dir {
                 let result = archive::tar_pack_directory_with_list(&input)
                     .map_err(|e| anyhow::anyhow!(e))?;
-                let json_list: Vec<serde_json::Value> = result.file_list.iter()
+                let json_list: Vec<serde_json::Value> = result
+                    .file_list
+                    .iter()
                     .map(|(name, size)| serde_json::json!({"name": name, "size": size}))
                     .collect();
                 (result.data, Some(serde_json::to_string(&json_list)?))
@@ -421,7 +453,8 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                 None => None,
             };
 
-            let use_streaming = (payload.len() as u64) > streaming_preference_threshold_bytes(ram_budget_mb);
+            let use_streaming =
+                (payload.len() as u64) > streaming_preference_threshold_bytes(ram_budget_mb);
             eprintln!("PROGRESS:50:100:encoding");
 
             if use_streaming {
@@ -496,7 +529,12 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                                 let json_end = json_start + json_len;
 
                                 if json_end <= meta_chunk.data.len() {
-                                    println!("{}", String::from_utf8_lossy(&meta_chunk.data[json_start..json_end]));
+                                    println!(
+                                        "{}",
+                                        String::from_utf8_lossy(
+                                            &meta_chunk.data[json_start..json_end]
+                                        )
+                                    );
                                     return Ok(());
                                 }
                             }
@@ -516,7 +554,11 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                 }
                 Err(pixel_err) => {
                     if let Some(chunk_err) = chunk_scan_error {
-                        return Err(anyhow::anyhow!("chunk scan: {}; pixel scan: {}", chunk_err, pixel_err));
+                        return Err(anyhow::anyhow!(
+                            "chunk scan: {}; pixel scan: {}",
+                            chunk_err,
+                            pixel_err
+                        ));
                     }
                 }
             }
@@ -527,8 +569,11 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
             let buf = read_all(&input)?;
             let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
             if is_png {
-                let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
-                if !payload.is_empty() && (payload[0] == 0x01 || payload[0] == 0x02 || payload[0] == 0x03) {
+                let payload =
+                    png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
+                if !payload.is_empty()
+                    && (payload[0] == 0x01 || payload[0] == 0x02 || payload[0] == 0x03)
+                {
                     println!("Passphrase detected.");
                 } else {
                     println!("No passphrase detected.");
@@ -541,7 +586,11 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                 }
             }
         }
-        Commands::Scan { input, channels, markers } => {
+        Commands::Scan {
+            input,
+            channels,
+            markers,
+        } => {
             let buf = read_all(&input)?;
             let marker_bytes = parse_markers(&markers);
             let res = crate::core::scan_pixels_bytes(&buf, channels, marker_bytes.as_deref());
@@ -560,29 +609,42 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
             let dest = output.unwrap_or_else(|| PathBuf::from("raw.bin"));
             write_all(&dest, &out)?;
         }
-        Commands::Compress { input, output, level, dict } => {
+        Commands::Compress {
+            input,
+            output,
+            level,
+            dict,
+        } => {
             let buf = read_all(&input)?;
             let dict_bytes: Option<Vec<u8>> = match dict {
                 Some(path) => Some(read_all(&path)?),
                 None => None,
             };
-            let out = crate::core::zstd_compress_bytes(
-                &buf,
-                level,
-                dict_bytes.as_deref(),
-            )
-            .map_err(|e: String| anyhow::anyhow!(e))?;
+            let out = crate::core::zstd_compress_bytes(&buf, level, dict_bytes.as_deref())
+                .map_err(|e: String| anyhow::anyhow!(e))?;
             let dest = output.unwrap_or_else(|| PathBuf::from("out.zst"));
             write_all(&dest, &out)?;
         }
-        Commands::Decompress { input, output, files, passphrase, dict, ram_budget_mb } => {
+        Commands::Decompress {
+            input,
+            output,
+            files,
+            passphrase,
+            dict,
+            ram_budget_mb,
+        } => {
             let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
             std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
             let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
             let is_png_file = input.extension().map(|e| e == "png").unwrap_or(false)
                 || (file_size >= 8 && {
                     let mut sig = [0u8; 8];
-                    std::fs::File::open(&input).and_then(|mut f| { use std::io::Read; f.read_exact(&mut sig) }).is_ok()
+                    std::fs::File::open(&input)
+                        .and_then(|mut f| {
+                            use std::io::Read;
+                            f.read_exact(&mut sig)
+                        })
+                        .is_ok()
                         && sig == [137, 80, 78, 71, 13, 10, 26, 10]
                 });
 
@@ -598,7 +660,8 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                     output.clone().unwrap_or_else(|| PathBuf::from("out.raw"))
                 };
 
-                let should_try_streaming = file_size >= streaming_preference_threshold_bytes(ram_budget_mb);
+                let should_try_streaming =
+                    file_size >= streaming_preference_threshold_bytes(ram_budget_mb);
 
                 if should_try_streaming {
                     let streaming_result = if let Some(ref selected) = requested_files {
@@ -630,7 +693,10 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                         }
                         Err(e) => {
                             eprintln!("PROGRESS:12:100:streaming_fallback");
-                            eprintln!("Streaming decode failed, falling back to reconstruction: {}", e);
+                            eprintln!(
+                                "Streaming decode failed, falling back to reconstruction: {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -677,26 +743,29 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                 Some(path) => Some(read_all(&path)?),
                 None => None,
             };
-                        if requested_files.is_some() {
-                                let file_list = requested_files;
+            if requested_files.is_some() {
+                let file_list = requested_files;
 
-                                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
 
-                                use std::io::Cursor;
+                use std::io::Cursor;
                 let normalized: Vec<u8> = if is_png {
-                    let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
-                    if payload.is_empty() { return Err(anyhow::anyhow!("Empty payload")); }
+                    let payload = png_utils::extract_payload_from_png(&buf)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if payload.is_empty() {
+                        return Err(anyhow::anyhow!("Empty payload"));
+                    }
                     if payload[0] == 0x00u8 {
                         payload[1..].to_vec()
                     } else {
-                                                let pass = passphrase.as_ref().map(|s: &String| s.as_str());
+                        let pass = passphrase.as_ref().map(|s: &String| s.as_str());
                         match crate::crypto::try_decrypt(&payload, pass) {
                             Ok(v) => v,
                             Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
                         }
                     }
                 } else {
-                                        if buf[0] == 0x00u8 {
+                    if buf[0] == 0x00u8 {
                         buf[1..].to_vec()
                     } else if buf.starts_with(b"ROX1") {
                         buf[4..].to_vec()
@@ -707,38 +776,55 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                             Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
                         }
                     } else {
-                                                buf.to_vec()
+                        buf.to_vec()
                     }
                 };
 
-                                                let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
+                let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
                     Box::new(Cursor::new(normalized[4..].to_vec()))
                 } else {
-                    let mut dec = zstd::stream::Decoder::new(Cursor::new(normalized)).map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-                    dec.window_log_max(31).map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
+                    let mut dec = zstd::stream::Decoder::new(Cursor::new(normalized))
+                        .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
+                    dec.window_log_max(31)
+                        .map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
                     Box::new(dec)
                 };
 
                 let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
-                std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
+                std::fs::create_dir_all(&out_dir).map_err(|e| {
+                    anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e)
+                })?;
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
 
-                                let written = packer::unpack_stream_to_dir(&mut reader, &out_dir, files_slice, Some(&|current, total, step| {
-                                    eprintln!("PROGRESS:{}:{}:{}", current, total, step);
-                                }), 0).map_err(|e| anyhow::anyhow!(e))?;
+                let written = packer::unpack_stream_to_dir(
+                    &mut reader,
+                    &out_dir,
+                    files_slice,
+                    Some(&|current, total, step| {
+                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                    }),
+                    0,
+                )
+                .map_err(|e| anyhow::anyhow!(e))?;
                 eprintln!("PROGRESS:100:100:done");
                 println!("Unpacked {} files", written.len());
             } else {
-                                                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
                 let out_bytes = if is_png {
-                    let payload = png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
-                    if payload.is_empty() { return Err(anyhow::anyhow!("Empty payload")); }
+                    let payload = png_utils::extract_payload_from_png(&buf)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if payload.is_empty() {
+                        return Err(anyhow::anyhow!("Empty payload"));
+                    }
                     let first = payload[0];
                     if first == 0x00u8 {
                         let compressed = payload[1..].to_vec();
-                        match crate::core::zstd_decompress_bytes(&compressed, dict_bytes.as_deref()) {
+                        match crate::core::zstd_decompress_bytes(&compressed, dict_bytes.as_deref())
+                        {
                             Ok(mut o) => {
-                                if o.starts_with(b"ROX1") { o = o[4..].to_vec(); }
+                                if o.starts_with(b"ROX1") {
+                                    o = o[4..].to_vec();
+                                }
                                 o
                             }
                             Err(e) => {
@@ -759,9 +845,14 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                                 } else {
                                     v
                                 };
-                                match crate::core::zstd_decompress_bytes(&inner, dict_bytes.as_deref()) {
+                                match crate::core::zstd_decompress_bytes(
+                                    &inner,
+                                    dict_bytes.as_deref(),
+                                ) {
                                     Ok(mut o) => {
-                                        if o.starts_with(b"ROX1") { o = o[4..].to_vec(); }
+                                        if o.starts_with(b"ROX1") {
+                                            o = o[4..].to_vec();
+                                        }
                                         o
                                     }
                                     Err(_) => inner,
@@ -772,7 +863,12 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                     }
                 } else {
                     match crate::core::zstd_decompress_bytes(&buf, dict_bytes.as_deref()) {
-                        Ok(mut x) => { if x.starts_with(b"ROX1") { x = x[4..].to_vec(); } x },
+                        Ok(mut x) => {
+                            if x.starts_with(b"ROX1") {
+                                x = x[4..].to_vec();
+                            }
+                            x
+                        }
                         Err(e) => {
                             if buf.starts_with(b"ROX1") {
                                 eprintln!("⚠️ zstd decompress failed ({}), but input already starts with ROX1: using raw pack", e);
@@ -816,8 +912,10 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
                         png_utils::extract_name_from_png(&buf)
                     } else {
                         None
-                    }.unwrap_or_else(|| {
-                        input.file_stem()
+                    }
+                    .unwrap_or_else(|| {
+                        input
+                            .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_else(|| "out.raw".to_string())
                     });
@@ -839,4 +937,3 @@ fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
     }
     Ok(())
 }
-

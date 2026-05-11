@@ -528,6 +528,54 @@ async function encodeCommand(args: string[]) {
     } else {
       const resolvedInput = resolvedInputs[0];
       const st = statSync(resolvedInput);
+
+      // Calculate total size for deciding whether to use Rust CLI streaming
+      const totalInputSize = st.isDirectory()
+        ? getDirectorySize(resolvedInput)
+        : st.size;
+
+      // Use Rust CLI for large files (> 1GB) to avoid Buffer.concat 4GB limit
+      const STREAMING_THRESHOLD = 1024 * 1024 * 1024; // 1GB
+
+      if (totalInputSize > STREAMING_THRESHOLD && isRustBinaryAvailable()) {
+        console.log('Using native Rust encoder (streaming for large payload)\n');
+
+        const encodeStart = Date.now();
+        let lastPct = 0;
+
+        await encodeWithRustCLI(
+          resolvedInput,
+          resolvedOutput,
+          parsed.level ? Number(parsed.level) : 6,
+          parsed.passphrase,
+          (parsed.encrypt as 'aes' | 'xor') || 'aes',
+          parsed.outputName || (st.isDirectory() ? basename(resolvedInput) : undefined),
+          undefined, // ramBudgetMb
+          (current, total, step) => {
+            const pct = Math.floor((current / total) * 100);
+            if (pct !== lastPct) {
+              lastPct = pct;
+              if (barStarted) {
+                encodeBar.update(pct, { step });
+              }
+            }
+          },
+        );
+
+        const encodeTime = Date.now() - encodeStart;
+        if (barStarted) {
+          encodeBar.update(100, { step: 'done', elapsed: String(Math.floor(encodeTime / 1000)) });
+          encodeBar.stop();
+        }
+
+        console.log(`\nSuccess!`);
+        console.log(`  Input:  ${(totalInputSize / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`  Time:   ${encodeTime}ms`);
+        console.log(`  Saved:  ${resolvedOutput}`);
+        console.log(' ');
+        return;
+      }
+
       if (st.isDirectory()) {
         currentEncodeStep = 'Reading files';
         const { index, stream, totalSize } = await js.packPathsGenerator(
@@ -658,6 +706,11 @@ async function decodeCommand(args: string[]) {
 
   const resolvedOutput = parsed.output || outputPath || '.';
 
+  if (!isRustBinaryAvailable()) {
+    console.error('Error: Rust decoder binary not found');
+    process.exit(1);
+  }
+
   try {
     console.log(' ');
     console.log('Decoding... (Using native Rust decoder)\n');
@@ -669,25 +722,22 @@ async function decodeCommand(args: string[]) {
     );
     decodeBar.start(100, 0, { step: 'Decoding', elapsed: '0' });
 
-    const js = await loadJsEngine();
-    const result = await js.decodePngToBinary(readFileSync(resolvedInput));
-
-    if (result.files && result.files.length > 0) {
-      const outputDir = resolve(resolvedOutput);
-      for (const file of result.files) {
-        const dest = join(outputDir, file.path);
-        const parent = dirname(dest);
-        try {
-          await import('fs/promises').then(({ mkdir }) => mkdir(parent, { recursive: true }));
-        } catch { }
-        writeFileSync(dest, file.buf);
-      }
-    } else if (result.buf) {
-      const outputFile = resolvedOutput === '.' ? join(process.cwd(), result.meta?.name || basename(resolvedInput).replace(/\.[^.]+$/, '')) : resolvedOutput;
-      writeFileSync(outputFile, result.buf);
-    } else {
-      throw new Error('Decoded result is empty');
-    }
+    await decodeWithRustCLI(
+      resolvedInput,
+      resolvedOutput,
+      parsed.passphrase,
+      parsed.files,
+      parsed.dict,
+      parsed.ramBudgetMb,
+      (current, total, step) => {
+        const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        decodeBar.update(Math.min(pct, 99), {
+          step: step || 'Decoding',
+          elapsed: String(elapsed),
+        });
+      },
+    );
 
     const decodeTime = Date.now() - startTime;
     decodeBar.update(100, { step: 'done', elapsed: String(Math.floor(decodeTime / 1000)) });

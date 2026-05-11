@@ -1,10 +1,19 @@
 const { execSync } = require('child_process');
-const { existsSync, copyFileSync, mkdirSync, readdirSync, unlinkSync } = require('fs');
+const { existsSync, copyFileSync, mkdirSync, readdirSync, unlinkSync, chmodSync } = require('fs');
 const { join } = require('path');
 const { platform, arch } = require('os');
 
 const root = join(__dirname, '..');
 const distDir = join(root, 'dist');
+
+// Try to import download helper
+try {
+      var { downloadBinary, downloadNativeLib } = require('./download-binary.cjs');
+} catch (e) {
+      console.log('roxify: Download helper not available, will use local build only');
+      var downloadBinary = null;
+      var downloadNativeLib = null;
+}
 
 function hasCargo() {
       try {
@@ -18,195 +27,182 @@ function getTriples() {
       const cpu = arch();
       const map = {
             linux: { x64: ['x86_64-unknown-linux-gnu'], arm64: ['aarch64-unknown-linux-gnu'] },
-            win32: { x64: ['x86_64-pc-windows-msvc', 'x86_64-pc-windows-gnu'], arm64: ['aarch64-pc-windows-msvc'] },
+            win32: { x64: ['x86_64-pc-windows-msvc'], arm64: ['aarch64-pc-windows-msvc'] },
             darwin: { x64: ['x86_64-apple-darwin'], arm64: ['aarch64-apple-darwin'] },
       };
       return (map[os] && map[os][cpu]) || [];
-}
-
-function getLibExt() {
-      if (platform() === 'win32') return 'dll';
-      if (platform() === 'darwin') return 'dylib';
-      return 'so';
 }
 
 function getBinaryName() {
       return platform() === 'win32' ? 'roxify_native.exe' : 'roxify_native';
 }
 
-function findExistingBinary() {
-      const name = getBinaryName();
-      const triples = getTriples();
-      const candidates = [join(distDir, name), join(root, 'target', 'release', name)];
-      for (const t of triples) {
-            candidates.push(join(root, 'target', t, 'release', name));
-      }
-      for (const c of candidates) {
-            if (existsSync(c)) return c;
-      }
-      return null;
+function getMacosBinaryName() {
+      return 'rox-macos-universal';
 }
 
-function findExistingNativeLib() {
-      const triples = getTriples();
-      const ext = getLibExt();
-      const prefix = platform() === 'win32' ? '' : 'lib';
-      for (const t of triples) {
-            const specific = join(root, `roxify_native-${t}.node`);
-            if (existsSync(specific)) return { path: specific, triple: t };
-      }
-      for (const t of triples) {
-            for (const profile of ['release', 'fastdev']) {
-                  const paths = [
-                        join(root, 'target', t, profile, `${prefix}roxify_native.${ext}`),
-                        join(root, 'target', profile, `${prefix}roxify_native.${ext}`),
-                  ];
-                  for (const p of paths) {
-                        if (existsSync(p)) return { path: p, triple: t };
-                  }
-            }
-      }
-      return null;
-}
-
-function buildNative(target) {
-      if (!hasCargo()) return false;
-      const args = target ? ` --target ${target}` : '';
-      console.log(`roxify: Building native lib${args}...`);
-      try {
-            execSync(`cargo build --release --lib${args}`, { cwd: root, stdio: 'inherit', timeout: 600000 });
-            return true;
-      } catch {
-            console.log('roxify: Native lib build failed');
-            return false;
-      }
-}
-
-function buildBinary() {
+function buildBinaryLocally() {
       if (!hasCargo()) {
-            console.log('roxify: Cargo not found, skipping native build (TypeScript fallback will be used)');
+            console.log('roxify: Cargo not found, will try to download prebuilt binary');
             return false;
       }
-      console.log('roxify: Building native CLI binary...');
+      console.log('roxify: Building native CLI binary locally...');
       try {
             execSync('cargo build --release --bin roxify_native', { cwd: root, stdio: 'inherit', timeout: 600000 });
             return true;
-      } catch {
-            console.log('roxify: Native build failed, TypeScript fallback will be used');
+      } catch (e) {
+            console.log('roxify: Local build failed, will try to download prebuilt binary');
             return false;
       }
 }
 
-function ensureCliBinary() {
+async function ensureCliBinary() {
       if (!existsSync(distDir)) mkdirSync(distDir, { recursive: true });
-      const dest = join(distDir, getBinaryName());
-      if (existsSync(dest)) return;
 
-      const existing = findExistingBinary();
-      if (existing && existing !== dest) {
-            copyFileSync(existing, dest);
+      const binaryName = platform() === 'darwin' ? getMacosBinaryName() : getBinaryName();
+      const dest = join(distDir, binaryName);
+
+      if (existsSync(dest)) {
+            console.log(`roxify: CLI binary already exists at ${dest}`);
+            return true;
+      }
+
+      // Check if built locally exists
+      const localBuilt = join(root, 'target', 'release', getBinaryName());
+      if (existsSync(localBuilt)) {
+            copyFileSync(localBuilt, dest);
             if (platform() !== 'win32') {
-                  try { require('fs').chmodSync(dest, 0o755); } catch { }
+                  try { chmodSync(dest, 0o755); } catch { }
             }
-            console.log(`roxify: Copied CLI binary from ${existing}`);
-            return;
+            console.log(`roxify: CLI binary copied from local build`);
+            return true;
       }
-      if (existing) return;
-      if (process.env.ROXIFY_SKIP_BUILD === '1') return;
 
-      if (buildBinary()) {
-            const built = join(root, 'target', 'release', getBinaryName());
-            if (existsSync(built)) {
-                  copyFileSync(built, dest);
+      if (process.env.ROXIFY_SKIP_BUILD === '1') return false;
+
+      // PRIMARY: Try download from GitHub releases (fast, no compilation)
+      if (downloadBinary && !process.env.ROXIFY_FORCE_LOCAL_BUILD) {
+            console.log(`roxify: Attempting to download prebuilt binary from GitHub...`);
+            const downloaded = await downloadBinary();
+            if (downloaded) {
+                  console.log(`roxify: Successfully downloaded prebuilt binary`);
+                  return true;
+            }
+            console.log(`roxify: Download failed, will try local build...`);
+      }
+
+      // FALLBACK: Try local build (requires Cargo)
+      if (buildBinaryLocally()) {
+            if (existsSync(localBuilt)) {
+                  copyFileSync(localBuilt, dest);
                   if (platform() !== 'win32') {
-                        try { require('fs').chmodSync(dest, 0o755); } catch { }
+                        try { chmodSync(dest, 0o755); } catch { }
                   }
-                  console.log('roxify: CLI binary built and copied to dist/');
+                  console.log(`roxify: CLI binary built locally`);
+                  return true;
             }
       }
+
+      console.log('roxify: No native binary available, TypeScript fallback will be used');
+      return false;
 }
 
-function ensureNativeLib() {
+async function ensureNativeLib() {
       const triples = getTriples();
       if (!triples.length) return;
 
-      for (const t of triples) {
-            if (existsSync(join(root, `roxify_native-${t}.node`))) return;
-      }
+      const triple = triples[0];
+      const dest = join(root, `roxify_native-${triple}.node`);
 
-      const found = findExistingNativeLib();
-      if (found) {
-            const dest = join(root, `roxify_native-${found.triple}.node`);
-            copyFileSync(found.path, dest);
-            console.log(`roxify: Copied native lib → ${dest}`);
+      if (existsSync(dest)) return;
+
+      // Check if built locally
+      const ext = platform() === 'win32' ? 'dll' : (platform() === 'darwin' ? 'dylib' : 'so');
+      const prefix = platform() === 'win32' ? '' : 'lib';
+      const localBuilt = join(root, 'target', 'release', `${prefix}roxify_native.${ext}`);
+
+      if (existsSync(localBuilt)) {
+            copyFileSync(localBuilt, dest);
+            console.log(`roxify: Native lib copied from local build → ${dest}`);
             return;
       }
 
       if (process.env.ROXIFY_SKIP_BUILD === '1') return;
 
-      const triple = triples[0];
-      if (buildNative(null)) {
-            const ext = getLibExt();
-            const prefix = platform() === 'win32' ? '' : 'lib';
-            const built = join(root, 'target', 'release', `${prefix}roxify_native.${ext}`);
-            if (existsSync(built)) {
-                  const dest = join(root, `roxify_native-${triple}.node`);
-                  copyFileSync(built, dest);
-                  console.log(`roxify: Native lib built → ${dest}`);
+      // PRIMARY: Try download from GitHub releases
+      if (downloadNativeLib && !process.env.ROXIFY_FORCE_LOCAL_BUILD) {
+            console.log(`roxify: Attempting to download native lib from GitHub...`);
+            const downloaded = await downloadNativeLib();
+            if (downloaded) {
+                  console.log(`roxify: Successfully downloaded native lib`);
+                  return;
+            }
+            console.log(`roxify: Native lib download failed, will try local build...`);
+      }
+
+      // FALLBACK: Try build locally
+      if (hasCargo()) {
+            console.log(`roxify: Building native lib locally...`);
+            try {
+                  execSync('cargo build --release --lib', { cwd: root, stdio: 'inherit', timeout: 600000 });
+                  if (existsSync(localBuilt)) {
+                        copyFileSync(localBuilt, dest);
+                        console.log(`roxify: Native lib built locally → ${dest}`);
+                  }
+            } catch {
+                  console.log('roxify: Native lib build failed, TypeScript fallback will be used');
             }
       }
 }
 
-if (process.env.ROXIFY_ENABLE_RUST_CLI === '1') {
-      ensureCliBinary();
-}
-ensureNativeLib();
+// Always ensure CLI binary is available (download first, build as fallback)
+(async () => {
+      await ensureCliBinary();
+      await ensureNativeLib();
 
-// Cleanup: remove other platform .node artifacts to reduce disk usage after install
+      // Summary
+      console.log('');
+      console.log('roxify: Post-install complete');
+      console.log(`roxify: Platform: ${platform()}/${arch()}`);
+      if (!existsSync(join(distDir, platform() === 'darwin' ? getMacosBinaryName() : getBinaryName()))) {
+            console.log('roxify: WARNING: No native CLI binary available - will use TypeScript fallback');
+      }
+})();
+
+// Cleanup: remove ALL other platform .node artifacts
 try {
       const triples = getTriples();
-      if (triples && triples.length) {
-            const files = readdirSync(root);
-            for (const f of files) {
-                  // match roxify_native-<triple>.node or libroxify_native-<triple>.node
-                  const m = f.match(/^(lib)?roxify_native-(.+)\.node$/);
-                  if (m) {
-                        const fileTriple = m[2];
-                        // keep if fileTriple is one of the allowed triples
-                        if (!triples.includes(fileTriple)) {
-                              try { unlinkSync(join(root, f)); console.log(`roxify: removed ${f}`); } catch (e) { }
-                        }
+      const files = readdirSync(root);
+      for (const f of files) {
+            const m = f.match(/^roxify_native-(.+)\.node$/);
+            if (m) {
+                  const fileTriple = m[1];
+                  if (!triples.includes(fileTriple)) {
+                        try {
+                              unlinkSync(join(root, f));
+                              console.log(`roxify: removed unused native lib ${f}`);
+                        } catch (e) { }
                   }
             }
       }
 } catch (e) { }
 
-// Cleanup: remove CLI binaries for other platforms from dist/
+// Cleanup: remove ALL other platform CLI binaries from dist/
 try {
       const os = platform();
       const distFiles = existsSync(distDir) ? readdirSync(distDir) : [];
+      const keepName = os === 'darwin' ? getMacosBinaryName() : getBinaryName();
+
       for (const f of distFiles) {
-            // Windows: keep roxify_native.exe, remove others
-            if (os === 'win32') {
-                  if (f === 'roxify_native.exe' || f === 'roxify_native') continue;
-                  if (f.match(/^roxify_native/) || f === 'rox-macos-universal') {
-                        try { unlinkSync(join(distDir, f)); console.log(`roxify: removed dist/${f}`); } catch (e) { }
-                  }
-            }
-            // Linux: keep roxify_native, remove others
-            else if (os === 'linux') {
-                  if (f === 'roxify_native') continue;
-                  if (f.match(/^roxify_native/) || f === 'rox-macos-universal') {
-                        try { unlinkSync(join(distDir, f)); console.log(`roxify: removed dist/${f}`); } catch (e) { }
-                  }
-            }
-            // macOS: keep rox-macos-universal (or roxify_native-macos-*), remove others
-            else if (os === 'darwin') {
-                  if (f === 'rox-macos-universal') continue;
-                  if (f.match(/^roxify_native-macos-/)) continue;
-                  if (f.match(/^roxify_native/)) {
-                        try { unlinkSync(join(distDir, f)); console.log(`roxify: removed dist/${f}`); } catch (e) { }
-                  }
+            // Skip if it's the correct binary for this platform
+            if (f === keepName) continue;
+
+            // Remove any roxify_native binary
+            if (f.match(/^roxify_native/) || f === 'rox-macos-universal') {
+                  try {
+                        unlinkSync(join(distDir, f));
+                        console.log(`roxify: removed unused binary dist/${f}`);
+                  } catch (e) { }
             }
       }
 } catch (e) { }
