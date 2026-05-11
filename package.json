@@ -12,6 +12,8 @@
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "dist/roxify_native*",
+    "dist/rox-macos-universal",
     "scripts/postinstall.cjs",
     "roxify_native-*.node",
     "libroxify_native-*.node",
