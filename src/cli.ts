@@ -36,7 +36,7 @@ async function loadJsEngine() {
 
 type VFSIndexEntry = { path: string; size: number; offset: number };
 
-const VERSION = '1.13.9';
+const VERSION = '1.14.0';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
@@ -658,11 +658,6 @@ async function decodeCommand(args: string[]) {
 
   const resolvedOutput = parsed.output || outputPath || '.';
 
-  if (!isRustBinaryAvailable()) {
-    console.error('Error: Rust decoder binary not found');
-    process.exit(1);
-  }
-
   try {
     console.log(' ');
     console.log('Decoding... (Using native Rust decoder)\n');
@@ -674,22 +669,25 @@ async function decodeCommand(args: string[]) {
     );
     decodeBar.start(100, 0, { step: 'Decoding', elapsed: '0' });
 
-    await decodeWithRustCLI(
-      resolvedInput,
-      resolvedOutput,
-      parsed.passphrase,
-      parsed.files,
-      parsed.dict,
-      parsed.ramBudgetMb,
-      (current, total, step) => {
-        const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        decodeBar.update(Math.min(pct, 99), {
-          step: step || 'Decoding',
-          elapsed: String(elapsed),
-        });
-      },
-    );
+    const js = await loadJsEngine();
+    const result = await js.decodePngToBinary(readFileSync(resolvedInput));
+
+    if (result.files && result.files.length > 0) {
+      const outputDir = resolve(resolvedOutput);
+      for (const file of result.files) {
+        const dest = join(outputDir, file.path);
+        const parent = dirname(dest);
+        try {
+          await import('fs/promises').then(({ mkdir }) => mkdir(parent, { recursive: true }));
+        } catch { }
+        writeFileSync(dest, file.buf);
+      }
+    } else if (result.buf) {
+      const outputFile = resolvedOutput === '.' ? join(process.cwd(), result.meta?.name || basename(resolvedInput).replace(/\.[^.]+$/, '')) : resolvedOutput;
+      writeFileSync(outputFile, result.buf);
+    } else {
+      throw new Error('Decoded result is empty');
+    }
 
     const decodeTime = Date.now() - startTime;
     decodeBar.update(100, { step: 'done', elapsed: String(Math.floor(decodeTime / 1000)) });

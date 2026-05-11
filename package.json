@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.13.9",
+  "version": "1.14.0",
   "type": "module",
   "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "main": "dist/index.js",
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=esm --minify && esbuild src/cli.ts --bundle --platform=node --target=node18 --outfile=dist/cli.js --format=esm --minify && tsc --emitDeclarationOnly --declaration --declarationDir dist",
+    "bundle": "esbuild src/cli.ts --bundle --platform=node --target=node18 --outfile=dist/cli.js --format=esm --minify --external:./index.js --external:./pack.js && tsc --emitDeclarationOnly --declaration --declarationDir dist",
     "prebuild:pkg": "node scripts/copy-cli-binary.js",
     "build:native": "cargo build --release --lib",
     "build:native:linux": "cargo build --release --lib --target x86_64-unknown-linux-gnu",
@@ -42,7 +42,7 @@
     "clean:targets": "node scripts/clean-artifacts.js",
     "release:prepare": "npm run build && npm run build:native:targets && node scripts/prepare-release.cjs",
     "release:github": "npm run release:prepare && node scripts/create-gh-release.cjs",
-    "package:prepare": "npm run bundle && npm run build:native:targets && node scripts/pack-npm.cjs",
+    "package:prepare": "npm run build && npm run bundle && npm run build:native:targets && node scripts/pack-npm.cjs",
     "publish:npm": "npm run package:prepare && echo 'Run npm publish --access public'",
     "release:flow": "node scripts/release-flow.cjs",
     "release:flow:auto": "AUTO_PUBLISH=1 node scripts/release-flow.cjs",
