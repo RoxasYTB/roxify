@@ -36,7 +36,7 @@ async function loadJsEngine() {
 
 type VFSIndexEntry = { path: string; size: number; offset: number };
 
-const VERSION = '1.14.0';
+const VERSION = '1.14.3';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
