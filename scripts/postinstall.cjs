@@ -1,5 +1,5 @@
 const { execSync } = require('child_process');
-const { existsSync, copyFileSync, mkdirSync } = require('fs');
+const { existsSync, copyFileSync, mkdirSync, readdirSync, unlinkSync } = require('fs');
 const { join } = require('path');
 const { platform, arch } = require('os');
 
@@ -157,5 +157,26 @@ function ensureNativeLib() {
       }
 }
 
-ensureCliBinary();
+if (process.env.ROXIFY_ENABLE_RUST_CLI === '1') {
+      ensureCliBinary();
+}
 ensureNativeLib();
+
+// Cleanup: remove other platform .node artifacts to reduce disk usage after install
+try {
+      const triples = getTriples();
+      if (triples && triples.length) {
+            const files = readdirSync(root);
+            for (const f of files) {
+                  // match roxify_native-<triple>.node or libroxify_native-<triple>.node
+                  const m = f.match(/^(lib)?roxify_native-(.+)\.node$/);
+                  if (m) {
+                        const fileTriple = m[2];
+                        // keep if fileTriple is one of the allowed triples
+                        if (!triples.includes(fileTriple)) {
+                              try { unlinkSync(join(root, f)); console.log(`roxify: removed ${f}`); } catch (e) { }
+                        }
+                  }
+            }
+      }
+} catch (e) { }

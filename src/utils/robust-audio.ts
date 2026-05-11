@@ -118,24 +118,6 @@ const GOERTZEL_COEFFS: { k: number; coeff: number }[] = CARRIERS.map(freq => {
 // ─── Signal Processing Primitives ───────────────────────────────────────────
 
 /**
- * Generate a raised-cosine windowed tone burst.
- */
-function generateTone(
-  freq: number,
-  numSamples: number,
-  amplitude: number,
-): Float64Array {
-  const out = new Float64Array(numSamples);
-  const w = (2 * Math.PI * freq) / SAMPLE_RATE;
-  for (let n = 0; n < numSamples; n++) {
-    // Raised cosine window (Hann)
-    const window = 0.5 * (1 - Math.cos((2 * Math.PI * n) / (numSamples - 1)));
-    out[n] = amplitude * window * Math.sin(w * n);
-  }
-  return out;
-}
-
-/**
  * Goertzel algorithm: compute energy at a specific frequency.
  * Returns normalized power (0–1 range for unit-amplitude input).
  */

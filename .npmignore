@@ -19,3 +19,9 @@ scripts/
 OPTIMIZATIONS.md
 bench.sh
 *.rs
+dist/roxify_native
+dist/roxify_native.exe
+dist/roxify-cli
+dist/roxify_native-macos-arm64
+dist/roxify_native-macos-x64
+dist/rox-macos-universal

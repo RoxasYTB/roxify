@@ -3,15 +3,13 @@ import { native } from './native.js';
 import { DecodeOptions, DecodeResult } from './types.js';
 import { unpackBuffer } from '../pack.js';
 
-const PXL1_MAGIC = Buffer.from([0x50, 0x58, 0x4c, 0x31]); // "PXL1"
-
 /**
  * Find PXL1 magic in pixel buffer
  */
 function findPxl1Offset(pixels: Buffer): number {
   for (let i = 0; i <= pixels.length - 4; i++) {
-    if (pixels[i] === 0x50 && pixels[i+1] === 0x58 &&
-        pixels[i+2] === 0x4c && pixels[i+3] === 0x31) {
+    if (pixels[i] === 0x50 && pixels[i + 1] === 0x58 &&
+      pixels[i + 2] === 0x4c && pixels[i + 3] === 0x31) {
       return i;
     }
   }
@@ -128,7 +126,7 @@ function extractPayloadFromPixels(pixels: Buffer): { payload: Buffer; name?: str
  */
 export async function decodePngToBinary(
   input: Buffer | string,
-  opts: DecodeOptions = {},
+  _opts: DecodeOptions = {},
 ): Promise<DecodeResult> {
   // Get PNG buffer
   let pngBuf: Buffer;
@@ -138,12 +136,14 @@ export async function decodePngToBinary(
     pngBuf = readFileSync(input);
   }
 
-  // Decode PNG to RGB pixels
-  const rgbResult = native.pngToRgb(pngBuf);
-  const pixels = Buffer.from(rgbResult.pixels);
+  const payload = Buffer.from(native.extractPayloadFromPng(pngBuf));
+  let name: string | undefined;
 
-  // Extract payload from pixels
-  const { payload, name } = extractPayloadFromPixels(pixels);
+  try {
+    const rgbResult = native.pngToRgb(pngBuf);
+    const pixels = Buffer.from(rgbResult.pixels);
+    ({ name } = extractPayloadFromPixels(pixels));
+  } catch { }
 
   if (payload.length === 0) {
     throw new Error('Empty payload extracted');
@@ -187,4 +187,97 @@ export async function decodePngToBinary(
   }
 
   return { buf: decompressed, meta: { name } };
+}
+
+/**
+ * Detect and reverse simple pixel-stretching where each logical pixel
+ * is repeated in an Fx×Fy block. Returns { width, height, data } or null.
+ */
+export function unstretchImage(pixels: Buffer, width: number, height: number) {
+  if (!Buffer.isBuffer(pixels)) return null;
+  if (pixels.length !== width * height * 3) return null;
+
+  try {
+    let allWhite = true;
+    for (let i = 0; i < pixels.length; i += 3) {
+      if (!(pixels[i] === 255 && pixels[i + 1] === 255 && pixels[i + 2] === 255)) { allWhite = false; break; }
+    }
+    if (allWhite) return null;
+
+    let minX = width, minY = height, maxX = -1, maxY = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 3;
+        if (!(pixels[idx] === 255 && pixels[idx + 1] === 255 && pixels[idx + 2] === 255)) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < 0) return null;
+
+    const cropW = maxX - minX + 1;
+    const cropH = maxY - minY + 1;
+
+    const colSig: string[] = [];
+    for (let x = 0; x < cropW; x++) {
+      const parts: number[] = [];
+      for (let y = 0; y < cropH; y++) {
+        const idx = ((minY + y) * width + (minX + x)) * 3;
+        parts.push(pixels[idx], pixels[idx + 1], pixels[idx + 2]);
+      }
+      colSig.push(parts.join(','));
+    }
+
+    const colGroups: { start: number; len: number }[] = [];
+    for (let x = 0; x < colSig.length; x++) {
+      if (x === 0 || colSig[x] !== colSig[x - 1]) colGroups.push({ start: x, len: 1 });
+      else colGroups[colGroups.length - 1].len++;
+    }
+
+    const rowSig: string[] = [];
+    for (let y = 0; y < cropH; y++) {
+      const parts: number[] = [];
+      for (let x = 0; x < cropW; x++) {
+        const idx = ((minY + y) * width + (minX + x)) * 3;
+        parts.push(pixels[idx], pixels[idx + 1], pixels[idx + 2]);
+      }
+      rowSig.push(parts.join(','));
+    }
+
+    const rowGroups: { start: number; len: number }[] = [];
+    for (let y = 0; y < rowSig.length; y++) {
+      if (y === 0 || rowSig[y] !== rowSig[y - 1]) rowGroups.push({ start: y, len: 1 });
+      else rowGroups[rowGroups.length - 1].len++;
+    }
+
+    const outW = colGroups.length;
+    const outH = rowGroups.length;
+    const hasRun = colGroups.some(g => g.len > 1) || rowGroups.some(g => g.len > 1);
+    if (!hasRun) return null;
+
+    const out = Buffer.alloc(outW * outH * 3);
+    for (let gy = 0; gy < outH; gy++) {
+      for (let gx = 0; gx < outW; gx++) {
+        const sx = minX + colGroups[gx].start;
+        const sy = minY + rowGroups[gy].start;
+        const baseIdx = (sy * width + sx) * 3;
+        const r = pixels[baseIdx], g = pixels[baseIdx + 1], b = pixels[baseIdx + 2];
+        for (let ry = 0; ry < rowGroups[gy].len; ry++) {
+          for (let rx = 0; rx < colGroups[gx].len; rx++) {
+            const ix = ((sy + ry) * width + (sx + rx)) * 3;
+            if (pixels[ix] !== r || pixels[ix + 1] !== g || pixels[ix + 2] !== b) return null;
+          }
+        }
+        const outIdx = (gy * outW + gx) * 3;
+        out[outIdx] = r; out[outIdx + 1] = g; out[outIdx + 2] = b;
+      }
+    }
+
+    return { width: outW, height: outH, data: out };
+  } catch {
+    return null;
+  }
 }

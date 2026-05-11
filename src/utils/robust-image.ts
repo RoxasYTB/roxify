@@ -21,14 +21,8 @@ import { native } from './native.js';
 /** Finder pattern (7×7 blocks, like QR codes). */
 const FINDER_SIZE = 7;
 
-/** Alignment pattern (5×5 blocks). */
-const ALIGNMENT_SIZE = 5;
-
 /** Quiet zone around finder patterns (blocks). */
 const QUIET_ZONE = 1;
-
-/** Header area width in blocks (next to top-left finder). */
-const HEADER_BLOCKS = 20;
 
 /** Magic bytes for robust image format. */
 const ROBUST_IMG_MAGIC = Buffer.from('RBI1');
@@ -49,24 +43,6 @@ function finderPattern(): boolean[][] {
       const inner =
         y >= 2 && y <= 4 && x >= 2 && x <= 4;
       row.push(border || inner);
-    }
-    p.push(row);
-  }
-  return p;
-}
-
-/**
- * Generate a 5×5 alignment pattern.
- */
-function alignmentPattern(): boolean[][] {
-  const p: boolean[][] = [];
-  for (let y = 0; y < ALIGNMENT_SIZE; y++) {
-    const row: boolean[] = [];
-    for (let x = 0; x < ALIGNMENT_SIZE; x++) {
-      const border =
-        y === 0 || y === 4 || x === 0 || x === 4;
-      const center = y === 2 && x === 2;
-      row.push(border || center);
     }
     p.push(row);
   }
@@ -390,13 +366,6 @@ const ECC_LEVEL_MAP: Record<EccLevel, number> = {
   medium: 1,
   quartile: 2,
   high: 3,
-};
-
-const ECC_LEVEL_REVERSE: Record<number, EccLevel> = {
-  0: 'low',
-  1: 'medium',
-  2: 'quartile',
-  3: 'high',
 };
 
 /**

@@ -45,7 +45,7 @@ function tryExtractFileListFromChunks(chunks: any[]): { name: string; size: numb
 
 export async function listFilesInPng(
   pngBuf: Buffer,
-  opts: { includeSizes?: boolean } = {},
+  _opts: { includeSizes?: boolean } = {},
 ): Promise<string[] | { name: string; size: number }[] | null> {
   try {
     const chunks = native.extractPngChunks(pngBuf);
@@ -227,7 +227,7 @@ export async function hasPassphraseInPng(pngBuf: Buffer): Promise<boolean> {
           idx += nameLen;
 
           if (valid.length < idx + 4 + 1) return;
-          const payloadLen = valid.readUInt32BE(idx);
+          valid.readUInt32BE(idx);
           idx += 4;
 
           if (valid.length < idx + 1) return;

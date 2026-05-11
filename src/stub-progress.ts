@@ -1,8 +1,8 @@
 export class SingleBar {
-  constructor(...args: any[]) {}
-  start(...args: any[]) {}
-  update(...args: any[]) {}
-  stop(...args: any[]) {}
+  constructor(..._args: any[]) { }
+  start(..._args: any[]) { }
+  update(..._args: any[]) { }
+  stop(..._args: any[]) { }
 }
 
 export const Presets = {

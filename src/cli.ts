@@ -36,7 +36,7 @@ async function loadJsEngine() {
 
 type VFSIndexEntry = { path: string; size: number; offset: number };
 
-const VERSION = '1.13.8';
+const VERSION = '1.13.9';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
@@ -337,13 +337,6 @@ async function encodeCommand(args: string[]) {
       }
     }
   } catch (e) { }
-
-  let anyInputDir = false;
-  try {
-    anyInputDir = resolvedInputs.some((p: string) => statSync(p).isDirectory());
-  } catch (e) {
-    anyInputDir = false;
-  }
 
   if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound' && parsed.compression !== 'bwt-ans') {
     try {

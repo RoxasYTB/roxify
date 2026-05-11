@@ -490,7 +490,6 @@ export function eccDecode(
   // RS-decode each block
   let totalCorrected = 0;
   const decoded: Buffer[] = [];
-  const k = dataPerBlock(nsym);
 
   for (let i = 0; i < numBlocks; i++) {
     const { data, corrected } = rsDecode(blocks[i], nsym);
@@ -509,4 +508,3 @@ export function eccDecode(
 // ─── Exports for testing ────────────────────────────────────────────────────
 
 export { GF_EXP, GF_LOG, calcSyndromes, gfDiv, gfMul, gfPow, polyEval };
-
