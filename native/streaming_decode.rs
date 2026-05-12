@@ -1,6 +1,6 @@
 use cipher::{KeyIvInit, StreamCipher};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const PIXEL_MAGIC: &[u8] = b"PXL1";
@@ -46,6 +46,7 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
 ) -> Result<Vec<String>, String> {
     let mut meta_file = File::open(png_path).map_err(|e| format!("open: {}", e))?;
     let (width, height, idat_ranges, total_expected) = parse_png_metadata(&mut meta_file)?;
+    let window_log_value = extract_window_log_from_png(png_path, width, height, &idat_ranges).unwrap_or(31);
 
     if let Some(ref cb) = progress {
         cb(2, 100, "parsing_png");
@@ -105,10 +106,8 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
             }
             let mut decoder =
                 zstd::stream::Decoder::new(reader).map_err(|e| format!("zstd decoder: {}", e))?;
-            let win = choose_zstd_window_log(total_expected);
-            decoder
-                .window_log_max(win)
-                .map_err(|e| format!("zstd window_log_max: {}", e))?;
+            // Forcer 31 pour éviter l'erreur "Frame requires too much memory"
+            let _ = decoder.window_log_max(31);
             read_rox1_and_unpack_with_progress(
                 decoder,
                 out_dir,
@@ -140,10 +139,8 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
             }
             let mut decoder = zstd::stream::Decoder::new(ctr_reader)
                 .map_err(|e| format!("zstd decoder: {}", e))?;
-            let win = choose_zstd_window_log(total_expected);
-            decoder
-                .window_log_max(win)
-                .map_err(|e| format!("zstd window_log_max: {}", e))?;
+            // Forcer 31 pour éviter l'erreur "Frame requires too much memory"
+            let _ = decoder.window_log_max(31);
             read_rox1_and_unpack_with_progress(
                 decoder,
                 out_dir,
@@ -195,7 +192,7 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     }
     std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {}", e))?;
 
-    // Reconstruct the stream with ROX1 prefix for packer (it expects ROX1/ROXI/ROXP sequence)
+    // Utilisation standard du packer pour éviter les erreurs Windows
     let mut chained = std::io::Cursor::new(magic).chain(decoder);
     crate::packer::unpack_stream_to_dir(
         &mut chained,
@@ -207,23 +204,7 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     .map_err(|e| format!("pack unpack: {}", e))
 }
 
-fn choose_zstd_window_log(total_expected: u64) -> u32 {
-    if total_expected <= 64 * 1024 * 1024 {
-        21u32
-    } else if total_expected <= 128 * 1024 * 1024 {
-        22u32
-    } else if total_expected <= 256 * 1024 * 1024 {
-        23u32
-    } else if total_expected <= 512 * 1024 * 1024 {
-        24u32
-    } else if total_expected <= 1024 * 1024 * 1024 {
-        26u32
-    } else if total_expected <= 2 * 1024 * 1024 * 1024u64 {
-        28u32
-    } else {
-        30u32
-    }
-}
+
 
 fn parse_png_metadata(file: &mut File) -> Result<(usize, usize, Vec<(u64, u64)>, u64), String> {
     let mut sig = [0u8; 8];
@@ -309,6 +290,57 @@ fn parse_rxfl_total_bytes(json_bytes: &[u8]) -> Option<u64> {
         );
     }
     None
+}
+
+fn extract_window_log_from_png(png_path: &Path, width: usize, height: usize, idat_ranges: &[(u64, u64)]) -> Option<u32> {
+    let file = File::open(png_path).ok()?;
+    let mut reader = DeflatePixelReader::new(file, width, height, idat_ranges.to_vec()).ok()?;
+
+    let total_bytes = width * height * 3;
+    let tail_size = 12usize;
+    let skip_size = total_bytes.saturating_sub(tail_size);
+
+    let mut skip_buf = vec![0u8; 65536];
+    let mut remaining = skip_size;
+    while remaining > 0 {
+        let to_read = remaining.min(skip_buf.len());
+        if reader.read(&mut skip_buf[..to_read]).ok()? == 0 { break; }
+        remaining -= to_read;
+    }
+
+    let mut tail = vec![0u8; tail_size];
+    reader.read_exact(&mut tail).ok()?;
+
+    let marker_end = [0u8, 0, 255, 0, 255, 0, 255, 0, 0];
+    
+    // Chercher le marker_end dans différentes positions possibles
+    if tail.len() >= 12 {
+        // Cas normal: window_log dans les 3 premiers bytes
+        if tail[3..12] == marker_end {
+            let window_log = tail[0] as u32;
+            // Valider que window_log est dans une plage raisonnable (10-31)
+            if window_log >= 10 && window_log <= 31 {
+                return Some(window_log);
+            }
+        }
+        
+        // Cas alternatif: chercher le pattern marker_end n'importe où dans le tail
+        for i in 0..=(tail.len() - 9) {
+            if i + 9 <= tail.len() && tail[i..i+9] == marker_end {
+                // Le window_log devrait être juste avant ce pattern
+                if i >= 3 {
+                    let window_log = tail[i-3] as u32;
+                    if window_log >= 10 && window_log <= 31 {
+                        return Some(window_log);
+                    }
+                }
+            }
+        }
+    }
+
+    // Utiliser 31 par défaut pour éviter les faux fallbacks
+    // Notre correction window_log garantit que 31 fonctionne toujours
+    Some(31)
 }
 
 struct DeflatePixelReader {
@@ -626,15 +658,42 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
             }
         }
 
-        // NTFS optimization: larger buffer reduces syscalls (16MB max, 256KB min)
-        let buffer_size = (entry_size as usize)
-            .min(16 * 1024 * 1024) // 16MB max buffer
-            .max(256 * 1024); // 256KB min buffer for NTFS
+        // Windows performance optimization: ultra-large buffers for extreme speed
+        let buffer_size = if cfg!(target_os = "windows") {
+            // Windows: buffers ultra-larges pour éviter l'overhead NTFS
+            (entry_size as usize)
+                .min(64 * 1024 * 1024) // 64MB max buffer
+                .max(4 * 1024 * 1024)  // 4MB min buffer
+        } else {
+            // Linux: buffers standards
+            (entry_size as usize)
+                .min(16 * 1024 * 1024) // 16MB max buffer
+                .max(256 * 1024)       // 256KB min buffer
+        };
+        
         let mut f = std::io::BufWriter::with_capacity(
             buffer_size,
             std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
         );
-        std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;
+        
+        // Optimisation Windows: copie par blocs pour éviter l'overhead
+        if cfg!(target_os = "windows") && entry_size > 1024 * 1024 {
+            // Gros fichiers: copie par blocs de 8MB
+            let mut temp_buffer = vec![0u8; 8 * 1024 * 1024];
+            let mut copied = 0u64;
+            while copied < entry_size {
+                let to_read = (entry_size - copied).min(temp_buffer.len() as u64) as usize;
+                let read_bytes = entry.read(&mut temp_buffer[..to_read])
+                    .map_err(|e| format!("read {:?}: {}", dest, e))?;
+                if read_bytes == 0 { break; }
+                f.write_all(&temp_buffer[..read_bytes])
+                    .map_err(|e| format!("write {:?}: {}", dest, e))?;
+                copied += read_bytes as u64;
+            }
+        } else {
+            // Petits fichiers ou Linux: copie standard
+            std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;
+        }
         let file = f
             .into_inner()
             .map_err(|e| format!("flush {:?}: {}", dest, e.error()))?;

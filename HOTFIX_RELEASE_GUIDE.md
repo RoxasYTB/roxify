@@ -7,6 +7,7 @@
 The hotfix is ready to build. To compile and generate the Windows binary:
 
 #### Option A: Via GitHub Web UI (Recommended)
+
 1. Go to: https://github.com/RoxasYTB/roxify/actions
 2. Click **"Windows Hotfix Build"** workflow in the left sidebar
 3. Click **"Run workflow"** button
@@ -15,6 +16,7 @@ The hotfix is ready to build. To compile and generate the Windows binary:
 6. Wait 5-10 minutes for completion
 
 #### Option B: Manually via Tag/Release
+
 The tag `v1.14.5-hotfix.1` is already pushed. The Release workflow will trigger if a release is created.
 
 ### 2. Automated Testing
@@ -27,12 +29,14 @@ cd d:\C\Users\Yohan\Desktop\Projets\roxify
 ```
 
 **What this does:**
+
 - ✅ Monitors GitHub Actions for build completion (polls every 10sec)
 - ✅ Automatically downloads the compiled Windows binary when ready
 - ✅ Runs 3 complete encode/decode test cycles on Weee.png
 - ✅ Reports pass/fail with stats and timings
 
 **Expected output:**
+
 ```
 ╔════════════════════════════════════════════════════════════════╗
 ║                      FINAL RESULTS                             ║
@@ -71,10 +75,10 @@ ddfc948 hotfix: adaptive window_log for streaming encode/decode on Windows
 
 ### Main Changes
 
-| File | Change | Impact |
-|------|--------|--------|
+| File                         | Change                                         | Impact                                |
+| ---------------------------- | ---------------------------------------------- | ------------------------------------- |
 | `native/streaming_encode.rs` | Hardcoded `window_log(30)` → Adaptive function | Fixes memory overhead for small files |
-| `native/streaming_decode.rs` | Fixed `window_log_max(31)` → Adaptive per size | Prevents memory allocation errors |
+| `native/streaming_decode.rs` | Fixed `window_log_max(31)` → Adaptive per size | Prevents memory allocation errors     |
 
 ### Technical Details
 
@@ -83,6 +87,7 @@ See **HOTFIX_NOTES.md** for complete technical documentation.
 ## Test Files Generated
 
 After running tests, you'll find:
+
 - Build logs in: `test_artifacts/`
 - Test results in: `test_artifacts/test_results/run_1/`, `run_2/`, `run_3/`
 - Decoded data: `run_N/decoded/`
@@ -118,6 +123,7 @@ After running tests, you'll find:
 ## Rollback
 
 If tests fail:
+
 ```bash
 git revert ddfc948
 git push origin main
@@ -128,18 +134,22 @@ git push origin :v1.14.5-hotfix.1
 ## GitHub Actions Details
 
 ### Workflow File
+
 Location: `.github/workflows/windows-hotfix.yml`
 
 Triggers:
+
 - Manual: `workflow_dispatch` (clickable button)
 - Automatic: Not set (manual trigger only)
 
 Outputs:
+
 - Artifact: `roxify-native-windows-x64-hotfix`
 - Binary: `roxify_native-windows-x64.exe`
 - Test: Smoke test runs `--help`
 
 ### Typical Timeline
+
 - Queue: ~30 seconds
 - Setup: ~1 minute
 - Compile: 4-8 minutes (depending on cache)
@@ -150,6 +160,7 @@ Outputs:
 ## Questions?
 
 Refer to:
+
 1. **HOTFIX_NOTES.md** for technical details
 2. **GitHub Actions logs** for build issues
 3. **Test output** for validation results

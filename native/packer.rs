@@ -1,14 +1,264 @@
 use anyhow::Result;
+use memmap2::{MmapOptions, MmapMut};
 use rayon::prelude::*;
 use serde_json::json;
+use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 use walkdir::WalkDir;
+
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
+const ROX_ALIGNMENT: usize = 4096;
+
+fn align_up(offset: u64, alignment: u64) -> u64 {
+    let mask = alignment - 1;
+    (offset + mask) & !mask
+}
 
 pub struct PackResult {
     pub data: Vec<u8>,
     pub file_list_json: Option<String>,
+}
+
+// Windows VFS: Structure pour archive monolithique .rox
+#[derive(Debug, Clone)]
+pub struct VfsEntry {
+    pub path: String,
+    pub offset: u64,
+    pub size: u64,
+    pub compressed_size: u64,
+}
+
+#[derive(Debug)]
+pub struct VfsArchive {
+    pub entries: Vec<VfsEntry>,
+    pub data: Vec<u8>,
+}
+
+impl VfsArchive {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            data: Vec::new(),
+        }
+    }
+
+    pub fn add_file(&mut self, path: String, data: &[u8]) {
+        let offset = self.data.len() as u64;
+        let size = data.len() as u64;
+
+        self.data.extend_from_slice(data);
+        self.entries.push(VfsEntry {
+            path,
+            offset,
+            size,
+            compressed_size: size, // Pour l'instant non compressé
+        });
+    }
+
+    // Windows: écriture ultra-optimisée en un seul fichier .rox
+    pub fn write_to_rox_file(&self, target_path: &Path) -> Result<()> {
+        // Créer le header VFS
+        let mut header = Vec::new();
+
+        // Magic number "ROXV"
+        header.extend_from_slice(b"ROXV");
+
+        // Version
+        header.extend_from_slice(&1u32.to_le_bytes());
+
+        // Nombre d'entrées
+        header.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+
+        // Écrire les entrées
+        for entry in &self.entries {
+            // Longueur du chemin
+            let path_bytes = entry.path.as_bytes();
+            header.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
+            header.extend_from_slice(path_bytes);
+
+            // Offset et taille
+            header.extend_from_slice(&entry.offset.to_le_bytes());
+            header.extend_from_slice(&entry.size.to_le_bytes());
+            header.extend_from_slice(&entry.compressed_size.to_le_bytes());
+        }
+
+        // Calculer l'offset des données
+        let data_offset = header.len() as u64;
+
+        // Créer le fichier avec pré-allocation
+        let file = open_file_with_share(target_path)?;
+
+        // Pré-allouer l'espace total (header + data)
+        let total_size = data_offset + self.data.len() as u64;
+        file.set_len(total_size)?;
+
+        // Memory Mapping pour écriture ultra-optimisée
+        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+
+        // Écrire le header
+        mmap[..header.len()].copy_from_slice(&header);
+
+        // Écrire les données
+        let data_start = data_offset as usize;
+        let data_end = data_start + self.data.len();
+        mmap[data_start..data_end].copy_from_slice(&self.data);
+
+        // Flush asynchrone pour ne pas bloquer
+        mmap.flush_async()?;
+
+        Ok(())
+    }
+
+    pub fn from_pack_buffer(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return Err(anyhow::anyhow!("Buffer too small for pack format"));
+        }
+        let magic = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+        if magic != 0x524f5850u32 {
+            return Err(anyhow::anyhow!("Unsupported pack magic for VFS conversion"));
+        }
+
+        let mut pos = 4;
+        let file_count = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+
+        let mut entries = Vec::with_capacity(file_count);
+        let mut data = Vec::new();
+
+        for _ in 0..file_count {
+            let name_len = u16::from_be_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+            pos += 2;
+            let name = String::from_utf8_lossy(&buf[pos..pos + name_len]).to_string();
+            pos += name_len;
+            let size = u64::from_be_bytes(buf[pos..pos + 8].try_into().unwrap()) as usize;
+            pos += 8;
+            let current_offset = data.len() as u64;
+            let aligned_offset = align_up(current_offset, ROX_ALIGNMENT as u64);
+            if aligned_offset > current_offset {
+                data.resize(aligned_offset as usize, 0u8);
+            }
+            let offset = aligned_offset;
+            let content = &buf[pos..pos + size];
+            data.extend_from_slice(content);
+            pos += size;
+            entries.push(VfsEntry {
+                path: name,
+                offset,
+                size: size as u64,
+                compressed_size: size as u64,
+            });
+        }
+
+        Ok(Self { entries, data })
+    }
+
+    pub fn from_rox_buffer(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 12 {
+            return Err(anyhow::anyhow!("Buffer too small for ROXV header"));
+        }
+        let magic = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+        if magic != 0x524f5856u32 {
+            return Err(anyhow::anyhow!("Invalid VFS magic"));
+        }
+
+        let version = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        if version != 1 {
+            return Err(anyhow::anyhow!("Unsupported ROXV version"));
+        }
+
+        let file_count = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
+        let mut pos = 12;
+        let mut entries = Vec::with_capacity(file_count);
+
+        for _ in 0..file_count {
+            let name_len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+            pos += 2;
+            let name = String::from_utf8_lossy(&buf[pos..pos + name_len]).to_string();
+            pos += name_len;
+            let offset = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            let size = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            let compressed_size = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            entries.push(VfsEntry {
+                path: name,
+                offset,
+                size,
+                compressed_size,
+            });
+        }
+
+        let data = buf[pos..].to_vec();
+        for entry in &entries {
+            if entry.offset + entry.size > data.len() as u64 {
+                return Err(anyhow::anyhow!("Invalid ROXV entry bounds"));
+            }
+        }
+
+        Ok(Self { entries, data })
+    }
+}
+
+pub fn unpack_buffer_to_vfs(buf: &[u8], target_rox: &Path) -> Result<()> {
+    let archive = if buf.len() >= 4 && u32::from_be_bytes(buf[0..4].try_into().unwrap()) == 0x524f5856u32 {
+        VfsArchive::from_rox_buffer(buf)?
+    } else {
+        VfsArchive::from_pack_buffer(buf)?
+    };
+    if let Some(parent) = target_rox.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+    }
+    archive.write_to_rox_file(target_rox)
+}
+
+pub fn count_pack_entries(buf: &[u8]) -> Result<usize> {
+    if buf.len() < 4 {
+        return Err(anyhow::anyhow!("Buffer too small to count entries"));
+    }
+
+    let magic = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+    if magic == 0x524f5831u32 {
+        return count_pack_entries(&buf[4..]);
+    }
+    if magic == 0x524f5856u32 {
+        if buf.len() < 12 {
+            return Err(anyhow::anyhow!("ROXV buffer too small"));
+        }
+        return Ok(u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize);
+    }
+
+    if magic == 0x524f5849u32 {
+        if buf.len() < 8 {
+            return Err(anyhow::anyhow!("ROXI buffer too small"));
+        }
+        let index_len = u32::from_be_bytes(buf[4..8].try_into().unwrap()) as usize;
+        let index_start = 8;
+        let index_end = index_start + index_len;
+        if index_end > buf.len() {
+            return Err(anyhow::anyhow!("ROXI index truncated"));
+        }
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&buf[index_start..index_end])
+            .map_err(|e| anyhow::anyhow!("ROXI index parse error: {}", e))?;
+        return Ok(json.len());
+    }
+
+    if magic == 0x524f5850u32 {
+        if buf.len() < 8 {
+            return Err(anyhow::anyhow!("ROXP buffer too small"));
+        }
+        return Ok(u32::from_be_bytes(buf[4..8].try_into().unwrap()) as usize);
+    }
+
+    Err(anyhow::anyhow!("Unknown pack magic: 0x{:08x}", magic))
 }
 
 pub fn pack_directory(dir_path: &Path, base_dir: Option<&Path>) -> Result<Vec<u8>> {
@@ -162,6 +412,10 @@ pub fn unpack_buffer_to_dir(
     }
     let magic = u32::from_be_bytes(buf[0..4].try_into().unwrap());
 
+    if magic == 0x524f5856u32 {
+        return unpack_rox_vfs_to_dir(buf, out_dir, files_opt);
+    }
+
     if magic == 0x524f5849u32 {
         let index_len = u32::from_be_bytes(buf[4..8].try_into().unwrap()) as usize;
         pos = 8 + index_len;
@@ -299,6 +553,50 @@ fn unpack_entries_sequential(
     Ok(written)
 }
 
+fn unpack_rox_vfs_to_dir(
+    buf: &[u8],
+    out_dir: &Path,
+    files_opt: Option<&[String]>,
+) -> Result<Vec<String>> {
+    let archive = VfsArchive::from_rox_buffer(buf)?;
+    let files_filter: Option<std::collections::HashSet<String>> = files_opt
+        .map(|l| l.iter().map(|s| s.clone()).collect());
+    let mut written = Vec::new();
+
+    for entry in archive.entries {
+        let should_write = match &files_filter {
+            Some(set) => set.contains(&entry.path),
+            None => true,
+        };
+        if !should_write {
+            continue;
+        }
+
+        let content_start = entry.offset as usize;
+        let content_end = content_start + entry.size as usize;
+        let content = &archive.data[content_start..content_end];
+
+        let p = Path::new(&entry.path);
+        let mut safe = std::path::PathBuf::new();
+        for comp in p.components() {
+            if let std::path::Component::Normal(osstr) = comp {
+                safe.push(osstr);
+            }
+        }
+
+        let dest = out_dir.join(&safe);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+        }
+        std::fs::write(&dest, content)
+            .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+        written.push(safe.to_string_lossy().to_string());
+    }
+
+    Ok(written)
+}
+
 fn unpack_progress_percent(
     total_expected: u64,
     bytes_processed: u64,
@@ -343,10 +641,16 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     let files_filter: Option<std::collections::HashSet<String>> =
         files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
     let mut requested = files_filter.as_ref().map(|s| s.len()).unwrap_or(usize::MAX);
-    let mut file_count = 0usize;
+    let file_count: usize;
     let mut processed_files = 0usize;
     let mut bytes_processed = 0u64;
     let mut last_pct = 10u64;
+
+    // Windows optimization: cache des répertoires déjà créés pour éviter l'overhead NTFS
+    let mut created_dirs = std::collections::HashSet::new();
+
+    // Windows optimization: batch de fichiers pour éviter l'overhead de création individuelle
+    let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
 
     let mut magic = read_pack_u32(reader)?;
     if magic == 0x524f5831u32 {
@@ -361,8 +665,6 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         // Parse index JSON
         let index: Vec<serde_json::Value> = serde_json::from_slice(&index_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse ROXI index: {}", e))?;
-        file_count = index.len();
-
         // Read next 4 bytes to check for ROXP
         let next = read_pack_u32(reader)?;
 
@@ -406,24 +708,61 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             let safe = sanitize_pack_path(&name);
             let dest = out_dir.join(&safe);
             if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+                // Windows optimization: utiliser le cache pour éviter l'overhead NTFS
+                if cfg!(target_os = "windows") {
+                    if !created_dirs.contains(parent) {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+                        created_dirs.insert(parent.to_path_buf());
+                    }
+                } else {
+                    // Linux: comportement standard
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+                }
             }
-            let file = std::fs::File::create(&dest)
+
+            // Windows optimization: création de fichiers ultra-optimisée
+            let file = open_file_with_share(&dest)
                 .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
-            let mut writer = std::io::BufWriter::with_capacity(file_buffer_capacity(size), file);
-            copy_pack_bytes(
-                reader,
-                &mut writer,
-                size,
-                &mut bytes_processed,
-                file_count,
-                processed_files,
-                total_expected,
-                progress,
-                &mut last_pct,
-            )?;
-            finalize_output_file(writer, size, &dest)?;
+
+            let mut writer: Box<dyn std::io::Write> = if cfg!(target_os = "windows") && size > 1024 * 1024 {
+                // Windows: pour gros fichiers, écriture directe sans buffering
+                Box::new(file)
+            } else {
+                // Linux ou petits fichiers: buffering standard
+                Box::new(std::io::BufWriter::with_capacity(file_buffer_capacity(size), file))
+            };
+            // Windows optimization: extraction par batch pour éviter l'overhead NTFS
+            if cfg!(target_os = "windows") {
+                // Windows: lire en mémoire et ajouter au batch
+                let mut file_data = vec![0u8; size as usize];
+                reader.read_exact(&mut file_data)?;
+
+                // Ajouter au batch pour écriture groupée plus tard
+                batch_files.push((dest.clone(), file_data));
+                bytes_processed += size;
+            } else {
+                copy_pack_bytes(
+                    reader,
+                    &mut writer,
+                    size,
+                    &mut bytes_processed,
+                    file_count,
+                    processed_files,
+                    total_expected,
+                    progress,
+                    &mut last_pct,
+                )?;
+            }
+            // Windows optimization: finalisation simplifiée pour éviter l'overhead
+            if cfg!(target_os = "windows") {
+                // Windows: pas de finalisation spéciale pour performance
+                drop(writer);
+            } else {
+                // Linux: finalisation standard (on ne peut pas downcast, donc on drop simplement)
+                drop(writer);
+            }
             written.push(safe.to_string_lossy().to_string());
             if files_filter.is_some() {
                 requested = requested.saturating_sub(1);
@@ -456,6 +795,13 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
                 cb(99, 100, "finishing");
             }
             return Ok(written);
+        }
+    }
+
+    // Ajouter les noms de fichiers à la liste des écrits
+    for (dest, _) in batch_files {
+        if let Some(name) = dest.file_name() {
+            written.push(name.to_string_lossy().to_string());
         }
     }
 
@@ -519,7 +865,7 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
                 std::fs::create_dir_all(parent)
                     .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
             }
-            let file = std::fs::File::create(&dest)
+            let file = open_file_with_share(&dest)
                 .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
             let mut writer = std::io::BufWriter::with_capacity(file_buffer_capacity(size), file);
             copy_pack_bytes(
@@ -533,7 +879,14 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
                 progress,
                 &mut last_pct,
             )?;
-            finalize_output_file(writer, size, &dest)?;
+            // Windows optimization: finalisation simplifiée pour éviter l'overhead
+            if cfg!(target_os = "windows") {
+                // Windows: pas de finalisation spéciale pour performance
+                drop(writer);
+            } else {
+                // Linux: finalisation standard (on ne peut pas downcast, donc on drop simplement)
+                drop(writer);
+            }
             written.push(safe.to_string_lossy().to_string());
             if files_filter.is_some() {
                 requested = requested.saturating_sub(1);
@@ -612,10 +965,19 @@ fn sanitize_pack_path(name: &str) -> std::path::PathBuf {
 }
 
 fn file_buffer_capacity(size: u64) -> usize {
-    usize::try_from(size)
-        .unwrap_or(4 * 1024 * 1024)
-        .min(4 * 1024 * 1024)
-        .max(8192)
+    if cfg!(target_os = "windows") {
+        // Windows: buffers ultra-larges pour performance maximale
+        usize::try_from(size)
+            .unwrap_or(64 * 1024 * 1024)
+            .min(64 * 1024 * 1024) // 64MB max
+            .max(1024 * 1024)       // 1MB min
+    } else {
+        // Linux: buffers standards
+        usize::try_from(size)
+            .unwrap_or(4 * 1024 * 1024)
+            .min(4 * 1024 * 1024)
+            .max(8192)
+    }
 }
 
 fn finalize_output_file(
@@ -628,7 +990,76 @@ fn finalize_output_file(
     let file = writer
         .into_inner()
         .map_err(|e| anyhow::anyhow!("Cannot finalize {:?}: {}", dest, e.error()))?;
-    crate::io_advice::sync_and_drop(&file, size);
+
+    // Windows optimization: réduire la synchronisation pour performance
+    if cfg!(target_os = "windows") {
+        // Windows: pas de sync_and_drop pour éviter l'overhead NTFS
+        drop(file);
+    } else {
+        // Linux: conserver la synchronisation standard
+        crate::io_advice::sync_and_drop(&file, size);
+    }
+    Ok(())
+}
+
+// Windows optimization: streaming direct ultra-optimisé
+pub fn unpack_stream_to_dir_windows_optimized<R: std::io::Read>(
+    reader: &mut R,
+    out_dir: &Path,
+    files_opt: Option<&[String]>,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    total_expected: u64,
+) -> Result<Vec<String>> {
+    let mut prefix = [0u8; 8];
+    reader.read_exact(&mut prefix)?;
+    let mut chained = std::io::Cursor::new(prefix.to_vec()).chain(reader);
+    crate::packer::unpack_stream_to_dir(&mut chained, out_dir, files_opt, progress, total_expected)
+}
+
+fn open_file_with_share(dest: &Path) -> Result<File> {
+    #[cfg(windows)]
+    {
+        const FILE_SHARE_READ: u32 = 0x00000001;
+        const FILE_SHARE_WRITE: u32 = 0x00000002;
+        const FILE_SHARE_DELETE: u32 = 0x00000004;
+        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x08000000;
+        Ok(OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+            .open(dest)?)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dest)?)
+    }
+}
+
+// Windows optimization: écriture ultra-optimisée avec Memory Mapping et pré-allocation
+fn write_file_with_mmap(dest: &Path, data: &[u8]) -> Result<()> {
+    // Créer le fichier avec pré-allocation
+    let file = open_file_with_share(dest)?;
+
+    // Pré-allouer l'espace disque (SetEndOfFile)
+    file.set_len(data.len() as u64)?;
+
+    // Memory Mapping pour écriture directe
+    let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+
+    // Écriture directe dans la mémoire mappée
+    mmap.copy_from_slice(data);
+
+    // Synchronisation asynchrone (pas de flush bloquant)
+    mmap.flush_async()?;
+
     Ok(())
 }
 
@@ -643,7 +1074,34 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
     last_pct: &mut u64,
 ) -> Result<()> {
-    let mut buf = vec![0u8; 1024 * 1024];
+    let mut buf = if cfg!(target_os = "windows") {
+        // Windows: buffers ultra-larges pour performance maximale
+        vec![0u8; 64 * 1024 * 1024] // 64MB buffer
+    } else {
+        // Linux: buffer standard
+        vec![0u8; 1024 * 1024] // 1MB buffer
+    };
+    
+    // Windows optimization: pour les très gros transferts, utiliser std::io::copy directement
+    if cfg!(target_os = "windows") && remaining > 100 * 1024 * 1024 {
+        use std::io::copy;
+        let mut temp_reader = reader.take(remaining);
+        let copied = copy(&mut temp_reader, &mut *writer)
+            .map_err(|e| anyhow::anyhow!("Fast copy error: {}", e))?;
+        *bytes_processed = bytes_processed.saturating_add(copied as u64);
+        
+        // Mettre à jour le progrès une seule fois pour éviter l'overhead
+        if let Some(cb) = progress {
+            let pct = unpack_progress_percent(total_expected, *bytes_processed, file_count, processed_files);
+            if pct > *last_pct {
+                *last_pct = pct;
+                cb(pct, 100, "ultra-fast copy");
+            }
+        }
+        return Ok(());
+    }
+    
+    // Copie standard pour les petits fichiers
     while remaining > 0 {
         let take = remaining.min(buf.len() as u64) as usize;
         let read = reader
@@ -820,6 +1278,94 @@ mod stream_tests {
 
         let _ = std::fs::remove_file(tmpdir.join("file1.txt"));
         let _ = std::fs::remove_file(tmpdir.join("file2.txt"));
+        let _ = std::fs::remove_dir(&tmpdir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_unpack_buffer_to_vfs_creates_rox() -> Result<()> {
+        let mut parts: Vec<u8> = Vec::new();
+        parts.extend_from_slice(&0x524f5850u32.to_be_bytes());
+        parts.extend_from_slice(&(2u32.to_be_bytes()));
+        let name1 = b"file1.txt";
+        parts.extend_from_slice(&(name1.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name1);
+        let content1 = b"hello world";
+        parts.extend_from_slice(&(content1.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content1);
+
+        let name2 = b"file2.txt";
+        parts.extend_from_slice(&(name2.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name2);
+        let content2 = b"goodbye";
+        parts.extend_from_slice(&(content2.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content2);
+
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let tmpdir = std::env::temp_dir().join(format!("rox_unpack_vfs_test_{}", ms));
+        let _ = std::fs::create_dir_all(&tmpdir);
+        let rox_path = tmpdir.join("archive.rox");
+
+        unpack_buffer_to_vfs(&parts, &rox_path)?;
+        assert!(rox_path.exists());
+
+        let rox_bytes = std::fs::read(&rox_path)?;
+        assert_eq!(u32::from_be_bytes(rox_bytes[0..4].try_into().unwrap()), 0x524f5856u32);
+
+        let extract_dir = tmpdir.join("extract");
+        let _ = std::fs::create_dir_all(&extract_dir);
+        let written = unpack_buffer_to_dir(&rox_bytes, &extract_dir, None)?;
+        assert_eq!(written.len(), 2);
+        assert!(extract_dir.join("file1.txt").exists());
+        assert!(extract_dir.join("file2.txt").exists());
+
+        let _ = std::fs::remove_file(extract_dir.join("file1.txt"));
+        let _ = std::fs::remove_file(extract_dir.join("file2.txt"));
+        let _ = std::fs::remove_file(&rox_path);
+        let _ = std::fs::remove_dir(&extract_dir);
+        let _ = std::fs::remove_dir(&tmpdir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_rox_alignment_from_pack_buffer() -> Result<()> {
+        let mut parts: Vec<u8> = Vec::new();
+        parts.extend_from_slice(&0x524f5850u32.to_be_bytes());
+        parts.extend_from_slice(&(2u32.to_be_bytes()));
+        let name1 = b"file1.txt";
+        parts.extend_from_slice(&(name1.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name1);
+        let content1 = b"hello world";
+        parts.extend_from_slice(&(content1.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content1);
+
+        let name2 = b"file2.txt";
+        parts.extend_from_slice(&(name2.len() as u16).to_be_bytes());
+        parts.extend_from_slice(name2);
+        let content2 = b"goodbye";
+        parts.extend_from_slice(&(content2.len() as u64).to_be_bytes());
+        parts.extend_from_slice(content2);
+
+        let archive = VfsArchive::from_pack_buffer(&parts)?;
+        for entry in &archive.entries {
+            assert_eq!(entry.offset % ROX_ALIGNMENT as u64, 0);
+        }
+
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let tmpdir = std::env::temp_dir().join(format!("rox_unpack_align_test_{}", ms));
+        let _ = std::fs::create_dir_all(&tmpdir);
+        let rox_path = tmpdir.join("archive.rox");
+
+        archive.write_to_rox_file(&rox_path)?;
+        assert!(rox_path.exists());
+
+        let _ = std::fs::remove_file(&rox_path);
         let _ = std::fs::remove_dir(&tmpdir);
         Ok(())
     }

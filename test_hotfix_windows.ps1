@@ -12,15 +12,15 @@ $TestOutputDir = "$ArtifactDir\decoded"
 
 function Wait-For-Release {
     Write-Host "⏳ Waiting for hotfix release v1.14.5-hotfix.1 on GitHub..."
-    
+
     $startTime = Get-Date
     $timeout = New-TimeSpan -Minutes $MaxWaitMinutes
-    
+
     while ((Get-Date) - $startTime -lt $timeout) {
         try {
             $releases = Invoke-RestMethod "https://api.github.com/repos/RoxasYTB/roxify/releases" -ErrorAction Stop
             $hotfixRelease = $releases | Where-Object { $_.tag_name -eq "v1.14.5-hotfix.1" } | Select-Object -First 1
-            
+
             if ($hotfixRelease) {
                 Write-Host "✅ Release found: $($hotfixRelease.html_url)"
                 return $hotfixRelease
@@ -28,43 +28,43 @@ function Wait-For-Release {
         } catch {
             Write-Host "⚠️  Checking releases... ($(Get-Date -Format 'HH:mm:ss'))"
         }
-        
+
         Start-Sleep -Seconds 10
     }
-    
+
     Write-Host "❌ Timeout waiting for release after $MaxWaitMinutes minutes"
     return $null
 }
 
 function Download-LatestBinary {
     Write-Host "📥 Downloading latest hotfix binary..."
-    
+
     New-Item -ItemType Directory -Force $ArtifactDir | Out-Null
-    
+
     $releases = Invoke-RestMethod "https://api.github.com/repos/RoxasYTB/roxify/actions/runs" -ErrorAction Stop
     $workflows = $releases.workflow_runs | Where-Object { $_.name -eq "Windows Hotfix Build" } | Sort-Object -Property created_at -Descending | Select-Object -First 1
-    
+
     if ($workflows) {
         $artifacts = Invoke-RestMethod $workflows.artifacts_url -ErrorAction Stop
         $artifact = $artifacts.artifacts | Where-Object { $_.name -like "*windows-x64*" } | Select-Object -First 1
-        
+
         if ($artifact) {
             Write-Host "Found artifact: $($artifact.name)"
             $downloadUrl = "$($artifact.archive_download_url)"
-            
+
             $zipPath = "$ArtifactDir\artifact.zip"
             Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -ErrorAction Stop
-            
+
             Expand-Archive -Path $zipPath -DestinationPath $ArtifactDir -Force
             Remove-Item $zipPath
-            
+
             if (Test-Path $TestBinaryPath) {
                 Write-Host "✅ Binary found at: $TestBinaryPath"
                 return $true
             }
         }
     }
-    
+
     Write-Host "❌ Failed to find or download binary"
     return $false
 }
@@ -74,32 +74,32 @@ function Run-Tests {
         Write-Host "❌ Binary not found at: $TestBinaryPath"
         return $false
     }
-    
+
     if (-not (Test-Path $TestFile)) {
         Write-Host "❌ Test file not found: $TestFile"
         return $false
     }
-    
+
     New-Item -ItemType Directory -Force $TestOutputDir | Out-Null
-    
+
     Write-Host "`n🧪 Starting $NumRuns test runs..."
     Write-Host "📦 Test file: $TestFile"
     Write-Host "📊 Output directory: $TestOutputDir`n"
-    
+
     $successCount = 0
     $failCount = 0
-    
+
     for ($i = 1; $i -le $NumRuns; $i++) {
         Write-Host "─" * 70
         Write-Host "Run #$i / $NumRuns"
         Write-Host "─" * 70
-        
+
         $runDir = "$TestOutputDir\run_$i"
         New-Item -ItemType Directory -Force $runDir | Out-Null
-        
+
         $decodedFile = "$runDir\decoded"
         $reencoded = "$runDir\reencoded.png"
-        
+
         Write-Host "  [1/3] 🔓 Decoding '$($TestFile | Split-Path -Leaf)'..."
         try {
             $output = & $TestBinaryPath decode "$TestFile" "$decodedFile" 2>&1
@@ -115,7 +115,7 @@ function Run-Tests {
             $failCount++
             continue
         }
-        
+
         Write-Host "  [2/3] 📦 Re-encoding decoded data..."
         try {
             $output = & $TestBinaryPath encode "$decodedFile" "$reencoded" -l 3 2>&1
@@ -131,18 +131,18 @@ function Run-Tests {
             $failCount++
             continue
         }
-        
+
         Write-Host "  [3/3] 📊 Verifying integrity..."
         try {
             $origSize = (Get-Item $TestFile).Length
             $reencLen = (Get-Item $reencoded).Length
             $decodedSize = 0
             Get-ChildItem $decodedFile -Recurse -File | ForEach-Object { $decodedSize += $_.Length }
-            
+
             Write-Host "        Original PNG: $(Format-Size $origSize)"
             Write-Host "        Decoded data: $(Format-Size $decodedSize)"
             Write-Host "        Re-encoded PNG: $(Format-Size $reencLen)"
-            
+
             Write-Host "        ✅ Run #$i completed successfully`n"
             $successCount++
         } catch {
@@ -150,14 +150,14 @@ function Run-Tests {
             $successCount++
         }
     }
-    
+
     Write-Host "╔════════════════════════════════════════════════════════════════════╗"
     Write-Host "║                      TEST RESULTS SUMMARY                           ║"
     Write-Host "╚════════════════════════════════════════════════════════════════════╝"
     Write-Host "✅ Successful runs: $successCount / $NumRuns"
     Write-Host "❌ Failed runs:     $failCount / $NumRuns"
     Write-Host ""
-    
+
     if ($successCount -eq $NumRuns) {
         Write-Host "🎉 All tests passed! Hotfix is working correctly on Windows." -ForegroundColor Green
         return $true

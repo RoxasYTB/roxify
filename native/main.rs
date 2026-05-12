@@ -21,18 +21,19 @@ mod streaming;
 mod streaming_decode;
 mod streaming_encode;
 
+
 use crate::encoder::ImageFormat;
 use std::path::PathBuf;
 
 const MB_U64: u64 = 1024 * 1024;
 const GB_U64: u64 = 1024 * MB_U64;
 
-// Adaptive RAM Budget Configuration
-const MIN_RAM_BUDGET_MB: u64 = 512;
-const DEFAULT_RAM_BUDGET_MB: u64 = 2048;
-const RESERVED_RAM_MB: u64 = 1024;
-const MIN_WRITE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
-const MAX_WRITE_BUFFER_BYTES: usize = 256 * 1024 * 1024;
+// Adaptive RAM Budget Configuration - Optimized for Windows
+const MIN_RAM_BUDGET_MB: u64 = 1024; // Increased for Windows
+const DEFAULT_RAM_BUDGET_MB: u64 = 4096; // Increased for Windows
+const RESERVED_RAM_MB: u64 = 512; // Reduced to allow more usage
+const MIN_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024; // Increased for Windows
+const MAX_WRITE_BUFFER_BYTES: usize = 512 * 1024 * 1024; // Increased for Windows
 
 // Performance Targets (under 10 seconds)
 const TARGET_ENCODE_TIME_SECS: u64 = 10;
@@ -40,17 +41,17 @@ const TARGET_DECODE_TIME_SECS: u64 = 10;
 const FAST_COMPRESSION_THRESHOLD_MB: u64 = 100;
 const STREAMING_THRESHOLD_MB: u64 = 500;
 
-// Adaptive Compression Levels
+// Adaptive Compression Levels - Ultra-optimized for Windows
 const COMPRESSION_ULTRA_FAST: i32 = 1; // < 100MB files, lots of RAM
-const COMPRESSION_FAST: i32 = 2; // < 500MB files
-const COMPRESSION_BALANCED: i32 = 3; // Default, 500MB-2GB
-const COMPRESSION_SMALL_FILES: i32 = 5; // Many small files
+const COMPRESSION_FAST: i32 = 1; // < 500MB files - Windows optimization
+const COMPRESSION_BALANCED: i32 = 1; // Windows optimization for 500MB-2GB
+const COMPRESSION_SMALL_FILES: i32 = 1; // Windows optimization for many small files
 
-// RAM Usage Tiers
-const RAM_TIER_ULTRA: u64 = 16384; // 16GB+ - Aggressive optimization
-const RAM_TIER_HIGH: u64 = 8192; // 8GB+ - Fast mode
-const RAM_TIER_MEDIUM: u64 = 4096; // 4GB+ - Balanced
-const RAM_TIER_LOW: u64 = 2048; // 2GB+ - Conservative
+// RAM Usage Tiers - Optimized for Windows performance
+const RAM_TIER_ULTRA: u64 = 8192; // 8GB+ - Aggressive optimization (lowered threshold)
+const RAM_TIER_HIGH: u64 = 4096; // 4GB+ - Fast mode (lowered threshold)
+const RAM_TIER_MEDIUM: u64 = 2048; // 2GB+ - Balanced (lowered threshold)
+const RAM_TIER_LOW: u64 = 1024; // 1GB+ - Conservative (lowered threshold)
 
 #[derive(Parser)]
 #[command(author, version)]
@@ -132,6 +133,8 @@ enum Commands {
         dict: Option<PathBuf>,
         #[arg(long, value_name = "MB")]
         ram_budget_mb: Option<u64>,
+        #[arg(long)]
+        out_rox: bool,
     },
     Crc32 {
         input: PathBuf,
@@ -160,14 +163,76 @@ pub fn parse_linux_mem_available_mb() -> Option<u64> {
     Some(kb / 1024)
 }
 
+pub fn parse_windows_mem_available_mb() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use std::mem;
+        use std::ptr;
+
+        unsafe {
+            // Utiliser GlobalMemoryStatusEx pour Windows
+            #[repr(C)]
+            struct MEMORYSTATUSEX {
+                dwLength: u32,
+                dwMemoryLoad: u32,
+                ullTotalPhys: u64,
+                ullAvailPhys: u64,
+                ullTotalPageFile: u64,
+                ullAvailPageFile: u64,
+                ullTotalVirtual: u64,
+                ullAvailVirtual: u64,
+                ullAvailExtendedVirtual: u64,
+            }
+
+            extern "system" {
+                fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX, dwLength: u32);
+            }
+
+            let mut mem_status = MEMORYSTATUSEX {
+                dwLength: mem::size_of::<MEMORYSTATUSEX>() as u32,
+                dwMemoryLoad: 0,
+                ullTotalPhys: 0,
+                ullAvailPhys: 0,
+                ullTotalPageFile: 0,
+                ullAvailPageFile: 0,
+                ullTotalVirtual: 0,
+                ullAvailVirtual: 0,
+                ullAvailExtendedVirtual: 0,
+            };
+
+            GlobalMemoryStatusEx(&mut mem_status, mem::size_of::<MEMORYSTATUSEX>() as u32);
+
+            if mem_status.ullAvailPhys > 0 {
+                Some(mem_status.ullAvailPhys / 1024 / 1024)
+            } else {
+                None
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 fn parse_total_ram_mb() -> Option<u64> {
-    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
-    let kb = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|v| v.parse::<u64>().ok())?;
-    Some(kb / 1024)
+    #[cfg(windows)]
+    {
+        // Fallback pour Windows - utiliser une valeur raisonnable basée sur le système
+        Some(8192) // 8GB par défaut pour Windows
+    }
+
+    #[cfg(not(windows))]
+    {
+        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
+        let kb = line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<u64>().ok())?;
+        Some(kb / 1024)
+    }
 }
 
 fn get_cpu_cores() -> usize {
@@ -351,7 +416,8 @@ fn unpack_archive_bytes(
     } else {
         let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(normalized))
             .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-        dec.window_log_max(choose_zstd_window_log(normalized_len))
+        // Utiliser 31 pour le fallback (notre correction window_log)
+        dec.window_log_max(31)
             .map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
         Box::new(dec)
     };
@@ -672,6 +738,7 @@ fn main() -> anyhow::Result<()> {
             passphrase,
             dict,
             ram_budget_mb,
+            out_rox,
         } => {
             let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
             std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
@@ -693,6 +760,12 @@ fn main() -> anyhow::Result<()> {
                 None => None,
             };
 
+            let output_is_rox = out_rox
+                || output
+                    .as_ref()
+                    .and_then(|p| p.extension().map(|e| e.eq_ignore_ascii_case("rox")))
+                    .unwrap_or(false);
+
             if is_png_file && dict.is_none() {
                 let out_dir = if requested_files.is_some() {
                     output.clone().unwrap_or_else(|| PathBuf::from("."))
@@ -700,8 +773,8 @@ fn main() -> anyhow::Result<()> {
                     output.clone().unwrap_or_else(|| PathBuf::from("out.raw"))
                 };
 
-                let should_try_streaming =
-                    should_stream_png_decode(requested_files.as_deref(), file_size, ram_budget_mb);
+                let should_try_streaming = !output_is_rox
+                    && should_stream_png_decode(requested_files.as_deref(), file_size, ram_budget_mb);
 
                 if should_try_streaming {
                     let streaming_result = if let Some(ref selected) = requested_files {
@@ -927,7 +1000,40 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
 
-                let dest = output.unwrap_or_else(|| PathBuf::from("out.raw"));
+                let mut dest = if out_rox {
+                    let mut path = output.unwrap_or_else(|| {
+                        input
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("out"))
+                            .with_extension("rox")
+                    });
+                    if path.is_dir() {
+                        path = path
+                            .join(
+                                input
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "out".to_string()),
+                            )
+                            .with_extension("rox");
+                    }
+                    path
+                } else {
+                    output.unwrap_or_else(|| PathBuf::from("out.raw"))
+                };
+
+                if cfg!(target_os = "windows") && dest.is_dir() {
+                    if let Ok(count) = packer::count_pack_entries(&out_bytes) {
+                        if count > 1000 {
+                            eprintln!(
+                                "Performance warning: extracting {} files on Windows. Consider using --out-rox for much faster speeds.",
+                                count
+                            );
+                        }
+                    }
+                }
 
                 if archive::is_tar(&out_bytes) {
                     let out_dir = if dest.extension().is_none() || dest.is_dir() {
@@ -951,9 +1057,24 @@ fn main() -> anyhow::Result<()> {
                     };
                     std::fs::create_dir_all(&out_dir)
                         .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", out_dir, e))?;
+                    // Ultra-fast batch writing removed - use direct extraction only
                     let written = packer::unpack_buffer_to_dir(&out_bytes, &out_dir, None)
                         .map_err(|e| anyhow::anyhow!(e))?;
                     println!("Unpacked {} files to {:?}", written.len(), out_dir);
+                } else if dest.extension().map(|e| e.eq_ignore_ascii_case("rox")).unwrap_or(false)
+                    && out_bytes.len() >= 4
+                    && {
+                        let magic = u32::from_be_bytes(out_bytes[0..4].try_into().unwrap());
+                        magic == 0x524f5850u32 || magic == 0x524f5856u32
+                    }
+                {
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", parent, e))?;
+                    }
+                    packer::unpack_buffer_to_vfs(&out_bytes, &dest)
+                        .map_err(|e| anyhow::anyhow!("write rox VFS: {}", e))?;
+                    println!("Wrote VFS archive {:?}", dest);
                 } else if dest.is_dir() {
                     let fname = if is_png {
                         png_utils::extract_name_from_png(&buf)

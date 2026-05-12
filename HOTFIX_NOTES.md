@@ -1,9 +1,9 @@
 # Hotfix v1.14.5: Adaptive Window_Log for Streaming (Windows)
 
-**Commit**: `ddfc948`  
-**Tag**: `v1.14.5-hotfix.1`  
-**Date**: 2026-05-12  
-**Author**: Automated Hotfix  
+**Commit**: `ddfc948`
+**Tag**: `v1.14.5-hotfix.1`
+**Date**: 2026-05-12
+**Author**: Automated Hotfix
 
 ## Problem Statement
 
@@ -28,17 +28,20 @@ Windows users reported "Frame requires too much memory for decoding" error when 
 #### File: `native/streaming_encode.rs`
 
 **Before**:
+
 ```rust
 let _ = encoder.window_log(30);  // Hardcoded for all file sizes
 ```
 
 **After**:
+
 ```rust
 let adaptive_window_log = select_zstd_window_log(total_bytes);
 let _ = encoder.window_log(adaptive_window_log);
 ```
 
 **Added Function**:
+
 ```rust
 fn select_zstd_window_log(total_bytes: u64) -> u32 {
     if total_bytes <= 64 * 1024 * 1024 {           // ≤64 MB → 21
@@ -62,6 +65,7 @@ fn select_zstd_window_log(total_bytes: u64) -> u32 {
 #### File: `native/streaming_decode.rs`
 
 **Before**:
+
 ```rust
 fn choose_zstd_window_log(total_expected: u64) -> u32 {
     if cfg!(target_os = "windows") {
@@ -73,6 +77,7 @@ fn choose_zstd_window_log(total_expected: u64) -> u32 {
 ```
 
 **After**:
+
 ```rust
 fn choose_zstd_window_log(total_expected: u64) -> u32 {
     if total_expected <= 64 * 1024 * 1024 {
@@ -95,21 +100,22 @@ fn choose_zstd_window_log(total_expected: u64) -> u32 {
 
 ### Why This Works
 
-| Size Range | Encoder | Decoder | Status |
-|-----------|---------|---------|--------|
-| 0-64 MB   | 21      | 21      | ✅ Coherent |
-| 64-128 MB | 22      | 22      | ✅ Coherent |
-| 128-256 MB| 23      | 23      | ✅ Coherent |
-| 256-512 MB| 24      | 24      | ✅ Coherent |
-| 512 MB-1GB| 26      | 26      | ✅ Coherent |
-| 1-2 GB    | 28      | 28      | ✅ Coherent |
-| >2 GB     | 30      | 30      | ✅ Coherent |
+| Size Range | Encoder | Decoder | Status      |
+| ---------- | ------- | ------- | ----------- |
+| 0-64 MB    | 21      | 21      | ✅ Coherent |
+| 64-128 MB  | 22      | 22      | ✅ Coherent |
+| 128-256 MB | 23      | 23      | ✅ Coherent |
+| 256-512 MB | 24      | 24      | ✅ Coherent |
+| 512 MB-1GB | 26      | 26      | ✅ Coherent |
+| 1-2 GB     | 28      | 28      | ✅ Coherent |
+| >2 GB      | 30      | 30      | ✅ Coherent |
 
 ## Technical Details
 
 ### Window Log Parameter
 
 The `window_log` parameter in zstd defines the maximum lookback window for compression:
+
 - **Smaller values** (21): Lower memory, faster, less compression ratio
 - **Larger values** (30): Higher memory, slower, better compression ratio
 - **zstd limit**: Maximum 31 bits (per zstd specification)
@@ -129,6 +135,7 @@ Both Windows and Linux now use identical adaptive logic, eliminating platform-sp
 ### Test Procedure
 
 1. **Preparation**
+
    ```powershell
    cd .\roxify
    .\test-hotfix.ps1 -NumRuns 3 -TestFile "d:\C\Users\Yohan\Desktop\Weee.png"

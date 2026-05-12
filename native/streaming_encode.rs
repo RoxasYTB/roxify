@@ -73,10 +73,12 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     progress: Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
     let (zst_buf, file_list_json) = compress_dir_to_zst_mem(dir_path, compression_level, &progress)?;
+    
+    let adaptive_window_log = select_zstd_window_log(zst_buf.len() as u64);
 
     let result = write_png_from_zst_mem(
         zst_buf, output_path, name, Some(&file_list_json),
-        passphrase, encrypt_type, &progress,
+        passphrase, encrypt_type, &progress, adaptive_window_log,
     );
 
     if let Some(ref cb) = progress {
@@ -335,24 +337,43 @@ fn select_zstd_window_log(total_bytes: u64) -> u32 {
 
 fn select_zstd_threads(total_bytes: u64) -> u32 {
     let max_threads = num_cpus::get().max(1) as u32;
-    let ram_mb = crate::parse_linux_mem_available_mb().unwrap_or(4096);
-    
-    // Aggressive multi-threading for Pyxelze speed target (<10s)
-    if total_bytes <= 16 * MB {
-        // Small files: single thread to avoid overhead
-        1
-    } else if total_bytes <= 64 * MB {
-        // Small-medium files: 2 threads
-        max_threads.min(2)
-    } else if total_bytes <= 256 * MB || ram_mb >= 8192 {
-        // Medium files or high RAM: up to 4 threads
-        max_threads.min(4)
-    } else if total_bytes <= 1024 * MB || ram_mb >= 4096 {
-        // Large files or medium RAM: up to 8 threads  
-        max_threads.min(8)
+    let ram_mb = if cfg!(target_os = "windows") {
+        crate::parse_windows_mem_available_mb().unwrap_or(8192)
     } else {
-        // Very large files: use all available cores up to 16
-        max_threads.min(16)
+        crate::parse_linux_mem_available_mb().unwrap_or(4096)
+    };
+
+    // Optimized multi-threading for cross-platform performance
+    if cfg!(target_os = "windows") {
+        // Windows: AGRESSIF pour compenser l'overhead NTFS
+        if total_bytes <= 64 * MB {
+            // Small files: 4 threads min
+            max_threads.min(4).max(4)
+        } else if total_bytes <= 512 * MB {
+            // Medium files: 8 threads
+            max_threads.min(8).max(6)
+        } else {
+            // Large files: TOUS les threads disponibles!
+            max_threads
+        }
+    } else {
+        // Linux: agressif pour performances optimales
+        if total_bytes <= 16 * MB {
+            // Small files: single thread to avoid overhead
+            1
+        } else if total_bytes <= 64 * MB {
+            // Small-medium files: 2 threads
+            max_threads.min(2)
+        } else if total_bytes <= 256 * MB || ram_mb >= 8192 {
+            // Medium files or high RAM: up to 4 threads
+            max_threads.min(4)
+        } else if total_bytes <= 1024 * MB || ram_mb >= 4096 {
+            // Large files or medium RAM: up to 8 threads
+            max_threads.min(8)
+        } else {
+            // Very large files: use all available cores up to 16
+            max_threads.min(16)
+        }
     }
 }
 
@@ -364,6 +385,7 @@ fn write_png_from_zst_mem(
     passphrase: Option<&str>,
     _encrypt_type: Option<&str>,
     progress: &Option<ProgressCallback>,
+    adaptive_window_log: u32,
 ) -> anyhow::Result<()> {
     let zst_size = zst_buf.len();
 
@@ -409,9 +431,10 @@ fn write_png_from_zst_mem(
 
     let marker_start_len = 12;
     let marker_end_bytes = 9;
+    let window_log_pixel_bytes = 3;
     let data_with_markers_len = marker_start_len + padded_len;
     let data_pixels = (data_with_markers_len + 2) / 3;
-    let end_marker_pixels = 3;
+    let end_marker_pixels = 4;
     let total_pixels = data_pixels + end_marker_pixels;
 
     let side = (total_pixels as f64).sqrt().ceil() as usize;
@@ -420,7 +443,7 @@ fn write_png_from_zst_mem(
     let height = side;
     let row_bytes = width * 3;
     let total_data_bytes = width * height * 3;
-    let marker_end_pos = total_data_bytes - marker_end_bytes;
+    let marker_end_pos = total_data_bytes - window_log_pixel_bytes - marker_end_bytes;
 
     let enc_header_bytes = if let Some(ref enc) = encryptor {
         enc.header.clone()
@@ -431,9 +454,18 @@ fn write_png_from_zst_mem(
     let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
 
     let out_file = File::create(output_path)?;
-    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 16 * 1024 * 1024 }
+    let buf_capacity = if cfg!(target_os = "windows") {
+        // Windows: buffers ULTRA-GROS pour compenser l'overhead NTFS
+        if total_data_bytes > 512 * 1024 * 1024 { 64 * 1024 * 1024 }  // 64MB!
+        else if total_data_bytes > 128 * 1024 * 1024 { 32 * 1024 * 1024 } // 32MB!
+        else if total_data_bytes > 32 * 1024 * 1024 { 16 * 1024 * 1024 }  // 16MB!
+        else { 8 * 1024 * 1024 }  // 8MB min
+    } else {
+        // Linux: buffers standards (déjà optimisés)
+        if total_data_bytes > 256 * 1024 * 1024 { 16 * 1024 * 1024 }
         else if total_data_bytes > 16 * 1024 * 1024 { 8 * 1024 * 1024 }
-        else { (total_data_bytes / 2).max(65536).min(4 * 1024 * 1024) };
+        else { (total_data_bytes / 2).max(65536).min(4 * 1024 * 1024) }
+    };
     let mut w = BufWriter::with_capacity(buf_capacity, out_file);
 
     w.write_all(PNG_HEADER)?;
@@ -459,6 +491,7 @@ fn write_png_from_zst_mem(
         row_bytes,
         marker_end_pos,
         total_data_bytes,
+        adaptive_window_log,
         progress,
     )?;
 
@@ -495,6 +528,7 @@ fn write_idat_streaming<W: Write, R: Read>(
     row_bytes: usize,
     marker_end_pos: usize,
     total_data_bytes: usize,
+    window_log_value: u32,
     progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
     let mut idat = ChunkedIdatWriter::new(w);
@@ -509,6 +543,7 @@ fn write_idat_streaming<W: Write, R: Read>(
     let payload_total = header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
     let padding_after = total_data_bytes - payload_total.min(total_data_bytes);
     let marker_end_bytes = build_marker_end_bytes();
+    let window_log_pixel = [window_log_value as u8, 0x00, 0x00];
 
     let mut flat_pos: usize = 0;
     let mut scanline_pos: usize = 0;
@@ -575,15 +610,25 @@ fn write_idat_streaming<W: Write, R: Read>(
             while chunk_written < can_write {
                 let need = can_write - chunk_written;
 
-                let is_marker_end_region = flat_pos >= marker_end_pos && flat_pos < marker_end_pos + 9;
+                let is_marker_end_region = flat_pos >= marker_end_pos && flat_pos < marker_end_pos + 12;
 
                 if is_marker_end_region {
                     let me_offset = flat_pos - marker_end_pos;
-                    let me_remaining = 9 - me_offset;
-                    let take = need.min(me_remaining);
-                    let slice = &marker_end_bytes[me_offset..me_offset + take];
-                    idat.write_all(slice)?;
-                    adler.write(slice);
+                    let take = if me_offset < 3 {
+                        let end = (me_offset + need).min(3);
+                        let taken = end - me_offset;
+                        idat.write_all(&window_log_pixel[me_offset..end])?;
+                        adler.write(&window_log_pixel[me_offset..end]);
+                        taken
+                    } else {
+                        let elem_offset = me_offset - 3;
+                        let me_remaining = 9 - elem_offset;
+                        let taken = need.min(me_remaining);
+                        let slice = &marker_end_bytes[elem_offset..elem_offset + taken];
+                        idat.write_all(slice)?;
+                        adler.write(slice);
+                        taken
+                    };
                     flat_pos += take;
                     chunk_written += take;
                     scanline_pos += take;

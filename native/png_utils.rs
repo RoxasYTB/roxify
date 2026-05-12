@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use image::ImageReader;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+use zstd;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -140,11 +141,32 @@ pub fn get_png_metadata(png_data: &[u8]) -> Result<(u32, u32, u8, u8), String> {
 }
 
 pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    // Windows optimization: validation rapide de la signature PNG
+    if png_data.len() < 8 || &png_data[..8] != &[137, 80, 78, 71, 13, 10, 26, 10] {
+        return Err("Invalid PNG signature".to_string());
+    }
+    
+    // Windows optimization: essayer d'abord les méthodes les plus rapides
     if let Ok(payload) = extract_payload_direct(png_data) {
         if validate_payload_deep(&payload) {
             return Ok(payload);
         }
     }
+    
+    // Windows optimization: vérifier les chunks rXFL avant reconstitution coûteuse
+    if let Ok(chunks) = extract_png_chunks(png_data) {
+        if let Some(rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
+            // Si rXFL existe, essayer d'extraire directement depuis les pixels
+            // avec une approche plus tolérante
+            if let Ok(payload) = extract_payload_direct_flexible(png_data) {
+                if validate_payload_deep(&payload) {
+                    return Ok(payload);
+                }
+            }
+        }
+    }
+    
+    // Méthodes de reconstitution (plus lentes)
     if let Ok(reconst) = crate::reconstitution::crop_and_reconstitute(png_data) {
         if let Ok(payload) = extract_payload_direct(&reconst) {
             if validate_payload_deep(&payload) {
@@ -159,6 +181,7 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
             }
         }
     }
+    
     if let Ok(unstretched) = crate::reconstitution::unstretch_nn(png_data) {
         if let Ok(payload) = extract_payload_direct(&unstretched) {
             if validate_payload_deep(&payload) {
@@ -166,12 +189,31 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
             }
         }
     }
+    
     if let Ok(payload) = extract_payload_from_embedded_nn(png_data) {
         if validate_payload_deep(&payload) {
             return Ok(payload);
         }
     }
-    Err("No valid payload found after all extraction attempts".to_string())
+    
+    // Windows optimization: diagnostic détaillé pour le debugging
+    let mut debug_info = "No valid payload found after all extraction attempts. Diagnostics: ".to_string();
+    if let Ok(metadata) = get_png_metadata(png_data) {
+        debug_info.push_str(&format!("PNG size: {}x{}, ", metadata.0, metadata.1));
+    } else {
+        debug_info.push_str("Invalid PNG metadata, ");
+    }
+    
+    if let Ok(chunks) = extract_png_chunks(png_data) {
+        let chunk_names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+        debug_info.push_str(&format!("chunks: {:?}, ", chunk_names));
+    } else {
+        debug_info.push_str("no chunks readable, ");
+    }
+    
+    debug_info.push_str("file may be corrupted or use unsupported encoding.");
+    
+    Err(debug_info)
 }
 
 fn validate_payload_deep(payload: &[u8]) -> bool {
@@ -179,7 +221,24 @@ fn validate_payload_deep(payload: &[u8]) -> bool {
     if payload[0] == 0x01 || payload[0] == 0x02 || payload[0] == 0x03 { return true; }
     let compressed = if payload[0] == 0x00 { &payload[1..] } else { payload };
     if compressed.starts_with(b"ROX1") { return true; }
-    crate::core::zstd_decompress_bytes(compressed, None).is_ok()
+    
+    // Windows optimization: essayer zstd avec différentes options
+    if crate::core::zstd_decompress_bytes(compressed, None).is_ok() {
+        return true;
+    }
+    
+    // Fallback: vérifier si c'est du zstd brut sans magic
+    if compressed.len() > 4 {
+        // Essayer de décompresser avec window_log max pour Windows
+        if let Ok(mut decoder) = zstd::stream::Decoder::new(compressed) {
+            let _ = decoder.window_log_max(31);
+            if decoder.read_to_end(&mut Vec::new()).is_ok() {
+                return true;
+            }
+        }
+    }
+    
+    false
 }
 
 fn find_pixel_header(raw: &[u8]) -> Result<usize, String> {
@@ -489,6 +548,40 @@ fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
     if end > raw.len() { return Err("Truncated payload".to_string()); }
     let payload = raw[header.payload_offset..end].to_vec();
     Ok(payload)
+}
+
+fn extract_payload_direct_flexible(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    // Version plus tolérante qui essaie plusieurs approches
+    if let Ok(raw) = decode_to_rgb(png_data) {
+        if let Ok(pos) = find_pixel_header(&raw) {
+            if let Ok(header) = parse_pixel_payload_header(&raw, pos) {
+                let end = header.payload_offset + header.payload_len;
+                if end <= raw.len() {
+                    let payload = raw[header.payload_offset..end].to_vec();
+                    return Ok(payload);
+                }
+            }
+        }
+    }
+    
+    // Fallback: chercher n'importe quel motif ressemblant à PXL1
+    if let Ok(raw) = decode_to_rgb(png_data) {
+        let magic = b"PXL1";
+        for i in 0..(raw.len().saturating_sub(magic.len() + 10)) {
+            if &raw[i..i + magic.len()] == magic {
+                // Essayer de parser à partir de cette position
+                if let Ok(header) = parse_pixel_payload_header(&raw, i) {
+                    let end = header.payload_offset + header.payload_len;
+                    if end <= raw.len() {
+                        let payload = raw[header.payload_offset..end].to_vec();
+                        return Ok(payload);
+                    }
+                }
+            }
+        }
+    }
+    
+    Err("Flexible extraction failed".to_string())
 }
 
 pub fn extract_file_list_from_pixels(png_data: &[u8]) -> Result<String, String> {
