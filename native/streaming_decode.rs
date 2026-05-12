@@ -105,8 +105,9 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
             }
             let mut decoder =
                 zstd::stream::Decoder::new(reader).map_err(|e| format!("zstd decoder: {}", e))?;
+            let win = choose_zstd_window_log(total_expected);
             decoder
-                .window_log_max(31)
+                .window_log_max(win)
                 .map_err(|e| format!("zstd window_log_max: {}", e))?;
             read_rox1_and_unpack_with_progress(
                 decoder,
@@ -139,8 +140,9 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
             }
             let mut decoder = zstd::stream::Decoder::new(ctr_reader)
                 .map_err(|e| format!("zstd decoder: {}", e))?;
+            let win = choose_zstd_window_log(total_expected);
             decoder
-                .window_log_max(31)
+                .window_log_max(win)
                 .map_err(|e| format!("zstd window_log_max: {}", e))?;
             read_rox1_and_unpack_with_progress(
                 decoder,
@@ -203,6 +205,19 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
         total_expected,
     )
     .map_err(|e| format!("pack unpack: {}", e))
+}
+
+fn choose_zstd_window_log(total_expected: u64) -> u32 {
+    if total_expected <= 128 * 1024 * 1024 {
+        return 24u32;
+    }
+    if total_expected <= 512 * 1024 * 1024 {
+        return 27u32;
+    }
+    if total_expected <= 2 * 1024 * 1024 * 1024u64 {
+        return 29u32;
+    }
+    30u32
 }
 
 fn parse_png_metadata(file: &mut File) -> Result<(usize, usize, Vec<(u64, u64)>, u64), String> {

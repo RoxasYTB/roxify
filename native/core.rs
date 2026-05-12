@@ -255,15 +255,15 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
         let _ = encoder.multithread(max_threads);
     }
 
-    if total_len > 256 * 1024 && adaptive_level >= 3 {
+    if total_len > 1024 * 1024 * 1024 && adaptive_level >= 3 {
         let _ = encoder.long_distance_matching(true);
     }
     if total_len > 256 * 1024 {
-        let wlog = if total_len > 1024 * 1024 * 1024 { 30 }
-            else if total_len > 512 * 1024 * 1024 { 29 }
-            else if total_len > 64 * 1024 * 1024 { 28 }
-            else if total_len > 8 * 1024 * 1024 { 27 }
-            else { 26 };
+        let wlog = if total_len > 1024 * 1024 * 1024 { 25 }
+            else if total_len > 256 * 1024 * 1024 { 24 }
+            else if total_len > 32 * 1024 * 1024 { 23 }
+            else if total_len > 4 * 1024 * 1024 { 22 }
+            else { 21 };
         let _ = encoder.window_log(wlog);
     }
 
@@ -286,17 +286,26 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
 
 pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Read;
+    let win = if buf.len() > 1024 * 1024 * 1024 {
+        30u32
+    } else if buf.len() > 256 * 1024 * 1024 {
+        29u32
+    } else if buf.len() > 64 * 1024 * 1024 {
+        27u32
+    } else {
+        24u32
+    };
     let estimated = buf.len().saturating_mul(3).max(4096);
     let mut out = Vec::with_capacity(estimated);
     if let Some(d) = dict {
         let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(buf), d)
             .map_err(|e| format!("zstd decoder init error: {}", e))?;
-        decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max error: {}", e))?;
+        decoder.window_log_max(win).map_err(|e| format!("zstd window_log_max error: {}", e))?;
         decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
     } else {
         let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(buf))
             .map_err(|e| format!("zstd decoder init error: {}", e))?;
-        decoder.window_log_max(31).map_err(|e| format!("zstd window_log_max error: {}", e))?;
+        decoder.window_log_max(win).map_err(|e| format!("zstd window_log_max error: {}", e))?;
         decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
     }
     Ok(out)

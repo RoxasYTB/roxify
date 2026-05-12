@@ -294,6 +294,29 @@ fn streaming_preference_threshold_bytes(ram_budget_mb: u64) -> u64 {
         .max(64 * MB_U64)
 }
 
+fn should_stream_png_decode(
+    requested_files: Option<&[String]>,
+    file_size: u64,
+    ram_budget_mb: u64,
+) -> bool {
+    requested_files.is_some()
+        || file_size >= (64 * MB_U64)
+        || file_size >= streaming_preference_threshold_bytes(ram_budget_mb)
+}
+
+fn choose_zstd_window_log(total_expected: u64) -> u32 {
+    if total_expected <= 128 * 1024 * 1024 {
+        return 24u32;
+    }
+    if total_expected <= 512 * 1024 * 1024 {
+        return 27u32;
+    }
+    if total_expected <= 2 * 1024 * 1024 * 1024u64 {
+        return 29u32;
+    }
+    30u32
+}
+
 fn normalize_png_archive_bytes(
     png_data: &[u8],
     passphrase: Option<&str>,
@@ -318,13 +341,14 @@ fn unpack_archive_bytes(
     files_slice: Option<&[String]>,
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
 ) -> anyhow::Result<Vec<String>> {
+    let normalized_len = normalized.len() as u64;
     let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
         // ROX1 indicates raw pack format, pass directly to packer (it will handle ROX1/ROXI/ROXP)
         Box::new(std::io::Cursor::new(normalized))
     } else {
         let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(normalized))
             .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-        dec.window_log_max(31)
+        dec.window_log_max(choose_zstd_window_log(normalized_len))
             .map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
         Box::new(dec)
     };
@@ -507,10 +531,20 @@ fn main() -> anyhow::Result<()> {
         Commands::List { input } => {
             let mut file = File::open(&input)?;
             let mut chunk_scan_error: Option<anyhow::Error> = None;
+            let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+            eprintln!(
+                "LIST: input={:?} size_mb={} start",
+                input,
+                file_size / MB_U64
+            );
 
             match png_utils::extract_png_chunks_streaming(&mut file) {
                 Ok(chunks) => {
                     if let Some(rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
+                        eprintln!(
+                            "LIST: source=chunk_rXFL size_bytes={}",
+                            rxfl_chunk.data.len()
+                        );
                         println!("{}", String::from_utf8_lossy(&rxfl_chunk.data));
                         return Ok(());
                     }
@@ -529,6 +563,7 @@ fn main() -> anyhow::Result<()> {
                                 let json_end = json_start + json_len;
 
                                 if json_end <= meta_chunk.data.len() {
+                                    eprintln!("LIST: source=meta_rXFL size_bytes={}", json_len);
                                     println!(
                                         "{}",
                                         String::from_utf8_lossy(
@@ -546,9 +581,11 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            eprintln!("LIST: fallback=pixels size_mb={}", file_size / MB_U64);
             let png_data = std::fs::read(&input)?;
             match png_utils::extract_file_list_from_pixels(&png_data) {
                 Ok(json) => {
+                    eprintln!("LIST: source=pixel_scan size_bytes={}", json.len());
                     println!("{}", json);
                     return Ok(());
                 }
@@ -661,7 +698,7 @@ fn main() -> anyhow::Result<()> {
                 };
 
                 let should_try_streaming =
-                    file_size >= streaming_preference_threshold_bytes(ram_budget_mb);
+                    should_stream_png_decode(requested_files.as_deref(), file_size, ram_budget_mb);
 
                 if should_try_streaming {
                     let streaming_result = if let Some(ref selected) = requested_files {
@@ -692,6 +729,12 @@ fn main() -> anyhow::Result<()> {
                             return Ok(());
                         }
                         Err(e) => {
+                            if requested_files.is_some() {
+                                return Err(anyhow::anyhow!(
+                                    "Selective PNG extraction failed without fallback: {}",
+                                    e
+                                ));
+                            }
                             eprintln!("PROGRESS:12:100:streaming_fallback");
                             eprintln!(
                                 "Streaming decode failed, falling back to reconstruction: {}",
@@ -783,9 +826,10 @@ fn main() -> anyhow::Result<()> {
                 let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
                     Box::new(Cursor::new(normalized[4..].to_vec()))
                 } else {
+                    let normalized_len = normalized.len() as u64;
                     let mut dec = zstd::stream::Decoder::new(Cursor::new(normalized))
                         .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-                    dec.window_log_max(31)
+                    dec.window_log_max(choose_zstd_window_log(normalized_len))
                         .map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
                     Box::new(dec)
                 };
@@ -936,4 +980,25 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_stream_png_decode;
+
+    #[test]
+    fn selective_png_decode_forces_streaming() {
+        let files = vec![String::from("a.txt")];
+        assert!(should_stream_png_decode(Some(&files), 1, 512));
+    }
+
+    #[test]
+    fn large_png_decode_still_streams_without_selection() {
+        assert!(should_stream_png_decode(None, 128 * 1024 * 1024, 64));
+    }
+
+    #[test]
+    fn tiny_png_decode_can_use_reconstruction_without_selection() {
+        assert!(!should_stream_png_decode(None, 1024, 4096));
+    }
 }
