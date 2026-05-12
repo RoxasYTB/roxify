@@ -1,4 +1,4 @@
-# Roxify Hotfix v1.14.5 - Testing & Release Instructions
+# Roxify Hotfix v1.14.6 - Testing & Release Instructions
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ The hotfix is ready to build. To compile and generate the Windows binary:
 
 #### Option B: Manually via Tag/Release
 
-The tag `v1.14.5-hotfix.1` is already pushed. The Release workflow will trigger if a release is created.
+The tag `v1.14.6-hotfix.1` is already pushed. The Release workflow will trigger if a release is created.
 
 ### 2. Automated Testing
 
@@ -127,8 +127,8 @@ If tests fail:
 ```bash
 git revert ddfc948
 git push origin main
-git tag -d v1.14.5-hotfix.1
-git push origin :v1.14.5-hotfix.1
+git tag -d v1.14.6-hotfix.1
+git push origin :v1.14.6-hotfix.1
 ```
 
 ## GitHub Actions Details

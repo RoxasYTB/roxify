@@ -1,4 +1,4 @@
-# ✅ HOTFIX v1.14.5 - WHAT WAS COMPLETED
+# ✅ HOTFIX v1.14.6 - WHAT WAS COMPLETED
 
 **Date**: May 12, 2026
 **Status**: ✅ CODE READY FOR BUILD & TEST
@@ -72,7 +72,7 @@ ddfc948 - hotfix: adaptive window_log for streaming encode/decode on Windows
 3. **test_hotfix_windows.ps1** - Alternative implementation
 
 ### Git Tag
-- **v1.14.5-hotfix.1** - Created and pushed to GitHub
+- **v1.14.6-hotfix.1** - Created and pushed to GitHub
 
 ---
 
@@ -103,7 +103,7 @@ Expected output:
 ```
 GitHub UI:
 → Releases
-→ Create release from tag v1.14.5-hotfix.1
+→ Create release from tag v1.14.6-hotfix.1
 → Publish
 ```
 
@@ -200,7 +200,7 @@ roxify/
 
 - [x] Code fix implemented and tested
 - [x] Commits pushed to GitHub
-- [x] Tag created and pushed (v1.14.5-hotfix.1)
+- [x] Tag created and pushed (v1.14.6-hotfix.1)
 - [x] Documentation complete
 - [x] Testing scripts created and tested
 - [ ] GitHub Actions build triggered (NEXT: click button)

@@ -1,8 +1,8 @@
-# ✅ ROXIFY HOTFIX v1.14.5 - COMPLETION SUMMARY
+# ✅ ROXIFY HOTFIX v1.14.6 - COMPLETION SUMMARY
 
 **Date**: 2026-05-12
 **Status**: ✅ Complete - Ready for Build & Testing
-**Tag**: `v1.14.5-hotfix.1`
+**Tag**: `v1.14.6-hotfix.1`
 
 ---
 
@@ -101,7 +101,7 @@ cd d:\C\Users\Yohan\Desktop\Projets\roxify
 ### 3. Publish Release (if tests pass)
 
 ```
-GitHub → Releases → "Create release from tag v1.14.5-hotfix.1"
+GitHub → Releases → "Create release from tag v1.14.6-hotfix.1"
 ```
 
 ---
@@ -138,7 +138,7 @@ GitHub → Releases → "Create release from tag v1.14.5-hotfix.1"
 
 **Branch**: `main`
 **Latest Commit**: `ad798d1`
-**Tag**: `v1.14.5-hotfix.1` (pushed)
+**Tag**: `v1.14.6-hotfix.1` (pushed)
 **Remote**: ✅ All commits synced to GitHub
 
 ```bash

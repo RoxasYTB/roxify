@@ -1,7 +1,7 @@
-# Hotfix v1.14.5: Adaptive Window_Log for Streaming (Windows)
+# Hotfix v1.14.6: Adaptive Window_Log for Streaming (Windows)
 
 **Commit**: `ddfc948`
-**Tag**: `v1.14.5-hotfix.1`
+**Tag**: `v1.14.6-hotfix.1`
 **Date**: 2026-05-12
 **Author**: Automated Hotfix
 
@@ -179,8 +179,8 @@ If issues are found:
 ```bash
 git revert ddfc948
 git push origin main
-git tag -d v1.14.5-hotfix.1
-git push origin :v1.14.5-hotfix.1
+git tag -d v1.14.6-hotfix.1
+git push origin :v1.14.6-hotfix.1
 ```
 
 ## Future Considerations

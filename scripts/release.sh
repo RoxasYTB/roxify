@@ -2,13 +2,13 @@
 
 set -e
 
-echo "🚀 Roxify 1.14.4 Release Script"
+echo "🚀 Roxify 1.14.6 Release Script"
 echo ""
 
 echo "📋 Vérification de la version..."
-grep -q '"version": "1.14.4"' package.json && echo "✅ package.json: 1.14.4"
-grep -q "const VERSION = '1.14.4'" src/cli.ts && echo "✅ cli.ts: 1.14.4"
-grep -q "## \[1.14.4\]" docs/CHANGELOG.md && echo "✅ CHANGELOG.md: 1.14.4"
+grep -q '"version": "1.14.6"' package.json && echo "✅ package.json: 1.14.6"
+grep -q "const VERSION = '1.14.6'" src/cli.ts && echo "✅ cli.ts: 1.14.6"
+grep -q "## \[1.14.6\]" docs/CHANGELOG.md && echo "✅ CHANGELOG.md: 1.14.6"
 
 echo ""
 echo "🧪 Exécution des tests..."
@@ -42,8 +42,8 @@ echo "✅ TOUS LES TESTS PASSÉS"
 echo ""
 echo "📝 Prochaines étapes:"
 echo "  1. git add ."
-echo "  2. git commit -m 'Release 1.14.4 - Decode memory optimization'"
-echo "  3. git tag v1.14.4"
+echo "  2. git commit -m 'Release 1.14.6 - Decode memory optimization'"
+echo "  3. git tag v1.14.6"
 echo "  4. git push origin main --tags"
 echo "  5. npm publish"
 echo ""

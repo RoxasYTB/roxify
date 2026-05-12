@@ -11,7 +11,7 @@ $TestBinaryPath = "$ArtifactDir\roxify_native-windows-x64.exe"
 $TestOutputDir = "$ArtifactDir\decoded"
 
 function Wait-For-Release {
-    Write-Host "⏳ Waiting for hotfix release v1.14.5-hotfix.1 on GitHub..."
+    Write-Host "⏳ Waiting for hotfix release v1.14.6-hotfix.1 on GitHub..."
 
     $startTime = Get-Date
     $timeout = New-TimeSpan -Minutes $MaxWaitMinutes
@@ -19,7 +19,7 @@ function Wait-For-Release {
     while ((Get-Date) - $startTime -lt $timeout) {
         try {
             $releases = Invoke-RestMethod "https://api.github.com/repos/RoxasYTB/roxify/releases" -ErrorAction Stop
-            $hotfixRelease = $releases | Where-Object { $_.tag_name -eq "v1.14.5-hotfix.1" } | Select-Object -First 1
+            $hotfixRelease = $releases | Where-Object { $_.tag_name -eq "v1.14.6-hotfix.1" } | Select-Object -First 1
 
             if ($hotfixRelease) {
                 Write-Host "✅ Release found: $($hotfixRelease.html_url)"
@@ -179,7 +179,7 @@ function Format-Size {
 }
 
 Write-Host "╔════════════════════════════════════════════════════════════════════╗"
-Write-Host "║          Roxify Windows Hotfix v1.14.5-hotfix.1 Test            ║"
+Write-Host "║          Roxify Windows Hotfix v1.14.6-hotfix.1 Test            ║"
 Write-Host "║              Adaptive Window_Log for Streaming                    ║"
 Write-Host "╚════════════════════════════════════════════════════════════════════╝`n"
 

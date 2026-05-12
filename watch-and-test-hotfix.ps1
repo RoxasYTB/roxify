@@ -47,7 +47,7 @@ function Monitor-And-Download {
 ╔════════════════════════════════════════════════════════════════╗
 ║                GitHub Actions Monitor                          ║
 ║                                                                ║
-║  Watching for: Windows Hotfix Build (roxify v1.14.5-hotfix.1) ║
+║  Watching for: Windows Hotfix Build (roxify v1.14.6-hotfix.1) ║
 ║  Timeout: ${TimeoutMinutes} minutes                                  ║
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
