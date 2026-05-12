@@ -305,6 +305,9 @@ fn should_stream_png_decode(
 }
 
 fn choose_zstd_window_log(total_expected: u64) -> u32 {
+    if cfg!(target_os = "windows") {
+        return 31u32;
+    }
     if total_expected <= 128 * 1024 * 1024 {
         return 24u32;
     }
