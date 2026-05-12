@@ -208,19 +208,21 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
 }
 
 fn choose_zstd_window_log(total_expected: u64) -> u32 {
-    if cfg!(target_os = "windows") {
-        return 31u32;
+    if total_expected <= 64 * 1024 * 1024 {
+        21u32
+    } else if total_expected <= 128 * 1024 * 1024 {
+        22u32
+    } else if total_expected <= 256 * 1024 * 1024 {
+        23u32
+    } else if total_expected <= 512 * 1024 * 1024 {
+        24u32
+    } else if total_expected <= 1024 * 1024 * 1024 {
+        26u32
+    } else if total_expected <= 2 * 1024 * 1024 * 1024u64 {
+        28u32
+    } else {
+        30u32
     }
-    if total_expected <= 128 * 1024 * 1024 {
-        return 24u32;
-    }
-    if total_expected <= 512 * 1024 * 1024 {
-        return 27u32;
-    }
-    if total_expected <= 2 * 1024 * 1024 * 1024u64 {
-        return 29u32;
-    }
-    30u32
 }
 
 fn parse_png_metadata(file: &mut File) -> Result<(usize, usize, Vec<(u64, u64)>, u64), String> {

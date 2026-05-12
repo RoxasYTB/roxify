@@ -107,7 +107,8 @@ fn compress_dir_to_zst_mem(
         let _ = encoder.multithread(threads);
     }
     let _ = encoder.long_distance_matching(true);
-    let _ = encoder.window_log(30);
+    let adaptive_window_log = select_zstd_window_log(total_bytes);
+    let _ = encoder.window_log(adaptive_window_log);
 
     encoder.write_all(MAGIC)?;
     encoder.write_all(&PACK_MAGIC.to_be_bytes())?;
@@ -312,6 +313,24 @@ fn normalize_rel_path(path: &Path) -> String {
 fn estimate_zst_capacity(total_bytes: u64) -> usize {
     let capped = total_bytes.min(usize::MAX as u64) as usize;
     (capped / 3).max(MIN_ZST_CAPACITY)
+}
+
+fn select_zstd_window_log(total_bytes: u64) -> u32 {
+    if total_bytes <= 64 * 1024 * 1024 {
+        21u32
+    } else if total_bytes <= 128 * 1024 * 1024 {
+        22u32
+    } else if total_bytes <= 256 * 1024 * 1024 {
+        23u32
+    } else if total_bytes <= 512 * 1024 * 1024 {
+        24u32
+    } else if total_bytes <= 1024 * 1024 * 1024 {
+        26u32
+    } else if total_bytes <= 2 * 1024 * 1024 * 1024u64 {
+        28u32
+    } else {
+        30u32
+    }
 }
 
 fn select_zstd_threads(total_bytes: u64) -> u32 {
