@@ -1,14 +1,11 @@
 use anyhow::Result;
-use memmap2::{MmapOptions, MmapMut};
+use memmap2::MmapOptions;
 use rayon::prelude::*;
 use serde_json::json;
-use std::collections::HashSet;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
 use walkdir::WalkDir;
 
 #[cfg(windows)]
@@ -649,8 +646,15 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     // Windows optimization: cache des répertoires déjà créés pour éviter l'overhead NTFS
     let mut created_dirs = std::collections::HashSet::new();
 
-    // Windows optimization: batch de fichiers pour éviter l'overhead de création individuelle
     let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+
+    let flush_batch_files = |batch_files: &mut Vec<(PathBuf, Vec<u8>)>| -> Result<()> {
+        for (dest, data) in batch_files.drain(..) {
+            std::fs::write(&dest, &data)
+                .map_err(|e| anyhow::anyhow!("Cannot write batched file {:?}: {}", dest, e))?;
+        }
+        Ok(())
+    };
 
     let mut magic = read_pack_u32(reader)?;
     if magic == 0x524f5831u32 {
@@ -686,9 +690,10 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         // ROXP follows - continue with normal ROXP processing
         magic = next;
     }
-    if magic != 0x524f5850u32 {
+    if magic != 0x524f5850u32 && magic != 0x524f5856u32 {
         return Err(anyhow::anyhow!("Invalid pack magic: 0x{:08x}", magic));
     }
+    let is_roxv = magic == 0x524f5856u32;
 
     file_count = read_pack_u32(reader)? as usize;
 
@@ -735,11 +740,9 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             };
             // Windows optimization: extraction par batch pour éviter l'overhead NTFS
             if cfg!(target_os = "windows") {
-                // Windows: lire en mémoire et ajouter au batch
                 let mut file_data = vec![0u8; size as usize];
                 reader.read_exact(&mut file_data)?;
 
-                // Ajouter au batch pour écriture groupée plus tard
                 batch_files.push((dest.clone(), file_data));
                 bytes_processed += size;
             } else {
@@ -791,6 +794,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         );
 
         if requested == 0 {
+            flush_batch_files(&mut batch_files)?;
             if let Some(cb) = progress {
                 cb(99, 100, "finishing");
             }
@@ -798,12 +802,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         }
     }
 
-    // Ajouter les noms de fichiers à la liste des écrits
-    for (dest, _) in batch_files {
-        if let Some(name) = dest.file_name() {
-            written.push(name.to_string_lossy().to_string());
-        }
-    }
+    flush_batch_files(&mut batch_files)?;
 
     if let Some(cb) = progress {
         cb(99, 100, "finishing");
@@ -1081,7 +1080,7 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
         // Linux: buffer standard
         vec![0u8; 1024 * 1024] // 1MB buffer
     };
-    
+
     // Windows optimization: pour les très gros transferts, utiliser std::io::copy directement
     if cfg!(target_os = "windows") && remaining > 100 * 1024 * 1024 {
         use std::io::copy;
@@ -1089,7 +1088,7 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
         let copied = copy(&mut temp_reader, &mut *writer)
             .map_err(|e| anyhow::anyhow!("Fast copy error: {}", e))?;
         *bytes_processed = bytes_processed.saturating_add(copied as u64);
-        
+
         // Mettre à jour le progrès une seule fois pour éviter l'overhead
         if let Some(cb) = progress {
             let pct = unpack_progress_percent(total_expected, *bytes_processed, file_count, processed_files);
@@ -1100,7 +1099,7 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
         }
         return Ok(());
     }
-    
+
     // Copie standard pour les petits fichiers
     while remaining > 0 {
         let take = remaining.min(buf.len() as u64) as usize;

@@ -1,6 +1,7 @@
 use cipher::{KeyIvInit, StreamCipher};
+use flate2::read::ZlibDecoder;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const PIXEL_MAGIC: &[u8] = b"PXL1";
@@ -46,7 +47,7 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
 ) -> Result<Vec<String>, String> {
     let mut meta_file = File::open(png_path).map_err(|e| format!("open: {}", e))?;
     let (width, height, idat_ranges, total_expected) = parse_png_metadata(&mut meta_file)?;
-    let window_log_value = extract_window_log_from_png(png_path, width, height, &idat_ranges).unwrap_or(31);
+    let _window_log_value = extract_window_log_from_png(png_path, width, height, &idat_ranges).unwrap_or(31);
 
     if let Some(ref cb) = progress {
         cb(2, 100, "parsing_png");
@@ -57,8 +58,10 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
     }
 
     let data_file = File::open(png_path).map_err(|e| format!("open data: {}", e))?;
-    let mut reader = DeflatePixelReader::new(data_file, width, height, idat_ranges)
-        .map_err(|e| format!("init deflate reader: {}", e))?;
+    let idat_reader = IdatRangeReader::new(data_file, idat_ranges)
+        .map_err(|e| format!("init IDAT reader: {}", e))?;
+    let zlib_decoder = ZlibDecoder::new(idat_reader);
+    let mut reader = ScanlinePixelReader::new(zlib_decoder, width, height);
 
     let mut marker_buf = [0u8; MARKER_BYTES];
     reader
@@ -294,7 +297,9 @@ fn parse_rxfl_total_bytes(json_bytes: &[u8]) -> Option<u64> {
 
 fn extract_window_log_from_png(png_path: &Path, width: usize, height: usize, idat_ranges: &[(u64, u64)]) -> Option<u32> {
     let file = File::open(png_path).ok()?;
-    let mut reader = DeflatePixelReader::new(file, width, height, idat_ranges.to_vec()).ok()?;
+    let idat_reader = IdatRangeReader::new(file, idat_ranges.to_vec()).ok()?;
+    let zlib_decoder = ZlibDecoder::new(idat_reader);
+    let mut reader = ScanlinePixelReader::new(zlib_decoder, width, height);
 
     let total_bytes = width * height * 3;
     let tail_size = 12usize;
@@ -312,7 +317,7 @@ fn extract_window_log_from_png(png_path: &Path, width: usize, height: usize, ida
     reader.read_exact(&mut tail).ok()?;
 
     let marker_end = [0u8, 0, 255, 0, 255, 0, 255, 0, 0];
-    
+
     // Chercher le marker_end dans différentes positions possibles
     if tail.len() >= 12 {
         // Cas normal: window_log dans les 3 premiers bytes
@@ -323,7 +328,7 @@ fn extract_window_log_from_png(png_path: &Path, width: usize, height: usize, ida
                 return Some(window_log);
             }
         }
-        
+
         // Cas alternatif: chercher le pattern marker_end n'importe où dans le tail
         for i in 0..=(tail.len() - 9) {
             if i + 9 <= tail.len() && tail[i..i+9] == marker_end {
@@ -343,53 +348,31 @@ fn extract_window_log_from_png(png_path: &Path, width: usize, height: usize, ida
     Some(31)
 }
 
-struct DeflatePixelReader {
+struct IdatRangeReader {
     file: File,
-    height: usize,
     idat_ranges: Vec<(u64, u64)>,
     range_index: usize,
     offset: u64,
     range_end: u64,
     dropped_until: u64,
-    block_remaining: usize,
-    current_row: usize,
-    col_in_row: usize,
-    scanline_filter_pending: bool,
-    row_bytes: usize,
 }
 
-impl DeflatePixelReader {
-    fn new(
-        mut file: File,
-        width: usize,
-        height: usize,
-        idat_ranges: Vec<(u64, u64)>,
-    ) -> Result<Self, String> {
+impl IdatRangeReader {
+    fn new(mut file: File, idat_ranges: Vec<(u64, u64)>) -> Result<Self, String> {
         let Some(&(offset, range_end)) = idat_ranges.first() else {
             return Err("IDAT not found".to_string());
         };
         crate::io_advice::advise_file_sequential(&file);
         file.seek(SeekFrom::Start(offset))
             .map_err(|e| format!("seek first IDAT: {}", e))?;
-        let row_bytes = width * 3;
-        let mut reader = Self {
+        Ok(Self {
             file,
-            height,
             idat_ranges,
             range_index: 0,
             offset,
             range_end,
             dropped_until: offset,
-            block_remaining: 0,
-            current_row: 0,
-            col_in_row: 0,
-            scanline_filter_pending: true,
-            row_bytes,
-        };
-        reader
-            .skip_stream_bytes(2)
-            .map_err(|e| format!("read zlib header: {}", e))?;
-        Ok(reader)
+        })
     }
 
     fn advance_range(&mut self) -> Result<bool, std::io::Error> {
@@ -456,79 +439,37 @@ impl DeflatePixelReader {
             "failed to fill whole buffer",
         ))
     }
+}
 
-    fn skip_stream_bytes(&mut self, count: usize) -> Result<(), std::io::Error> {
-        let mut remaining = count;
-        while remaining > 0 {
-            if !self.advance_range()? {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "failed to fill whole buffer",
-                ));
-            }
-            let available = usize::try_from(self.range_end - self.offset).unwrap_or(remaining);
-            if available == 0 {
-                continue;
-            }
-            let take = available.min(remaining);
-            self.file.seek(SeekFrom::Current(take as i64))?;
-            self.offset += take as u64;
-            remaining -= take;
-            self.maybe_drop_consumed();
-        }
-        Ok(())
-    }
-
-    fn ensure_block(&mut self) -> Result<(), std::io::Error> {
-        if self.block_remaining > 0 {
-            return Ok(());
-        }
-
-        let mut header = [0u8; 5];
-        self.read_stream_exact(&mut header)?;
-
-        let len_lo = header[1] as usize;
-        let len_hi = header[2] as usize;
-
-        self.block_remaining = len_lo | (len_hi << 8);
-        Ok(())
-    }
-
-    fn copy_raw_bytes(&mut self, buf: &mut [u8], count: usize) -> Result<usize, std::io::Error> {
-        let mut written = 0;
-        while written < count {
-            self.ensure_block()?;
-            let avail = self.block_remaining.min(count - written);
-            if avail == 0 {
-                break;
-            }
-            let got = self.read_stream_bytes(&mut buf[written..written + avail])?;
-            if got == 0 {
-                break;
-            }
-            self.block_remaining -= got;
-            written += got;
-        }
-        Ok(written)
-    }
-
-    fn skip_raw_bytes(&mut self, count: usize) -> Result<(), std::io::Error> {
-        let mut remaining = count;
-        while remaining > 0 {
-            self.ensure_block()?;
-            let skip = self.block_remaining.min(remaining);
-            if skip == 0 {
-                break;
-            }
-            self.skip_stream_bytes(skip)?;
-            self.block_remaining -= skip;
-            remaining -= skip;
-        }
-        Ok(())
+impl Read for IdatRangeReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.read_stream_bytes(buf)
     }
 }
 
-impl Read for DeflatePixelReader {
+struct ScanlinePixelReader<R: Read> {
+    reader: R,
+    height: usize,
+    row_bytes: usize,
+    current_row: usize,
+    col_in_row: usize,
+    scanline_filter_pending: bool,
+}
+
+impl<R: Read> ScanlinePixelReader<R> {
+    fn new(reader: R, width: usize, height: usize) -> Self {
+        Self {
+            reader,
+            height,
+            row_bytes: width * 3,
+            current_row: 0,
+            col_in_row: 0,
+            scanline_filter_pending: true,
+        }
+    }
+}
+
+impl<R: Read> Read for ScanlinePixelReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut filled = 0;
 
@@ -538,7 +479,8 @@ impl Read for DeflatePixelReader {
             }
 
             if self.scanline_filter_pending {
-                self.skip_raw_bytes(1)?;
+                let mut filter = [0u8; 1];
+                self.reader.read_exact(&mut filter)?;
                 self.scanline_filter_pending = false;
                 self.col_in_row = 0;
             }
@@ -553,12 +495,12 @@ impl Read for DeflatePixelReader {
             let remaining_in_buf = buf.len() - filled;
             let to_read = remaining_in_row.min(remaining_in_buf);
 
-            let got = self.copy_raw_bytes(&mut buf[filled..filled + to_read], to_read)?;
-            filled += got;
-            self.col_in_row += got;
+            let got = self.reader.read(&mut buf[filled..filled + to_read])?;
             if got == 0 {
                 break;
             }
+            filled += got;
+            self.col_in_row += got;
         }
 
         Ok(filled)
@@ -685,12 +627,12 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
                     .min(16 * 1024 * 1024) // 16MB max buffer
                     .max(256 * 1024)       // 256KB min buffer
             };
-            
+
             let mut f = std::io::BufWriter::with_capacity(
                 buffer_size,
                 std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
             );
-            
+
             std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;
             let file = f.into_inner().map_err(|e| format!("flush {:?}: {}", dest, e.error()))?;
             crate::io_advice::sync_and_drop(&file, entry_size);
@@ -785,7 +727,9 @@ mod tests {
 
         let ranges = vec![(0, 4), (7, 15), (17, 23)];
         let file = File::open(&path).unwrap();
-        let mut reader = DeflatePixelReader::new(file, 2, 1, ranges).unwrap();
+        let idat_reader = IdatRangeReader::new(file, ranges).unwrap();
+        let zlib_decoder = ZlibDecoder::new(idat_reader);
+        let mut reader = ScanlinePixelReader::new(zlib_decoder, 2, 1);
         let mut out = Vec::new();
         reader.read_to_end(&mut out).unwrap();
 

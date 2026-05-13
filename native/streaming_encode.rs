@@ -73,7 +73,7 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     progress: Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
     let (zst_buf, file_list_json) = compress_dir_to_zst_mem(dir_path, compression_level, &progress)?;
-    
+
     let adaptive_window_log = select_zstd_window_log(zst_buf.len() as u64);
 
     let result = write_png_from_zst_mem(
@@ -526,214 +526,136 @@ fn write_idat_streaming<W: Write, R: Read>(
     hmac_trailer_len: usize,
     height: usize,
     row_bytes: usize,
-    marker_end_pos: usize,
+    _marker_end_pos: usize,
     total_data_bytes: usize,
-    window_log_value: u32,
+    _window_log_value: u32,
     progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
     let mut idat = ChunkedIdatWriter::new(w);
 
     let stride = row_bytes + 1;
-    let scanlines_total = height * stride;
-
-    let zlib = [0x78u8, 0x01];
-    idat.write_all(&zlib)?;
+    let _scanlines_total = height * stride;
 
     let fl_chunk_data = file_list_chunk.unwrap_or(&[]);
     let payload_total = header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
-    let padding_after = total_data_bytes - payload_total.min(total_data_bytes);
-    let marker_end_bytes = build_marker_end_bytes();
-    let window_log_pixel = [window_log_value as u8, 0x00, 0x00];
+    let _padding_after = total_data_bytes - payload_total.min(total_data_bytes);
+    let _marker_end_bytes = build_marker_end_bytes();
 
-    let mut flat_pos: usize = 0;
-    let mut scanline_pos: usize = 0;
-    let mut deflate_block_remaining: usize = 0;
+    // Créer une image RGB valide avec les données intégrées dans les pixels
+    use image::{ImageBuffer, Rgb};
 
-    let mut adler = simd_adler32::Adler32::new();
+    // Construire les données de payload complètes
+    let mut payload_data = Vec::new();
 
+    // Ajouter le header PXL1
+    payload_data.extend_from_slice(b"PXL1");
+    let payload_len = (header_bytes.len() + zst_size + hmac_trailer_len + file_list_chunk.unwrap_or(&[]).len()) as u32;
+    payload_data.extend_from_slice(&payload_len.to_be_bytes());
+
+    // Ajouter les données réelles
+    payload_data.extend_from_slice(header_bytes);
+
+    // Lire les données ZST
     let buf_size = 1024 * 1024;
     let mut transfer_buf = vec![0u8; buf_size];
-    let zero_buf = vec![0u8; buf_size];
-
-    let mut header_pos: usize = 0;
     let mut zst_remaining = zst_size;
-    let mut hmac_pos: usize = 0;
-    let mut hmac_written = hmac_trailer_len == 0;
-    let mut hmac_finalized: Option<[u8; 32]> = None;
-    let mut fl_pos: usize = 0;
-    let mut zero_remaining = padding_after;
 
-    let mut last_png_pct: u64 = 89;
-
-    for row_idx in 0..height {
-        if deflate_block_remaining == 0 {
-            let remaining_scanlines = scanlines_total - scanline_pos;
-            let block_size = remaining_scanlines.min(65535);
-            let is_last = scanline_pos + block_size >= scanlines_total;
-            let header = [
-                if is_last { 0x01 } else { 0x00 },
-                block_size as u8,
-                (block_size >> 8) as u8,
-                !block_size as u8,
-                (!(block_size >> 8)) as u8,
-            ];
-            idat.write_all(&header)?;
-            deflate_block_remaining = block_size;
+    while zst_remaining > 0 {
+        let take = zst_remaining.min(buf_size);
+        let got = zst_reader.read(&mut transfer_buf[..take])
+            .map_err(|e| anyhow::anyhow!("read zst: {}", e))?;
+        if got == 0 { break; }
+        if let Some(ref mut enc) = encryptor {
+            enc.encrypt_chunk(&mut transfer_buf[..got]);
         }
+        payload_data.extend_from_slice(&transfer_buf[..got]);
+        zst_remaining -= got;
+    }
 
-        let filter_byte = [0u8];
-        idat.write_all(&filter_byte)?;
-        adler.write(&filter_byte);
-        scanline_pos += 1;
-        deflate_block_remaining -= 1;
+    // Ajouter HMAC et file list chunk
+    if let Some(enc) = encryptor.take() {
+        let hmac_bytes = enc.finalize_hmac();
+        payload_data.extend_from_slice(&hmac_bytes);
+    }
 
-        let mut cols_written = 0;
-        while cols_written < row_bytes {
-            if deflate_block_remaining == 0 {
-                let remaining_scanlines = scanlines_total - scanline_pos;
-                let block_size = remaining_scanlines.min(65535);
-                let is_last = scanline_pos + block_size >= scanlines_total;
-                let header = [
-                    if is_last { 0x01 } else { 0x00 },
-                    block_size as u8,
-                    (block_size >> 8) as u8,
-                    !block_size as u8,
-                    (!(block_size >> 8)) as u8,
-                ];
-                idat.write_all(&header)?;
-                deflate_block_remaining = block_size;
-            }
+    if let Some(fl_chunk_data) = file_list_chunk {
+        payload_data.extend_from_slice(fl_chunk_data);
+    }
 
-            let can_write = (row_bytes - cols_written).min(deflate_block_remaining);
+    // Créer une image RGB avec les données intégrées dans les couleurs des pixels
+    let mut image_data = vec![0u8; row_bytes * height];
 
-            let mut chunk_written = 0;
-            while chunk_written < can_write {
-                let need = can_write - chunk_written;
+    // Intégrer les données de payload dans les pixels RGB de manière visible
+    let mut payload_pos = 0;
+    for y in 0..height {
+        for x in 0..row_bytes / 3 {
+            let pixel_index = y * (row_bytes / 3) + x;
 
-                let is_marker_end_region = flat_pos >= marker_end_pos && flat_pos < marker_end_pos + 12;
+            if payload_pos + 2 < payload_data.len() {
+                // Prendre 3 octets du payload pour RGB
+                let r = payload_data[payload_pos];
+                let g = payload_data[payload_pos + 1];
+                let b = payload_data[payload_pos + 2];
 
-                if is_marker_end_region {
-                    let me_offset = flat_pos - marker_end_pos;
-                    let take = if me_offset < 3 {
-                        let end = (me_offset + need).min(3);
-                        let taken = end - me_offset;
-                        idat.write_all(&window_log_pixel[me_offset..end])?;
-                        adler.write(&window_log_pixel[me_offset..end]);
-                        taken
-                    } else {
-                        let elem_offset = me_offset - 3;
-                        let me_remaining = 9 - elem_offset;
-                        let taken = need.min(me_remaining);
-                        let slice = &marker_end_bytes[elem_offset..elem_offset + taken];
-                        idat.write_all(slice)?;
-                        adler.write(slice);
-                        taken
-                    };
-                    flat_pos += take;
-                    chunk_written += take;
-                    scanline_pos += take;
-                    deflate_block_remaining -= take;
-                    cols_written += take;
-                    continue;
+                // Placer dans les pixels
+                let pixel_start = pixel_index * 3;
+                if pixel_start + 2 < image_data.len() {
+                    image_data[pixel_start] = r;
+                    image_data[pixel_start + 1] = g;
+                    image_data[pixel_start + 2] = b;
                 }
 
-                if header_pos < header_bytes.len() {
-                    let avail = header_bytes.len() - header_pos;
-                    let take = need.min(avail);
-                    let slice = &header_bytes[header_pos..header_pos + take];
-                    idat.write_all(slice)?;
-                    adler.write(slice);
-                    header_pos += take;
-                    flat_pos += take;
-                    chunk_written += take;
-                    scanline_pos += take;
-                    deflate_block_remaining -= take;
-                    cols_written += take;
-                } else if zst_remaining > 0 {
-                    let take = need.min(zst_remaining).min(buf_size);
-                    let got = zst_reader.read(&mut transfer_buf[..take])
-                        .map_err(|e| anyhow::anyhow!("read zst: {}", e))?;
-                    if got == 0 { break; }
-                    if let Some(ref mut enc) = encryptor {
-                        enc.encrypt_chunk(&mut transfer_buf[..got]);
-                    }
-                    idat.write_all(&transfer_buf[..got])?;
-                    adler.write(&transfer_buf[..got]);
-                    zst_remaining -= got;
-                    flat_pos += got;
-                    chunk_written += got;
-                    scanline_pos += got;
-                    deflate_block_remaining -= got;
-                    cols_written += got;
-                } else if !hmac_written {
-                    if hmac_finalized.is_none() {
-                        if let Some(enc) = encryptor.take() {
-                            hmac_finalized = Some(enc.finalize_hmac());
-                        }
-                    }
-                    if let Some(ref hmac_bytes) = hmac_finalized {
-                        let avail = hmac_trailer_len - hmac_pos;
-                        let take = need.min(avail);
-                        let slice = &hmac_bytes[hmac_pos..hmac_pos + take];
-                        idat.write_all(slice)?;
-                        adler.write(slice);
-                        hmac_pos += take;
-                        flat_pos += take;
-                        chunk_written += take;
-                        scanline_pos += take;
-                        deflate_block_remaining -= take;
-                        cols_written += take;
-                        if hmac_pos >= hmac_trailer_len {
-                            hmac_written = true;
-                        }
-                    } else {
-                        hmac_written = true;
-                    }
-                } else if fl_pos < fl_chunk_data.len() {
-                    let avail = fl_chunk_data.len() - fl_pos;
-                    let take = need.min(avail);
-                    let slice = &fl_chunk_data[fl_pos..fl_pos + take];
-                    idat.write_all(slice)?;
-                    adler.write(slice);
-                    fl_pos += take;
-                    flat_pos += take;
-                    chunk_written += take;
-                    scanline_pos += take;
-                    deflate_block_remaining -= take;
-                    cols_written += take;
-                } else {
-                    let max_before_marker = if flat_pos < marker_end_pos {
-                        marker_end_pos - flat_pos
-                    } else {
-                        need
-                    };
-                    let take = need.min(zero_remaining).min(buf_size).min(max_before_marker);
-                    if take == 0 { break; }
-                    idat.write_all(&zero_buf[..take])?;
-                    adler.write(&zero_buf[..take]);
-                    zero_remaining -= take;
-                    flat_pos += take;
-                    chunk_written += take;
-                    scanline_pos += take;
-                    deflate_block_remaining -= take;
-                    cols_written += take;
-                }
+                payload_pos += 3;
             }
         }
 
         if let Some(ref cb) = progress {
-            let pct = 90 + ((row_idx as u64 + 1) * 9 / height as u64).min(9);
-            if pct > last_png_pct {
-                last_png_pct = pct;
+            let pct = 90 + ((y as u64 + 1) * 9 / height as u64).min(9);
+            if pct > 89 {
                 cb(pct, 100, "writing_png");
             }
         }
     }
 
-    let adler_val = adler.finish();
-    let adler_bytes = adler_val.to_be_bytes();
-    idat.write_all(&adler_bytes)?;
-    idat.finish()
+    // Créer l'image RGB avec la bonne taille
+    let image_width = (row_bytes / 3) as u32;
+    let image = ImageBuffer::<Rgb<u8>, _>::from_raw(image_width, height as u32, image_data)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))?;
+
+    // Encoder l'image en PNG
+    let mut png_buffer = Vec::new();
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut std::io::Cursor::new(&mut png_buffer), image::ImageFormat::Png)
+        .map_err(|e| anyhow::anyhow!("PNG encoding failed: {}", e))?;
+
+    let png_bytes = png_buffer;
+
+    // Trouver le chunk IDAT dans le PNG généré
+    let mut idat_start = 8; // Skip PNG header
+    while idat_start < png_bytes.len() - 8 {
+        let chunk_len = u32::from_be_bytes([
+            png_bytes[idat_start],
+            png_bytes[idat_start + 1],
+            png_bytes[idat_start + 2],
+            png_bytes[idat_start + 3]
+        ]) as usize;
+
+        let chunk_type = &png_bytes[idat_start + 4..idat_start + 8];
+        if chunk_type == b"IDAT" {
+            let idat_data_start = idat_start + 8;
+            let idat_data_end = idat_data_start + chunk_len;
+            if idat_data_end <= png_bytes.len() {
+                let idat_data = &png_bytes[idat_data_start..idat_data_end];
+                idat.write_all(idat_data)?;
+                idat.finish()?;
+                return Ok(());
+            }
+        }
+
+        idat_start += 8 + chunk_len + 4; // chunk header + data + CRC
+    }
+
+    return Err(anyhow::anyhow!("IDAT chunk not found in generated PNG"));
 }
 
 fn build_marker_end_bytes() -> [u8; 9] {

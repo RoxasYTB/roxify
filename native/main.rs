@@ -167,10 +167,10 @@ pub fn parse_windows_mem_available_mb() -> Option<u64> {
     #[cfg(windows)]
     {
         use std::mem;
-        use std::ptr;
 
         unsafe {
             // Utiliser GlobalMemoryStatusEx pour Windows
+            #[allow(non_snake_case)]
             #[repr(C)]
             struct MEMORYSTATUSEX {
                 dwLength: u32,
@@ -257,9 +257,6 @@ fn auto_ram_budget_mb() -> u64 {
     let available_mb = parse_linux_mem_available_mb().unwrap_or(total_mb / 2);
     let cpu_cores = get_cpu_cores();
 
-    // Base calculation: use up to 85% of available RAM for ultra-fast mode
-    let base_budget = available_mb.saturating_mul(85) / 100;
-
     // Adjust based on RAM tier and CPU cores
     let tier_multiplier = match get_ram_tier(total_mb) {
         "ultra" if cpu_cores >= 8 => 90, // 16GB+ with 8+ cores: 90%
@@ -313,7 +310,7 @@ fn should_use_streaming(file_size_mb: u64, ram_budget_mb: u64) -> bool {
 }
 
 /// Get optimal thread count for zstd based on RAM and CPU
-fn optimal_zstd_threads(file_size_mb: u64, ram_budget_mb: u64) -> i32 {
+fn optimal_zstd_threads(file_size_mb: u64, _ram_budget_mb: u64) -> i32 {
     let cpu_cores = get_cpu_cores();
     let ram_tier = get_ram_tier(parse_total_ram_mb().unwrap_or(4096));
 
@@ -395,11 +392,28 @@ fn normalize_png_archive_bytes(
     }
 
     if payload[0] == 0x00u8 {
-        Ok(payload[1..].to_vec())
+        // Decompressed data (already decompressed in extract_payload_from_png)
+        let decompressed = &payload[1..];
+        if decompressed.starts_with(b"ROX1") {
+            Ok(decompressed[4..].to_vec())
+        } else {
+            Ok(decompressed.to_vec())
+        }
+    } else if payload.starts_with(b"ROX1") || payload.starts_with(b"ROXI") || payload.starts_with(b"ROXP") {
+        // Data is already decompressed from extract_payload_from_png, strip magic if present
+        if payload.starts_with(b"ROX1") {
+            Ok(payload[4..].to_vec())
+        } else {
+            Ok(payload)
+        }
     } else {
         let decrypted = crate::crypto::try_decrypt(&payload, passphrase)
             .map_err(|e| anyhow::anyhow!("Encrypted payload: {}", e))?;
-        Ok(decrypted)
+        if decrypted.starts_with(b"ROX1") {
+            Ok(decrypted[4..].to_vec())
+        } else {
+            Ok(decrypted)
+        }
     }
 }
 
@@ -409,17 +423,30 @@ fn unpack_archive_bytes(
     files_slice: Option<&[String]>,
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
 ) -> anyhow::Result<Vec<String>> {
-    let normalized_len = normalized.len() as u64;
-    let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
-        // ROX1 indicates raw pack format, pass directly to packer (it will handle ROX1/ROXI/ROXP)
+    // Check if data starts with known pack magic
+    let starts_with_rox = if normalized.len() >= 4 {
+        let magic = u32::from_be_bytes([normalized[0], normalized[1], normalized[2], normalized[3]]);
+        magic == 0x524f5831 || magic == 0x524f5856 || magic == 0x524f5849 || magic == 0x524f5850
+    } else {
+        false
+    };
+
+    let mut reader: Box<dyn std::io::Read> = if starts_with_rox {
         Box::new(std::io::Cursor::new(normalized))
     } else {
-        let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(normalized))
-            .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-        // Utiliser 31 pour le fallback (notre correction window_log)
-        dec.window_log_max(31)
-            .map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
-        Box::new(dec)
+        // Raw file data - need to wrap in ROXV format for unpacker
+        let mut wrapped = Vec::with_capacity(8 + normalized.len());
+        wrapped.extend_from_slice(&0x524f5856u32.to_be_bytes()); // ROXV
+        wrapped.extend_from_slice(&1u32.to_be_bytes()); // 1 file
+        // Add file name (default to "file")
+        let name = b"file";
+        wrapped.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        wrapped.extend_from_slice(name);
+        // Add file size (u64 big endian)
+        wrapped.extend_from_slice(&(normalized.len() as u64).to_be_bytes());
+        // Add file content
+        wrapped.extend_from_slice(&normalized);
+        Box::new(std::io::Cursor::new(wrapped))
     };
 
     std::fs::create_dir_all(out_dir)
@@ -805,15 +832,11 @@ fn main() -> anyhow::Result<()> {
                             return Ok(());
                         }
                         Err(e) => {
-                            if requested_files.is_some() {
-                                return Err(anyhow::anyhow!(
-                                    "Selective PNG extraction failed without fallback: {}",
-                                    e
-                                ));
-                            }
+                            // If selected-files streaming failed, try full reconstruction
+                            // as a fallback when RAM budget allows.
                             eprintln!("PROGRESS:12:100:streaming_fallback");
                             eprintln!(
-                                "Streaming decode failed, falling back to reconstruction: {}",
+                                "Streaming decode failed (selected-files mode): {}. Attempting full reconstruction fallback.",
                                 e
                             );
                         }
@@ -876,6 +899,13 @@ fn main() -> anyhow::Result<()> {
                     }
                     if payload[0] == 0x00u8 {
                         payload[1..].to_vec()
+                    } else if payload.starts_with(b"ROX1") || payload.starts_with(b"ROXI") || payload.starts_with(b"ROXP") {
+                        // Data already decompressed from extract_payload_from_png
+                        if payload.starts_with(b"ROX1") {
+                            payload[4..].to_vec()
+                        } else {
+                            payload
+                        }
                     } else {
                         let pass = passphrase.as_ref().map(|s: &String| s.as_str());
                         match crate::crypto::try_decrypt(&payload, pass) {
@@ -901,13 +931,19 @@ fn main() -> anyhow::Result<()> {
 
                 let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
                     Box::new(Cursor::new(normalized[4..].to_vec()))
+                } else if normalized.starts_with(b"ROXV") || normalized.starts_with(b"ROXI") || normalized.starts_with(b"ROXP") {
+                    Box::new(Cursor::new(normalized))
                 } else {
-                    let normalized_len = normalized.len() as u64;
-                    let mut dec = zstd::stream::Decoder::new(Cursor::new(normalized))
-                        .map_err(|e| anyhow::anyhow!("zstd decoder init: {}", e))?;
-                    dec.window_log_max(choose_zstd_window_log(normalized_len))
-                        .map_err(|e| anyhow::anyhow!("zstd window_log_max: {}", e))?;
-                    Box::new(dec)
+                    // Raw file data - wrap in ROXV format
+                    let mut wrapped = Vec::with_capacity(8 + normalized.len() + 32);
+                    wrapped.extend_from_slice(&0x524f5856u32.to_be_bytes());
+                    wrapped.extend_from_slice(&1u32.to_be_bytes());
+                    let name = b"file";
+                    wrapped.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                    wrapped.extend_from_slice(name);
+                    wrapped.extend_from_slice(&(normalized.len() as u64).to_be_bytes());
+                    wrapped.extend_from_slice(&normalized);
+                    Box::new(Cursor::new(wrapped))
                 };
 
                 let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
@@ -1000,7 +1036,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
 
-                let mut dest = if out_rox {
+                let dest = if out_rox {
                     let mut path = output.unwrap_or_else(|| {
                         input
                             .file_stem()
@@ -1057,7 +1093,6 @@ fn main() -> anyhow::Result<()> {
                     };
                     std::fs::create_dir_all(&out_dir)
                         .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", out_dir, e))?;
-                    // Ultra-fast batch writing removed - use direct extraction only
                     let written = packer::unpack_buffer_to_dir(&out_bytes, &out_dir, None)
                         .map_err(|e| anyhow::anyhow!(e))?;
                     println!("Unpacked {} files to {:?}", written.len(), out_dir);
