@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.14.8] - 2026-05-13
+
+### Release: version bump for Pyxelze integration
+
+- **Updated**: Version bumped to 1.14.8 for compatibility with Pyxelze 1.4.1 release.
+
 ## [1.13.5] - 2026-04-15
 
 ### Fix: large PNG decode stability, memory usage, and Portal 2 validation
