@@ -658,46 +658,43 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
             }
         }
 
-        // Windows performance optimization: ultra-large buffers for extreme speed
-        let buffer_size = if cfg!(target_os = "windows") {
-            // Windows: buffers ultra-larges pour éviter l'overhead NTFS
-            (entry_size as usize)
-                .min(64 * 1024 * 1024) // 64MB max buffer
-                .max(4 * 1024 * 1024)  // 4MB min buffer
-        } else {
-            // Linux: buffers standards
-            (entry_size as usize)
-                .min(16 * 1024 * 1024) // 16MB max buffer
-                .max(256 * 1024)       // 256KB min buffer
-        };
-        
-        let mut f = std::io::BufWriter::with_capacity(
-            buffer_size,
-            std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
-        );
-        
-        // Optimisation Windows: copie par blocs pour éviter l'overhead
+        // Optimisation des buffers pour éviter les fichiers vides
         if cfg!(target_os = "windows") && entry_size > 1024 * 1024 {
-            // Gros fichiers: copie par blocs de 8MB
+            // Windows: gros fichiers - copie par blocs de 8MB SANS BufWriter
             let mut temp_buffer = vec![0u8; 8 * 1024 * 1024];
+            let mut file = std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?;
             let mut copied = 0u64;
             while copied < entry_size {
                 let to_read = (entry_size - copied).min(temp_buffer.len() as u64) as usize;
                 let read_bytes = entry.read(&mut temp_buffer[..to_read])
                     .map_err(|e| format!("read {:?}: {}", dest, e))?;
                 if read_bytes == 0 { break; }
-                f.write_all(&temp_buffer[..read_bytes])
+                file.write_all(&temp_buffer[..read_bytes])
                     .map_err(|e| format!("write {:?}: {}", dest, e))?;
                 copied += read_bytes as u64;
             }
+            crate::io_advice::sync_and_drop(&file, entry_size);
         } else {
-            // Petits fichiers ou Linux: copie standard
+            // Petits fichiers ou Linux: copie standard avec BufWriter
+            let buffer_size = if cfg!(target_os = "windows") {
+                (entry_size as usize)
+                    .min(16 * 1024 * 1024) // 16MB max buffer
+                    .max(256 * 1024)       // 256KB min buffer
+            } else {
+                (entry_size as usize)
+                    .min(16 * 1024 * 1024) // 16MB max buffer
+                    .max(256 * 1024)       // 256KB min buffer
+            };
+            
+            let mut f = std::io::BufWriter::with_capacity(
+                buffer_size,
+                std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
+            );
+            
             std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;
+            let file = f.into_inner().map_err(|e| format!("flush {:?}: {}", dest, e.error()))?;
+            crate::io_advice::sync_and_drop(&file, entry_size);
         }
-        let file = f
-            .into_inner()
-            .map_err(|e| format!("flush {:?}: {}", dest, e.error()))?;
-        crate::io_advice::sync_and_drop(&file, entry_size);
         written.push(safe.to_string_lossy().to_string());
         if files_filter.is_some() {
             remaining = remaining.saturating_sub(1);

@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use image::ImageReader;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use zstd;
+use flate2::read::ZlibDecoder;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -155,9 +156,14 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
     
     // Windows optimization: vérifier les chunks rXFL avant reconstitution coûteuse
     if let Ok(chunks) = extract_png_chunks(png_data) {
-        if let Some(rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
-            // Si rXFL existe, essayer d'extraire directement depuis les pixels
-            // avec une approche plus tolérante
+        if let Some(_rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
+            // Si rXFL existe, essayer l'extraction directe depuis les pixels RGBA
+            if let Ok(payload) = extract_payload_direct_from_pixels(png_data) {
+                if validate_payload_deep(&payload) {
+                    return Ok(payload);
+                }
+            }
+            // Fallback: essayer les pixels avec reconstruction NN
             if let Ok(payload) = extract_payload_direct_flexible(png_data) {
                 if validate_payload_deep(&payload) {
                     return Ok(payload);
@@ -284,15 +290,26 @@ fn reconstruct_logical_pixels_from_nn(
 
     let mut header_row = None;
     let mut header_col = None;
+    
+    // Recherche améliorée : plus flexible et robuste
     'outer: for y in 0..h {
-        for x in 0..w.saturating_sub(1) {
-            let p0 = get(x, y);
-            let p1 = get(x + 1, y);
-            let seq = [p0[0], p0[1], p0[2], p1[0], p1[1], p1[2]];
-            for start in 0..3 {
-                if start + 4 <= 6 && seq[start] == magic[0] && seq[start+1] == magic[1]
-                    && seq[start+2] == magic[2] && seq[start+3] == magic[3]
-                {
+        for x in 0..w {
+            // Essayer différentes positions dans le pixel
+            let p = get(x, y);
+            let pixel_data = [p[0], p[1], p[2]];
+            
+            // Vérifier si le magic bytes est au début du pixel
+            if pixel_data.len() >= 4 && pixel_data[0..4] == magic {
+                header_row = Some(y);
+                header_col = Some(x);
+                break 'outer;
+            }
+            
+            // Vérifier si le magic bytes est distribué sur plusieurs pixels
+            if x < w.saturating_sub(1) {
+                let p_next = get(x + 1, y);
+                let combined = [p[0], p[1], p[2], p_next[0]];
+                if combined == magic {
                     header_row = Some(y);
                     header_col = Some(x);
                     break 'outer;
@@ -300,6 +317,20 @@ fn reconstruct_logical_pixels_from_nn(
             }
         }
     }
+    
+    // Si toujours pas trouvé, essayer une recherche linéaire simple
+    if header_row.is_none() {
+        let flat_pixels: Vec<u8> = pixels.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+        for i in 0..flat_pixels.len().saturating_sub(4) {
+            if flat_pixels[i..i+4] == magic {
+                let pixel_idx = i / 3;
+                header_row = Some(pixel_idx / w);
+                header_col = Some(pixel_idx % w);
+                break;
+            }
+        }
+    }
+    
     let header_row = header_row.ok_or("PXL1 not found in 2D pixel scan")?;
     let header_col = header_col.ok_or("PXL1 column not found")?;
 
@@ -548,6 +579,192 @@ fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
     if end > raw.len() { return Err("Truncated payload".to_string()); }
     let payload = raw[header.payload_offset..end].to_vec();
     Ok(payload)
+}
+
+fn extract_payload_from_idat_stream(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    // Extraire le payload depuis le flux IDAT du PNG
+    let mut cursor = std::io::Cursor::new(png_data);
+    
+    // Sauter le header PNG (8 octets)
+    cursor.seek(std::io::SeekFrom::Start(8)).map_err(|e| format!("seek: {}", e))?;
+    
+    let mut idat_data = Vec::new();
+    loop {
+        let mut chunk_len_bytes = [0u8; 4];
+        cursor.read_exact(&mut chunk_len_bytes).map_err(|e| format!("read chunk len: {}", e))?;
+        let chunk_len = u32::from_be_bytes(chunk_len_bytes);
+        
+        let mut chunk_type_bytes = [0u8; 4];
+        cursor.read_exact(&mut chunk_type_bytes).map_err(|e| format!("read chunk type: {}", e))?;
+        let chunk_type = std::str::from_utf8(&chunk_type_bytes).map_err(|e| format!("invalid chunk type: {}", e))?;
+        
+        if chunk_type == "IDAT" {
+            let mut chunk_data = vec![0u8; chunk_len as usize];
+            cursor.read_exact(&mut chunk_data).map_err(|e| format!("read IDAT data: {}", e))?;
+            idat_data.extend_from_slice(&chunk_data);
+        } else {
+            cursor.seek(std::io::SeekFrom::Current(chunk_len as i64 + 4)).map_err(|e| format!("skip chunk: {}", e))?;
+        }
+        
+        if chunk_type == "IEND" {
+            break;
+        }
+    }
+    
+    // Décompresser les données IDAT
+    let mut decoder = flate2::read::ZlibDecoder::new(std::io::Cursor::new(idat_data));
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed).map_err(|e| format!("zlib decompress: {}", e))?;
+    
+    // Extraire le payload depuis les données décompressées
+    find_payload_in_decompressed_data(&decompressed)
+}
+
+fn find_payload_in_decompressed_data(data: &[u8]) -> Result<Vec<u8>, String> {
+    // Approche 1: Chercher le magic bytes ROX1
+    let magic = b"ROX1";
+    for i in 0..data.len().saturating_sub(magic.len()) {
+        if &data[i..i+magic.len()] == magic {
+            // Parser le header ROX1
+            if i + 12 > data.len() {
+                return Err("Truncated ROX1 header".to_string());
+            }
+            
+            let pack_magic = u32::from_be_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]);
+            if pack_magic != 0x524F5850 { // "ROXP"
+                return Err("Invalid ROX1 pack magic".to_string());
+            }
+            
+            let _entries_count = u32::from_be_bytes([data[i+8], data[i+9], data[i+10], data[i+11]]) as usize;
+            
+            // Calculer la position du payload (après les headers)
+            let payload_start = i + 12;
+            if payload_start >= data.len() {
+                return Err("No payload data".to_string());
+            }
+            
+            // Essayer de trouver la fin du payload en cherchant zstd magic
+            let zstd_magic = [0x28, 0xb5, 0x2f, 0xfd];
+            let mut payload_end = data.len();
+            for j in (payload_start + 10)..data.len().saturating_sub(4) {
+                if &data[j..j+4] == zstd_magic {
+                    payload_end = j;
+                    break;
+                }
+            }
+            
+            return Ok(data[payload_start..payload_end].to_vec());
+        }
+    }
+    
+    // Approche 2: Chercher PXL1 (pour les données encodées dans les pixels)
+    let pxl1_magic = b"PXL1";
+    for i in 0..data.len().saturating_sub(pxl1_magic.len()) {
+        if &data[i..i+pxl1_magic.len()] == pxl1_magic {
+            // Parser le header PXL1
+            if i + 8 > data.len() {
+                return Err("Truncated PXL1 header".to_string());
+            }
+            
+            let payload_len = u32::from_be_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]) as usize;
+            let payload_start = i + 8;
+            let payload_end = (payload_start + payload_len).min(data.len());
+            
+            if payload_end > payload_start {
+                return Ok(data[payload_start..payload_end].to_vec());
+            }
+        }
+    }
+    
+    // Approche 3: Retourner toutes les données après le premier octet non nul
+    for i in 0..data.len() {
+        if data[i] != 0 {
+            return Ok(data[i..].to_vec());
+        }
+    }
+    
+    Err("No payload found in IDAT data".to_string())
+}
+
+fn extract_payload_direct_from_pixels(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    // Extraire directement depuis les pixels RGBA sans reconstruction NN
+    let (pixels, width, height) = decode_to_rgba_grid(png_data)?;
+    let w = width as usize;
+    let h = height as usize;
+    
+    // Convertir les pixels RGBA en données brutes RGB
+    let mut rgb_data = Vec::with_capacity(w * h * 3);
+    for pixel in &pixels {
+        rgb_data.extend_from_slice(&[pixel[0], pixel[1], pixel[2]]); // RGB seulement
+    }
+    
+    // Chercher le magic bytes PXL1 dans les données RGB
+    let magic = b"PXL1";
+    for i in 0..rgb_data.len().saturating_sub(magic.len()) {
+        if &rgb_data[i..i+magic.len()] == magic {
+            // Parser le header PXL1
+            if i + 8 > rgb_data.len() {
+                return Err("Truncated PXL1 header".to_string());
+            }
+            
+            let payload_len = u32::from_be_bytes([
+                rgb_data[i+4], 
+                rgb_data[i+5], 
+                rgb_data[i+6], 
+                rgb_data[i+7]
+            ]) as usize;
+            
+            let payload_start = i + 8;
+            let payload_end = (payload_start + payload_len).min(rgb_data.len());
+            
+            if payload_end > payload_start {
+                return Ok(rgb_data[payload_start..payload_end].to_vec());
+            }
+        }
+    }
+    
+    // Si PXL1 n'est pas trouvé, chercher ROX1
+    let rox1_magic = b"ROX1";
+    for i in 0..rgb_data.len().saturating_sub(rox1_magic.len()) {
+        if &rgb_data[i..i+rox1_magic.len()] == rox1_magic {
+            // Parser le header ROX1
+            if i + 12 > rgb_data.len() {
+                return Err("Truncated ROX1 header".to_string());
+            }
+            
+            let pack_magic = u32::from_be_bytes([
+                rgb_data[i+4], 
+                rgb_data[i+5], 
+                rgb_data[i+6], 
+                rgb_data[i+7]
+            ]);
+            
+            if pack_magic != 0x524F5850 { // "ROXP"
+                return Err("Invalid ROX1 pack magic".to_string());
+            }
+            
+            let _entries_count = u32::from_be_bytes([
+                rgb_data[i+8], 
+                rgb_data[i+9], 
+                rgb_data[i+10], 
+                rgb_data[i+11]
+            ]) as usize;
+            
+            // Calculer la position du payload
+            let payload_start = i + 12;
+            if payload_start >= rgb_data.len() {
+                return Err("No payload data".to_string());
+            }
+            
+            // Estimer la fin du payload
+            let estimated_payload_size = rgb_data.len() - payload_start - 50;
+            let payload_end = (payload_start + estimated_payload_size).min(rgb_data.len());
+            
+            return Ok(rgb_data[payload_start..payload_end].to_vec());
+        }
+    }
+    
+    Err("No payload found in RGB pixel data".to_string())
 }
 
 fn extract_payload_direct_flexible(png_data: &[u8]) -> Result<Vec<u8>, String> {

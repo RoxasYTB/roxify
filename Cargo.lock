@@ -915,6 +915,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "ctr",
+ "flate2",
  "hmac",
  "image",
  "libc",

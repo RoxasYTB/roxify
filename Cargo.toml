@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.14.6"
+version = "1.14.7"
 edition = "2021"
 publish = false
 
@@ -42,6 +42,7 @@ pbkdf2 = "0.12"
 rand = "0.8"
 sha2 = "0.10"
 simd-adler32 = "0.3"
+flate2 = "1.0"
 
 bytemuck = { version = "1.14", features = ["derive"] }
 parking_lot = "0.12"
