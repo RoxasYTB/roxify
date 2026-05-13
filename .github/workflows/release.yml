@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -372,7 +376,31 @@ jobs:
 
       - run: npm run build
 
+      - name: Check if version is already published on npm
+        id: npm_check
+        shell: bash
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "Checking $PKG_NAME@$PKG_VERSION on the npm registry..."
+          # `npm view <pkg>@<version> version` prints the version when published, empty when not.
+          # We retry a couple of times to avoid false negatives from a flaky registry.
+          PUBLISHED=""
+          for i in 1 2 3; do
+            PUBLISHED=$(npm view "$PKG_NAME@$PKG_VERSION" version 2>/dev/null || true)
+            if [ -n "$PUBLISHED" ]; then break; fi
+            sleep 3
+          done
+          if [ -n "$PUBLISHED" ]; then
+            echo "Version $PKG_VERSION already published on npm. Skipping publish step to avoid duplicate release."
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version $PKG_VERSION not yet on npm. Proceeding with publish."
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
-        run: npm publish --access public
+        if: steps.npm_check.outputs.already_published != 'true'
+        run: npm publish --access public --provenance=false
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -20,7 +20,7 @@ async function loadJsEngine() {
         VFSIndexEntry: undefined,
     };
 }
-const VERSION = '1.14.8';
+const VERSION = '1.14.9';
 function getDirectorySize(dirPath) {
     let totalSize = 0;
     try {

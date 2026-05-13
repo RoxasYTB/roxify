@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.9] - 2026-05-13
+
+### Fix: workflow double npm publish bug
+
+- **Fixed**: GitHub release workflow could publish the same version to npm twice when triggered concurrently (release event + workflow_dispatch) or when re-run. Added a `concurrency` group keyed on the tag and an idempotent pre-publish check that skips `npm publish` if the version already exists on the registry.
+- **Updated**: Version bumped to 1.14.9 across `package.json`, `Cargo.toml`, `Cargo.lock`, `src/cli.ts`, and `dist/cli.js`.
+
 ## [1.14.8] - 2026-05-13
 
 ### Release: version bump for Pyxelze integration
