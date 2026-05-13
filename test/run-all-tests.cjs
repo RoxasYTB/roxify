@@ -10,9 +10,14 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const assert = require('assert');
+const { pathToFileURL } = require('url');
 
 const root = path.resolve(__dirname, '..');
 const distDir = path.join(root, 'dist');
+
+function importFile(...segments) {
+  return import(pathToFileURL(path.join(...segments)).href);
+}
 
 let passed = 0;
 let failed = 0;
@@ -48,10 +53,11 @@ async function testAsync(name, fn) {
 // 1. Rust unit tests
 // =============================================================================
 console.log('\n\x1b[1m━━━ Rust unit tests ━━━\x1b[0m');
+const cargoProbeCmd = process.platform === 'win32' ? 'where cargo' : 'command -v cargo';
 try {
-  execSync('command -v cargo', { cwd: root, timeout: 10_000, stdio: 'pipe' });
+  execSync(cargoProbeCmd, { cwd: root, timeout: 10_000, stdio: 'pipe' });
   test('cargo test passes', () => {
-    execSync('cargo test 2>&1', { cwd: root, timeout: 300_000, encoding: 'utf8' });
+    execSync('cargo test --release', { cwd: root, timeout: 600_000, encoding: 'utf8', stdio: 'pipe' });
   });
 } catch (e) {
   console.log('  \x1b[33m⚠\x1b[0m cargo not found: Rust unit tests skipped');
@@ -74,8 +80,8 @@ console.log('\n\x1b[1m━━━ JS unit tests ━━━\x1b[0m');
 
 async function runJsTests() {
   // Dynamic import the ESM module
-  const helpers = await import(path.join(distDir, 'utils', 'helpers.js'));
-  const crc = await import(path.join(distDir, 'utils', 'crc.js'));
+  const helpers = await importFile(distDir, 'utils', 'helpers.js');
+  const crc = await importFile(distDir, 'utils', 'crc.js');
 
   test('deltaEncode + deltaDecode roundtrip', () => {
     const data = Buffer.from([10, 20, 30, 40, 250]);
@@ -134,8 +140,8 @@ async function runJsTests() {
 
   // Encode/decode via JS-only path (no native module needed)
   try {
-    const encoder = await import(path.join(distDir, 'utils', 'encoder.js'));
-    const decoder = await import(path.join(distDir, 'utils', 'decoder.js'));
+    const encoder = await importFile(distDir, 'utils', 'encoder.js');
+    const decoder = await importFile(distDir, 'utils', 'decoder.js');
 
     await testAsync('encode then decode roundtrip (small payload)', async () => {
       const payload = Buffer.from('Hello roxify! This is a steganography test.');
@@ -160,7 +166,7 @@ async function runJsTests() {
 
   // Pack/unpack test
   try {
-    const pack = await import(path.join(distDir, 'pack.js'));
+    const pack = await importFile(distDir, 'pack.js');
 
     test('packPaths + unpackBuffer roundtrip', () => {
       const tmpDir = path.join(root, 'test', '.tmp-pack-test');
@@ -194,7 +200,7 @@ async function runJsTests() {
   console.log('\n\x1b[1m━━━ Unstretch tests ━━━\x1b[0m');
 
   try {
-    const decoder = await import(path.join(distDir, 'utils', 'decoder.js'));
+    const decoder = await importFile(distDir, 'utils', 'decoder.js');
 
     test('unstretchImage: basic 2x2 stretch of 2x2 image', () => {
       // Logical image: 2x2 pixels (red, green / blue, yellow)
@@ -340,9 +346,9 @@ async function runJsTests() {
   console.log('\n\x1b[1m━━━ E2E Unstretch tests ━━━\x1b[0m');
 
   try {
-    const encoder = await import(path.join(distDir, 'utils', 'encoder.js'));
-    const decoder = await import(path.join(distDir, 'utils', 'decoder.js'));
-    const nativeMod = await import(path.join(distDir, 'utils', 'native.js'));
+    const encoder = await importFile(distDir, 'utils', 'encoder.js');
+    const decoder = await importFile(distDir, 'utils', 'decoder.js');
+    const nativeMod = await importFile(distDir, 'utils', 'native.js');
     const nat = nativeMod.native;
 
     /**
@@ -431,8 +437,8 @@ async function runJsTests() {
   console.log('\n\x1b[1m━━━ PNG dataset regression ━━━\x1b[0m');
 
   try {
-    const decoder = await import(path.join(distDir, 'utils', 'decoder.js'));
-    const pack = await import(path.join(distDir, 'pack.js'));
+    const decoder = await importFile(distDir, 'utils', 'decoder.js');
+    const pack = await importFile(distDir, 'pack.js');
     const datasetDir = path.join(root, 'roxitest-dataset');
     const datasetFiles = [
       'roxitest.png',
@@ -473,6 +479,63 @@ async function runJsTests() {
     }
   } catch (e) {
     console.log(`  \x1b[33m⚠\x1b[0m native dataset tests skipped: ${e.message}`);
+  }
+
+  // ===========================================================================
+  // CLI roundtrip — guards against the "decode produces packaged file" bug.
+  // The decoded file MUST have the original filename and the original bytes.
+  // ===========================================================================
+  console.log('\n\x1b[1m━━━ CLI roundtrip ━━━\x1b[0m');
+
+  try {
+    const { execFileSync } = require('child_process');
+    const cliPath = path.join(distDir, 'cli.js');
+    const cliExists = fs.existsSync(cliPath);
+    const binName = process.platform === 'win32' ? 'roxify_native.exe' : 'roxify_native';
+    const binExists = fs.existsSync(path.join(distDir, binName));
+
+    if (!cliExists || !binExists) {
+      console.log(`  \x1b[33m⚠\x1b[0m CLI roundtrip skipped (cli=${cliExists}, native=${binExists})`);
+    } else {
+      const tmp = path.join(root, 'test', '.tmp-cli-roundtrip');
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.mkdirSync(tmp, { recursive: true });
+
+      const inputName = 'secret-data.bin';
+      const inputPath = path.join(tmp, inputName);
+      const payload = Buffer.alloc(64 * 1024);
+      for (let i = 0; i < payload.length; i++) payload[i] = (i * 31 + 7) & 0xff;
+      fs.writeFileSync(inputPath, payload);
+      const inputHash = require('crypto').createHash('sha256').update(payload).digest('hex');
+
+      const pngPath = path.join(tmp, 'secret-data.bin.png');
+      const decodeDir = path.join(tmp, 'decoded');
+      fs.mkdirSync(decodeDir, { recursive: true });
+
+      test('CLI encode produces PNG', () => {
+        execFileSync(process.execPath, [cliPath, 'encode', inputPath, pngPath], { stdio: 'pipe' });
+        assert.ok(fs.existsSync(pngPath), 'encode should produce PNG');
+        const sig = fs.readFileSync(pngPath).slice(0, 8);
+        assert.deepStrictEqual(Array.from(sig), [137, 80, 78, 71, 13, 10, 26, 10], 'PNG magic');
+      });
+
+      test('CLI decode restores original filename and content', () => {
+        execFileSync(process.execPath, [cliPath, 'decode', pngPath, decodeDir], { stdio: 'pipe' });
+        const decodedPath = path.join(decodeDir, inputName);
+        assert.ok(fs.existsSync(decodedPath), `decoded file must keep original name "${inputName}"`);
+        const decodedHash = require('crypto').createHash('sha256').update(fs.readFileSync(decodedPath)).digest('hex');
+        assert.strictEqual(decodedHash, inputHash, 'decoded content must match original byte-for-byte');
+      });
+
+      test('CLI list shows the original filename', () => {
+        const out = execFileSync(process.execPath, [cliPath, 'list', pngPath], { encoding: 'utf8' });
+        assert.ok(out.includes(inputName), `list output should mention "${inputName}", got: ${out}`);
+      });
+
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  } catch (e) {
+    console.log(`  \x1b[33m⚠\x1b[0m CLI roundtrip skipped: ${e.message}`);
   }
 }
 

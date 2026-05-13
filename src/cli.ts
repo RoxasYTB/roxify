@@ -356,10 +356,13 @@ async function encodeCommand(args: string[]) {
 
       const fileName = basename(inputPaths[0]);
 
+      const encodeLevel = parsed.level
+        ? Number(parsed.level)
+        : 3;
       await encodeWithRustCLI(
         inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0],
         resolvedOutput,
-        19,
+        encodeLevel,
         parsed.passphrase,
         encryptType,
         fileName,

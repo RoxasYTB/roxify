@@ -83,12 +83,15 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
     let _version = hdr[0];
     let name_len = hdr[1] as usize;
 
-    if name_len > 0 {
+    let payload_name: Option<String> = if name_len > 0 {
         let mut name_buf = vec![0u8; name_len];
         reader
             .read_exact(&mut name_buf)
             .map_err(|e| format!("read name: {}", e))?;
-    }
+        Some(String::from_utf8_lossy(&name_buf).to_string())
+    } else {
+        None
+    };
 
     let payload_len = read_payload_len(&mut reader, hdr[0])?;
 
@@ -117,6 +120,7 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
                 files_opt,
                 progress,
                 total_expected,
+                payload_name.as_deref(),
             )
         }
         0x03 => {
@@ -150,6 +154,7 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
                 files_opt,
                 progress,
                 total_expected,
+                payload_name.as_deref(),
             )
         }
         _ => Err(format!(
@@ -185,6 +190,7 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     files_opt: Option<&[String]>,
     progress: Option<DecodeProgressCallback>,
     total_expected: u64,
+    payload_name: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let mut magic = [0u8; 4];
     decoder
@@ -195,16 +201,128 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     }
     std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {}", e))?;
 
-    // Utilisation standard du packer pour éviter les erreurs Windows
-    let mut chained = std::io::Cursor::new(magic).chain(decoder);
-    crate::packer::unpack_stream_to_dir(
-        &mut chained,
-        out_dir,
-        files_opt,
-        progress.as_deref(),
-        total_expected,
-    )
-    .map_err(|e| format!("pack unpack: {}", e))
+    let mut peek = [0u8; 4];
+    let mut read_so_far = 0usize;
+    while read_so_far < peek.len() {
+        let n = decoder
+            .read(&mut peek[read_so_far..])
+            .map_err(|e| format!("peek magic: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        read_so_far += n;
+    }
+
+    let peek_magic = if read_so_far == 4 {
+        u32::from_be_bytes(peek)
+    } else {
+        0
+    };
+
+    let is_pack_magic = matches!(peek_magic, 0x524f5850 | 0x524f5856 | 0x524f5849);
+
+    if is_pack_magic {
+        let mut chained = std::io::Cursor::new(peek[..read_so_far].to_vec()).chain(decoder);
+        return crate::packer::unpack_stream_to_dir(
+            &mut chained,
+            out_dir,
+            files_opt,
+            progress.as_deref(),
+            total_expected,
+        )
+        .map_err(|e| format!("pack unpack: {}", e));
+    }
+
+    let name = payload_name.unwrap_or("file");
+    let safe_name = sanitize_legacy_name(name);
+    let should_write = match files_opt {
+        Some(filter) => filter.iter().any(|f| f == &safe_name || f == name),
+        None => true,
+    };
+
+    if !should_write {
+        std::io::copy(&mut decoder, &mut std::io::sink())
+            .map_err(|e| format!("drain legacy payload: {}", e))?;
+        if let Some(cb) = progress {
+            cb(100, 100, "done");
+        }
+        return Ok(Vec::new());
+    }
+
+    let dest = out_dir.join(&safe_name);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir parent: {}", e))?;
+    }
+
+    let file = std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?;
+    let buf_capacity: usize = if cfg!(target_os = "windows") {
+        16 * 1024 * 1024
+    } else {
+        4 * 1024 * 1024
+    };
+    let mut writer = std::io::BufWriter::with_capacity(buf_capacity, file);
+
+    writer
+        .write_all(&peek[..read_so_far])
+        .map_err(|e| format!("write legacy prefix: {}", e))?;
+
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut written_bytes: u64 = read_so_far as u64;
+    let mut last_pct: u64 = 10;
+    loop {
+        let n = decoder
+            .read(&mut buf)
+            .map_err(|e| format!("read legacy payload: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        writer
+            .write_all(&buf[..n])
+            .map_err(|e| format!("write legacy payload: {}", e))?;
+        written_bytes += n as u64;
+
+        if let Some(ref cb) = progress {
+            let pct = if total_expected > 0 {
+                10 + (written_bytes.saturating_mul(85) / total_expected).min(85)
+            } else {
+                90
+            };
+            if pct > last_pct {
+                last_pct = pct;
+                cb(pct, 100, "writing");
+            }
+        }
+    }
+
+    writer
+        .flush()
+        .map_err(|e| format!("flush legacy payload: {}", e))?;
+    drop(writer);
+
+    if let Some(cb) = progress {
+        cb(100, 100, "done");
+    }
+
+    Ok(vec![safe_name])
+}
+
+fn sanitize_legacy_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "file".to_string();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
+            _ => out.push(ch),
+        }
+    }
+    if out.is_empty() {
+        "file".to_string()
+    } else {
+        out
+    }
 }
 
 

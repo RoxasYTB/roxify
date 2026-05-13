@@ -153,17 +153,19 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
 
+    // Header-aware flexible extraction: works for unencrypted AND encrypted
+    // payloads. Must run before reconstitution since reconstitution is costly.
+    if let Ok(payload) = extract_payload_direct_flexible(png_data) {
+        if validate_payload_deep(&payload) {
+            return Ok(payload);
+        }
+    }
+
     // Windows optimization: vérifier les chunks rXFL avant reconstitution coûteuse
     if let Ok(chunks) = extract_png_chunks(png_data) {
         if let Some(_rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
             // Si rXFL existe, essayer l'extraction directe depuis les pixels RGBA
             if let Ok(payload) = extract_payload_direct_from_pixels(png_data) {
-                if validate_payload_deep(&payload) {
-                    return Ok(payload);
-                }
-            }
-            // Fallback: essayer les pixels avec reconstruction NN
-            if let Ok(payload) = extract_payload_direct_flexible(png_data) {
                 if validate_payload_deep(&payload) {
                     return Ok(payload);
                 }
@@ -178,8 +180,18 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
                 return Ok(payload);
             }
         }
+        if let Ok(payload) = extract_payload_direct_flexible(&reconst) {
+            if validate_payload_deep(&payload) {
+                return Ok(payload);
+            }
+        }
         if let Ok(unstretched) = crate::reconstitution::unstretch_nn(&reconst) {
             if let Ok(payload) = extract_payload_direct(&unstretched) {
+                if validate_payload_deep(&payload) {
+                    return Ok(payload);
+                }
+            }
+            if let Ok(payload) = extract_payload_direct_flexible(&unstretched) {
                 if validate_payload_deep(&payload) {
                     return Ok(payload);
                 }
@@ -189,6 +201,11 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
 
     if let Ok(unstretched) = crate::reconstitution::unstretch_nn(png_data) {
         if let Ok(payload) = extract_payload_direct(&unstretched) {
+            if validate_payload_deep(&payload) {
+                return Ok(payload);
+            }
+        }
+        if let Ok(payload) = extract_payload_direct_flexible(&unstretched) {
             if validate_payload_deep(&payload) {
                 return Ok(payload);
             }

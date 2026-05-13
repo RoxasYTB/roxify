@@ -327,9 +327,21 @@ pub fn pack_path_with_metadata(path: &Path) -> Result<PackResult> {
         let size = data.len();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
 
+        let name_bytes = name.as_bytes();
+        let name_len_bytes = (name_bytes.len() as u16).to_be_bytes();
+        let size_bytes = (size as u64).to_be_bytes();
+
+        let mut wrapped = Vec::with_capacity(8 + 2 + name_bytes.len() + 8 + data.len());
+        wrapped.extend_from_slice(&0x524f5850u32.to_be_bytes());
+        wrapped.extend_from_slice(&1u32.to_be_bytes());
+        wrapped.extend_from_slice(&name_len_bytes);
+        wrapped.extend_from_slice(name_bytes);
+        wrapped.extend_from_slice(&size_bytes);
+        wrapped.extend_from_slice(&data);
+
         let file_list = json!([{"name": name, "size": size}]);
         Ok(PackResult {
-            data,
+            data: wrapped,
             file_list_json: Some(file_list.to_string()),
         })
     } else if path.is_dir() {
@@ -693,7 +705,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     if magic != 0x524f5850u32 && magic != 0x524f5856u32 {
         return Err(anyhow::anyhow!("Invalid pack magic: 0x{:08x}", magic));
     }
-    let is_roxv = magic == 0x524f5856u32;
+    let _is_roxv = magic == 0x524f5856u32;
 
     file_count = read_pack_u32(reader)? as usize;
 

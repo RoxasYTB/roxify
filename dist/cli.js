@@ -20,7 +20,7 @@ async function loadJsEngine() {
         VFSIndexEntry: undefined,
     };
 }
-const VERSION = '1.14.0';
+const VERSION = '1.14.8';
 function getDirectorySize(dirPath) {
     let totalSize = 0;
     try {
@@ -323,7 +323,10 @@ async function encodeCommand(args) {
             encodeBar.start(100, 0, { step: 'Encoding', elapsed: '0' });
             const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
             const fileName = basename(inputPaths[0]);
-            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, 19, parsed.passphrase, encryptType, fileName, parsed.ramBudgetMb, (current, total, step) => {
+            const encodeLevel = parsed.level
+                ? Number(parsed.level)
+                : 3;
+            await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, encodeLevel, parsed.passphrase, encryptType, fileName, parsed.ramBudgetMb, (current, total, step) => {
                 const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
                 encodeBar.update(Math.min(pct, 99), {

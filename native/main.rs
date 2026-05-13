@@ -391,30 +391,35 @@ fn normalize_png_archive_bytes(
         return Err(anyhow::anyhow!("Empty payload"));
     }
 
-    if payload[0] == 0x00u8 {
-        // Decompressed data (already decompressed in extract_payload_from_png)
-        let decompressed = &payload[1..];
-        if decompressed.starts_with(b"ROX1") {
-            Ok(decompressed[4..].to_vec())
-        } else {
-            Ok(decompressed.to_vec())
-        }
+    let raw_inner: Vec<u8> = if payload[0] == 0x00u8 {
+        payload[1..].to_vec()
     } else if payload.starts_with(b"ROX1") || payload.starts_with(b"ROXI") || payload.starts_with(b"ROXP") {
-        // Data is already decompressed from extract_payload_from_png, strip magic if present
-        if payload.starts_with(b"ROX1") {
-            Ok(payload[4..].to_vec())
-        } else {
-            Ok(payload)
-        }
+        payload
     } else {
-        let decrypted = crate::crypto::try_decrypt(&payload, passphrase)
-            .map_err(|e| anyhow::anyhow!("Encrypted payload: {}", e))?;
-        if decrypted.starts_with(b"ROX1") {
-            Ok(decrypted[4..].to_vec())
-        } else {
-            Ok(decrypted)
-        }
+        crate::crypto::try_decrypt(&payload, passphrase)
+            .map_err(|e| anyhow::anyhow!("Encrypted payload: {}", e))?
+    };
+
+    let decompressed: Vec<u8> = if is_zstd_frame(&raw_inner) {
+        crate::core::zstd_decompress_bytes(&raw_inner, None)
+            .map_err(|e| anyhow::anyhow!("zstd decompress error: {}", e))?
+    } else {
+        raw_inner
+    };
+
+    if decompressed.starts_with(b"ROX1") {
+        Ok(decompressed[4..].to_vec())
+    } else {
+        Ok(decompressed)
     }
+}
+
+fn is_zstd_frame(bytes: &[u8]) -> bool {
+    bytes.len() >= 4
+        && bytes[0] == 0x28
+        && bytes[1] == 0xB5
+        && bytes[2] == 0x2F
+        && bytes[3] == 0xFD
 }
 
 fn unpack_archive_bytes(
@@ -422,8 +427,8 @@ fn unpack_archive_bytes(
     out_dir: &std::path::Path,
     files_slice: Option<&[String]>,
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    fallback_name: Option<&str>,
 ) -> anyhow::Result<Vec<String>> {
-    // Check if data starts with known pack magic
     let starts_with_rox = if normalized.len() >= 4 {
         let magic = u32::from_be_bytes([normalized[0], normalized[1], normalized[2], normalized[3]]);
         magic == 0x524f5831 || magic == 0x524f5856 || magic == 0x524f5849 || magic == 0x524f5850
@@ -431,28 +436,55 @@ fn unpack_archive_bytes(
         false
     };
 
-    let mut reader: Box<dyn std::io::Read> = if starts_with_rox {
-        Box::new(std::io::Cursor::new(normalized))
-    } else {
-        // Raw file data - need to wrap in ROXV format for unpacker
-        let mut wrapped = Vec::with_capacity(8 + normalized.len());
-        wrapped.extend_from_slice(&0x524f5856u32.to_be_bytes()); // ROXV
-        wrapped.extend_from_slice(&1u32.to_be_bytes()); // 1 file
-        // Add file name (default to "file")
-        let name = b"file";
-        wrapped.extend_from_slice(&(name.len() as u16).to_be_bytes());
-        wrapped.extend_from_slice(name);
-        // Add file size (u64 big endian)
-        wrapped.extend_from_slice(&(normalized.len() as u64).to_be_bytes());
-        // Add file content
-        wrapped.extend_from_slice(&normalized);
-        Box::new(std::io::Cursor::new(wrapped))
-    };
-
     std::fs::create_dir_all(out_dir)
         .map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
-    packer::unpack_stream_to_dir(&mut reader, out_dir, files_slice, progress, 0)
-        .map_err(|e| anyhow::anyhow!(e))
+
+    if starts_with_rox {
+        let mut reader: Box<dyn std::io::Read> = Box::new(std::io::Cursor::new(normalized));
+        return packer::unpack_stream_to_dir(&mut reader, out_dir, files_slice, progress, 0)
+            .map_err(|e| anyhow::anyhow!(e));
+    }
+
+    let raw_name = fallback_name.unwrap_or("file");
+    let safe_name = sanitize_fallback_name(raw_name);
+
+    if let Some(filter) = files_slice {
+        if !filter.iter().any(|f| f == &safe_name || f == raw_name) {
+            return Ok(Vec::new());
+        }
+    }
+
+    let dest = out_dir.join(&safe_name);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("Cannot create parent {:?}: {}", parent, e))?;
+    }
+    std::fs::write(&dest, &normalized)
+        .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+
+    if let Some(cb) = progress {
+        cb(100, 100, "done");
+    }
+    Ok(vec![safe_name])
+}
+
+fn sanitize_fallback_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "file".to_string();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
+            _ => out.push(ch),
+        }
+    }
+    if out.is_empty() {
+        "file".to_string()
+    } else {
+        out
+    }
 }
 
 fn write_all(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
@@ -859,11 +891,13 @@ fn main() -> anyhow::Result<()> {
                 };
 
                 let normalized = normalize_png_archive_bytes(&buf, passphrase.as_deref())?;
+                let fallback_name = png_utils::extract_name_from_png(&buf);
                 let written = unpack_archive_bytes(
                     normalized,
                     &out_dir,
                     requested_files.as_deref(),
                     Some(&progress_cb),
+                    fallback_name.as_deref(),
                 )?;
                 eprintln!("PROGRESS:100:100:done");
                 println!("Unpacked {} files", written.len());
@@ -929,39 +963,54 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
 
-                let mut reader: Box<dyn std::io::Read> = if normalized.starts_with(b"ROX1") {
-                    Box::new(Cursor::new(normalized[4..].to_vec()))
-                } else if normalized.starts_with(b"ROXV") || normalized.starts_with(b"ROXI") || normalized.starts_with(b"ROXP") {
-                    Box::new(Cursor::new(normalized))
-                } else {
-                    // Raw file data - wrap in ROXV format
-                    let mut wrapped = Vec::with_capacity(8 + normalized.len() + 32);
-                    wrapped.extend_from_slice(&0x524f5856u32.to_be_bytes());
-                    wrapped.extend_from_slice(&1u32.to_be_bytes());
-                    let name = b"file";
-                    wrapped.extend_from_slice(&(name.len() as u16).to_be_bytes());
-                    wrapped.extend_from_slice(name);
-                    wrapped.extend_from_slice(&(normalized.len() as u64).to_be_bytes());
-                    wrapped.extend_from_slice(&normalized);
-                    Box::new(Cursor::new(wrapped))
-                };
-
                 let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
                 std::fs::create_dir_all(&out_dir).map_err(|e| {
                     anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e)
                 })?;
                 let files_slice = file_list.as_ref().map(|v| v.as_slice());
+                let fallback_name = if is_png { png_utils::extract_name_from_png(&buf) } else { None };
 
-                let written = packer::unpack_stream_to_dir(
-                    &mut reader,
-                    &out_dir,
-                    files_slice,
-                    Some(&|current, total, step| {
-                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
-                    }),
-                    0,
-                )
-                .map_err(|e| anyhow::anyhow!(e))?;
+                let normalized_data: Vec<u8> = if normalized.starts_with(b"ROX1") {
+                    normalized[4..].to_vec()
+                } else {
+                    normalized
+                };
+
+                let starts_with_pack = if normalized_data.len() >= 4 {
+                    let m = u32::from_be_bytes([
+                        normalized_data[0],
+                        normalized_data[1],
+                        normalized_data[2],
+                        normalized_data[3],
+                    ]);
+                    m == 0x524f5856 || m == 0x524f5849 || m == 0x524f5850
+                } else {
+                    false
+                };
+
+                let written = if starts_with_pack {
+                    let mut reader: Box<dyn std::io::Read> = Box::new(Cursor::new(normalized_data));
+                    packer::unpack_stream_to_dir(
+                        &mut reader,
+                        &out_dir,
+                        files_slice,
+                        Some(&|current, total, step| {
+                            eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                        }),
+                        0,
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))?
+                } else {
+                    unpack_archive_bytes(
+                        normalized_data,
+                        &out_dir,
+                        files_slice,
+                        Some(&|current, total, step| {
+                            eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                        }),
+                        fallback_name.as_deref(),
+                    )?
+                };
                 eprintln!("PROGRESS:100:100:done");
                 println!("Unpacked {} files", written.len());
             } else {
