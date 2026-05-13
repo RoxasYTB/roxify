@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 
 use crate::png_chunk_writer::{ChunkedIdatWriter, write_png_chunk};
 
@@ -18,10 +20,13 @@ const PACK_MAGIC: u32 = 0x524f5850;
 const MIN_ZST_CAPACITY: usize = 16 * 1024 * 1024;
 const MB: u64 = 1024 * 1024;
 const MAX_FILE_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
-const PARALLEL_IO_FILE_THRESHOLD: u64 = MB;
-const PARALLEL_IO_BATCH_BYTES: u64 = 128 * MB;
+// Augmenté de 1 MB à 8 MB pour permettre la lecture parallèle des fichiers moyens.
+// Sur un projet typique avec beaucoup de fichiers 1-8 MB, ceci sature beaucoup mieux les cœurs
+// sans exploser la mémoire (batch capé à 256 MB).
+const PARALLEL_IO_FILE_THRESHOLD: u64 = 8 * MB;
+const PARALLEL_IO_BATCH_BYTES: u64 = 256 * MB;
 const PARALLEL_IO_BATCH_FILES: usize = 512;
-const PARALLEL_IO_MIN_FILES: usize = 8;
+const PARALLEL_IO_MIN_FILES: usize = 4;
 const HEADER_VERSION_V2: u8 = 2;
 
 pub type ProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
@@ -531,131 +536,144 @@ fn write_idat_streaming<W: Write, R: Read>(
     _window_log_value: u32,
     progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
-    let mut idat = ChunkedIdatWriter::new(w);
-
-    let stride = row_bytes + 1;
-    let _scanlines_total = height * stride;
-
+    // Stream directement vers IDAT via flate2 (compression légère: la donnée est déjà zstd-compressée).
+    // Évite l'allocation de tout le payload + image_data + buffer PNG temporaire.
     let fl_chunk_data = file_list_chunk.unwrap_or(&[]);
-    let payload_total = header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
-    let _padding_after = total_data_bytes - payload_total.min(total_data_bytes);
-    let _marker_end_bytes = build_marker_end_bytes();
+    let payload_total =
+        header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
+    let padding_after = total_data_bytes.saturating_sub(payload_total);
 
-    // Créer une image RGB valide avec les données intégrées dans les pixels
-    use image::{ImageBuffer, Rgb};
+    let idat = ChunkedIdatWriter::new(w);
+    // Niveau 1 (fast): bon compromis sur données incompressibles, multi-fois plus rapide que le défaut.
+    let zlib = ZlibEncoder::new(idat, Compression::new(1));
+    let mut row_writer = ScanlineFilterWriter::new(zlib, row_bytes);
 
-    // Construire les données de payload complètes
-    let mut payload_data = Vec::new();
+    // 1. Header bytes (markers + PXL1 + meta_header + enc_header)
+    row_writer
+        .write_all(header_bytes)
+        .map_err(|e| anyhow::anyhow!("write header: {}", e))?;
 
-    // Ajouter le header PXL1
-    payload_data.extend_from_slice(b"PXL1");
-    let payload_len = (header_bytes.len() + zst_size + hmac_trailer_len + file_list_chunk.unwrap_or(&[]).len()) as u32;
-    payload_data.extend_from_slice(&payload_len.to_be_bytes());
-
-    // Ajouter les données réelles
-    payload_data.extend_from_slice(header_bytes);
-
-    // Lire les données ZST
-    let buf_size = 1024 * 1024;
+    // 2. ZST data (encrypted on the fly if needed)
+    let buf_size: usize = 1024 * 1024;
     let mut transfer_buf = vec![0u8; buf_size];
     let mut zst_remaining = zst_size;
+    let mut bytes_written_payload: u64 = header_bytes.len() as u64;
+    let mut last_pct: u64 = 89;
 
     while zst_remaining > 0 {
         let take = zst_remaining.min(buf_size);
-        let got = zst_reader.read(&mut transfer_buf[..take])
+        let got = zst_reader
+            .read(&mut transfer_buf[..take])
             .map_err(|e| anyhow::anyhow!("read zst: {}", e))?;
-        if got == 0 { break; }
+        if got == 0 {
+            break;
+        }
         if let Some(ref mut enc) = encryptor {
             enc.encrypt_chunk(&mut transfer_buf[..got]);
         }
-        payload_data.extend_from_slice(&transfer_buf[..got]);
+        row_writer
+            .write_all(&transfer_buf[..got])
+            .map_err(|e| anyhow::anyhow!("write zst pixels: {}", e))?;
         zst_remaining -= got;
-    }
-
-    // Ajouter HMAC et file list chunk
-    if let Some(enc) = encryptor.take() {
-        let hmac_bytes = enc.finalize_hmac();
-        payload_data.extend_from_slice(&hmac_bytes);
-    }
-
-    if let Some(fl_chunk_data) = file_list_chunk {
-        payload_data.extend_from_slice(fl_chunk_data);
-    }
-
-    // Créer une image RGB avec les données intégrées dans les couleurs des pixels
-    let mut image_data = vec![0u8; row_bytes * height];
-
-    // Intégrer les données de payload dans les pixels RGB de manière visible
-    let mut payload_pos = 0;
-    for y in 0..height {
-        for x in 0..row_bytes / 3 {
-            let pixel_index = y * (row_bytes / 3) + x;
-
-            if payload_pos + 2 < payload_data.len() {
-                // Prendre 3 octets du payload pour RGB
-                let r = payload_data[payload_pos];
-                let g = payload_data[payload_pos + 1];
-                let b = payload_data[payload_pos + 2];
-
-                // Placer dans les pixels
-                let pixel_start = pixel_index * 3;
-                if pixel_start + 2 < image_data.len() {
-                    image_data[pixel_start] = r;
-                    image_data[pixel_start + 1] = g;
-                    image_data[pixel_start + 2] = b;
-                }
-
-                payload_pos += 3;
-            }
-        }
+        bytes_written_payload += got as u64;
 
         if let Some(ref cb) = progress {
-            let pct = 90 + ((y as u64 + 1) * 9 / height as u64).min(9);
-            if pct > 89 {
-                cb(pct, 100, "writing_png");
+            if payload_total > 0 {
+                let pct = 90
+                    + (bytes_written_payload.saturating_mul(9) / payload_total as u64).min(9);
+                if pct > last_pct {
+                    last_pct = pct;
+                    cb(pct, 100, "writing_png");
+                }
             }
         }
     }
 
-    // Créer l'image RGB avec la bonne taille
-    let image_width = (row_bytes / 3) as u32;
-    let image = ImageBuffer::<Rgb<u8>, _>::from_raw(image_width, height as u32, image_data)
-        .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))?;
-
-    // Encoder l'image en PNG
-    let mut png_buffer = Vec::new();
-    image::DynamicImage::ImageRgb8(image)
-        .write_to(&mut std::io::Cursor::new(&mut png_buffer), image::ImageFormat::Png)
-        .map_err(|e| anyhow::anyhow!("PNG encoding failed: {}", e))?;
-
-    let png_bytes = png_buffer;
-
-    // Trouver le chunk IDAT dans le PNG généré
-    let mut idat_start = 8; // Skip PNG header
-    while idat_start < png_bytes.len() - 8 {
-        let chunk_len = u32::from_be_bytes([
-            png_bytes[idat_start],
-            png_bytes[idat_start + 1],
-            png_bytes[idat_start + 2],
-            png_bytes[idat_start + 3]
-        ]) as usize;
-
-        let chunk_type = &png_bytes[idat_start + 4..idat_start + 8];
-        if chunk_type == b"IDAT" {
-            let idat_data_start = idat_start + 8;
-            let idat_data_end = idat_data_start + chunk_len;
-            if idat_data_end <= png_bytes.len() {
-                let idat_data = &png_bytes[idat_data_start..idat_data_end];
-                idat.write_all(idat_data)?;
-                idat.finish()?;
-                return Ok(());
-            }
-        }
-
-        idat_start += 8 + chunk_len + 4; // chunk header + data + CRC
+    // 3. HMAC trailer (after ZST data, before file list inline)
+    if let Some(enc) = encryptor.take() {
+        let hmac_bytes = enc.finalize_hmac();
+        row_writer
+            .write_all(&hmac_bytes)
+            .map_err(|e| anyhow::anyhow!("write hmac: {}", e))?;
     }
 
-    return Err(anyhow::anyhow!("IDAT chunk not found in generated PNG"));
+    // 4. File list chunk inline
+    if !fl_chunk_data.is_empty() {
+        row_writer
+            .write_all(fl_chunk_data)
+            .map_err(|e| anyhow::anyhow!("write file list: {}", e))?;
+    }
+
+    // 5. Pad zeros to exactly fill total_data_bytes (= width * height * 3)
+    if padding_after > 0 {
+        let zeros = vec![0u8; 64 * 1024];
+        let mut left = padding_after;
+        while left > 0 {
+            let n = left.min(zeros.len());
+            row_writer
+                .write_all(&zeros[..n])
+                .map_err(|e| anyhow::anyhow!("write padding: {}", e))?;
+            left -= n;
+        }
+    }
+
+    // Finish zlib stream then flush IDAT chunks
+    let zlib = row_writer.into_inner();
+    let idat = zlib
+        .finish()
+        .map_err(|e| anyhow::anyhow!("zlib finish: {}", e))?;
+    idat.finish()?;
+
+    Ok(())
+}
+
+/// Writer that inserts a PNG filter byte (0 = None) at the start of every scanline.
+struct ScanlineFilterWriter<W: Write> {
+    inner: W,
+    row_bytes: usize,
+    col_in_row: usize,
+    row_started: bool,
+}
+
+impl<W: Write> ScanlineFilterWriter<W> {
+    fn new(inner: W, row_bytes: usize) -> Self {
+        Self {
+            inner,
+            row_bytes,
+            col_in_row: 0,
+            row_started: false,
+        }
+    }
+
+    fn into_inner(self) -> W {
+        self.inner
+    }
+}
+
+impl<W: Write> Write for ScanlineFilterWriter<W> {
+    fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
+        let total = buf.len();
+        while !buf.is_empty() {
+            if !self.row_started {
+                self.inner.write_all(&[0u8])?;
+                self.row_started = true;
+                self.col_in_row = 0;
+            }
+            let remaining_in_row = self.row_bytes - self.col_in_row;
+            let take = remaining_in_row.min(buf.len());
+            self.inner.write_all(&buf[..take])?;
+            self.col_in_row += take;
+            buf = &buf[take..];
+            if self.col_in_row >= self.row_bytes {
+                self.row_started = false;
+            }
+        }
+        Ok(total)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn build_marker_end_bytes() -> [u8; 9] {

@@ -5,7 +5,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const PIXEL_MAGIC: &[u8] = b"PXL1";
-const MARKER_BYTES: usize = 12;
 const HEADER_VERSION_V1: u8 = 1;
 const HEADER_VERSION_V2: u8 = 2;
 
@@ -63,18 +62,25 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
     let zlib_decoder = ZlibDecoder::new(idat_reader);
     let mut reader = ScanlinePixelReader::new(zlib_decoder, width, height);
 
-    let mut marker_buf = [0u8; MARKER_BYTES];
+    // Lecture tolérante: certains fichiers v1.14.x (encodeur buggé) ajoutaient un préfixe
+    // "PXL1" + payload_len(4) AVANT les markers de début, ce qui décale tout de 8 octets.
+    // On scanne donc les 24 premiers octets pour la DERNIÈRE occurrence de "PXL1" et on
+    // continue à partir de juste après. Le format propre place PXL1 à l'offset 12.
+    let mut head_buf = [0u8; 24];
     reader
-        .read_exact(&mut marker_buf)
-        .map_err(|e| format!("read markers: {}", e))?;
+        .read_exact(&mut head_buf)
+        .map_err(|e| format!("read head: {}", e))?;
 
-    let mut pxl1 = [0u8; 4];
-    reader
-        .read_exact(&mut pxl1)
-        .map_err(|e| format!("read PXL1: {}", e))?;
-    if &pxl1 != PIXEL_MAGIC {
-        return Err(format!("Expected PXL1, got {:?}", pxl1));
-    }
+    let pxl1_end = (0..=head_buf.len() - 4)
+        .rev()
+        .find(|&i| &head_buf[i..i + 4] == PIXEL_MAGIC)
+        .map(|i| i + 4)
+        .ok_or_else(|| {
+            format!("Expected PXL1 in first 24 bytes, got {:?}", &head_buf[..16])
+        })?;
+
+    let leftover_prefix = head_buf[pxl1_end..].to_vec();
+    let mut reader = std::io::Cursor::new(leftover_prefix).chain(reader);
 
     let mut hdr = [0u8; 2];
     reader

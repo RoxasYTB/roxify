@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.14.9"
+version = "1.15.0"
 edition = "2021"
 publish = false
 

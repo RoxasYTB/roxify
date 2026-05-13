@@ -286,15 +286,10 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
 
 pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Result<Vec<u8>, String> {
     use std::io::Read;
-    let win = if buf.len() > 1024 * 1024 * 1024 {
-        30u32
-    } else if buf.len() > 256 * 1024 * 1024 {
-        29u32
-    } else if buf.len() > 64 * 1024 * 1024 {
-        27u32
-    } else {
-        24u32
-    };
+    // Toujours autoriser le window_log max (31). Le décideur basé sur la taille COMPRESSÉE
+    // sous-estimait pour des payloads incompressibles (un dump 2 GiB → 435 MiB zstd avec
+    // window_log=30 plantait avec "Frame requires too much memory").
+    let win = 31u32;
     let estimated = buf.len().saturating_mul(3).max(4096);
     let mut out = Vec::with_capacity(estimated);
     if let Some(d) = dict {
