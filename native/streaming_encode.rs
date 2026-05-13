@@ -4,8 +4,6 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
 
 use crate::png_chunk_writer::{ChunkedIdatWriter, write_png_chunk};
 
@@ -102,7 +100,11 @@ fn compress_dir_to_zst_mem(
     let total_bytes = collected.total_bytes;
     let entries = collected.entries;
 
-    let actual_level = compression_level.min(3);
+    // Respect le niveau demandé par l'utilisateur (CLI --level). Clamp uniquement
+    // dans la plage valide zstd [1, 22]. Le défaut CLI est 3 (rapide), mais
+    // --level 9/19/22 doit pouvoir donner un meilleur ratio si l'utilisateur le
+    // demande explicitement.
+    let actual_level = compression_level.clamp(1, 22);
     let mut encoder = zstd::stream::Encoder::new(
         Vec::with_capacity(estimate_zst_capacity(total_bytes)),
         actual_level,
@@ -111,11 +113,21 @@ fn compress_dir_to_zst_mem(
 
     let threads = select_zstd_threads(total_bytes);
     if threads > 1 {
-        let _ = encoder.multithread(threads);
+        // Si zstdmt n'est pas dispo, on retombe en mono-thread silencieusement
+        // — c'est ce que faisait l'ancien code. On le signale maintenant pour
+        // diagnostiquer les régressions perf.
+        if let Err(e) = encoder.multithread(threads) {
+            eprintln!(
+                "warn: zstd multithread({}) failed: {} — compression falls back to single thread",
+                threads, e
+            );
+        }
     }
     let _ = encoder.long_distance_matching(true);
     let adaptive_window_log = select_zstd_window_log(total_bytes);
     let _ = encoder.window_log(adaptive_window_log);
+    // Aide zstd à planifier sa stratégie (allocation tables, decisions LDM).
+    let _ = encoder.set_pledged_src_size(Some(total_bytes));
 
     encoder.write_all(MAGIC)?;
     encoder.write_all(&PACK_MAGIC.to_be_bytes())?;
@@ -302,9 +314,26 @@ fn collect_directory_files(dir_path: &Path) -> CollectedDirectory {
         });
     }
 
+    // Trier par (extension, nom) pour regrouper les fichiers similaires dans le
+    // flux zstd. Le matching/Huffman partage alors un context utile entre
+    // fichiers du même type (.js, .png, .json, ...), améliorant le ratio sans
+    // ralentir l'encode.
+    entries.sort_by(|a, b| {
+        let ext_a = file_extension(&a.rel_path);
+        let ext_b = file_extension(&b.rel_path);
+        ext_a.cmp(ext_b).then_with(|| a.rel_path.cmp(&b.rel_path))
+    });
+
     CollectedDirectory {
         entries,
         total_bytes,
+    }
+}
+
+fn file_extension(rel_path: &str) -> &str {
+    match rel_path.rfind('.') {
+        Some(idx) if idx + 1 < rel_path.len() => &rel_path[idx + 1..],
+        _ => "",
     }
 }
 
@@ -318,8 +347,14 @@ fn normalize_rel_path(path: &Path) -> String {
 }
 
 fn estimate_zst_capacity(total_bytes: u64) -> usize {
+    // Estimation initiale du buffer de sortie zstd. L'ancienne valeur (total/3)
+    // sous-allouait sur des données incompressibles (qui sortent ~= input),
+    // forçant Vec à doubler 2-3 fois en cours d'encode (re-allocation +
+    // memcpy = jusqu'à 2× la taille finale en RAM temporairement, ralentit).
+    // total/2 est un meilleur compromis: couvre le cas "ratio 50%" courant
+    // sans gaspiller pour les payloads très compressibles.
     let capped = total_bytes.min(usize::MAX as u64) as usize;
-    (capped / 3).max(MIN_ZST_CAPACITY)
+    (capped / 2).max(MIN_ZST_CAPACITY)
 }
 
 fn select_zstd_window_log(total_bytes: u64) -> u32 {
@@ -341,45 +376,27 @@ fn select_zstd_window_log(total_bytes: u64) -> u32 {
 }
 
 fn select_zstd_threads(total_bytes: u64) -> u32 {
+    // Logique aggressive: dès qu'on a > 32 MB, on monte rapidement en
+    // workers. zstd MT a un overhead constant par worker (init + dispatch)
+    // mais sur des inputs réalistes (50 MB+) c'est négligeable comparé à la
+    // saturation des cœurs. L'ancienne version Linux avait `... || ram_mb
+    // >= 8192` qui CAPPAIT à 4 workers dès qu'on a 8 GB RAM, indépendamment
+    // de la taille du payload — exactement l'inverse de ce qu'on veut.
     let max_threads = num_cpus::get().max(1) as u32;
-    let ram_mb = if cfg!(target_os = "windows") {
-        crate::parse_windows_mem_available_mb().unwrap_or(8192)
-    } else {
-        crate::parse_linux_mem_available_mb().unwrap_or(4096)
-    };
 
-    // Optimized multi-threading for cross-platform performance
-    if cfg!(target_os = "windows") {
-        // Windows: AGRESSIF pour compenser l'overhead NTFS
-        if total_bytes <= 64 * MB {
-            // Small files: 4 threads min
-            max_threads.min(4).max(4)
-        } else if total_bytes <= 512 * MB {
-            // Medium files: 8 threads
-            max_threads.min(8).max(6)
-        } else {
-            // Large files: TOUS les threads disponibles!
-            max_threads
-        }
-    } else {
-        // Linux: agressif pour performances optimales
-        if total_bytes <= 16 * MB {
-            // Small files: single thread to avoid overhead
-            1
-        } else if total_bytes <= 64 * MB {
-            // Small-medium files: 2 threads
-            max_threads.min(2)
-        } else if total_bytes <= 256 * MB || ram_mb >= 8192 {
-            // Medium files or high RAM: up to 4 threads
-            max_threads.min(4)
-        } else if total_bytes <= 1024 * MB || ram_mb >= 4096 {
-            // Large files or medium RAM: up to 8 threads
-            max_threads.min(8)
-        } else {
-            // Very large files: use all available cores up to 16
-            max_threads.min(16)
-        }
+    if total_bytes <= 8 * MB {
+        return 1; // overhead MT > gain pour les très petits inputs
     }
+    if total_bytes <= 32 * MB {
+        return max_threads.min(4);
+    }
+    if total_bytes <= 128 * MB {
+        return max_threads.min(8);
+    }
+    // >= 128 MB: saturer la machine. zstd recommande de capper vers 16
+    // workers, au-delà la synchro inter-thread devient un goulot et le ratio
+    // de compression baisse (chaque worker gère un block indépendant).
+    max_threads.min(16)
 }
 
 fn write_png_from_zst_mem(
@@ -536,17 +553,18 @@ fn write_idat_streaming<W: Write, R: Read>(
     _window_log_value: u32,
     progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
-    // Stream directement vers IDAT via flate2 (compression légère: la donnée est déjà zstd-compressée).
-    // Évite l'allocation de tout le payload + image_data + buffer PNG temporaire.
+    // Stream direct vers IDAT via blocs deflate "stored" (BTYPE=00, aucune compression)
+    // + adler32 incrémental. La donnée est déjà zstd-compressée (incompressible),
+    // donc tout matching/Huffman est du travail jeté. Stored blocks = ~memcpy + 5
+    // octets de header tous les 65535 octets. C'est l'I/O qui devient le goulot.
     let fl_chunk_data = file_list_chunk.unwrap_or(&[]);
     let payload_total =
         header_bytes.len() + zst_size + hmac_trailer_len + fl_chunk_data.len();
     let padding_after = total_data_bytes.saturating_sub(payload_total);
 
     let idat = ChunkedIdatWriter::new(w);
-    // Niveau 1 (fast): bon compromis sur données incompressibles, multi-fois plus rapide que le défaut.
-    let zlib = ZlibEncoder::new(idat, Compression::new(1));
-    let mut row_writer = ScanlineFilterWriter::new(zlib, row_bytes);
+    let deflate = StoredDeflateWriter::new(idat);
+    let mut row_writer = ScanlineFilterWriter::new(deflate, row_bytes);
 
     // 1. Header bytes (markers + PXL1 + meta_header + enc_header)
     row_writer
@@ -554,7 +572,7 @@ fn write_idat_streaming<W: Write, R: Read>(
         .map_err(|e| anyhow::anyhow!("write header: {}", e))?;
 
     // 2. ZST data (encrypted on the fly if needed)
-    let buf_size: usize = 1024 * 1024;
+    let buf_size: usize = 4 * 1024 * 1024;
     let mut transfer_buf = vec![0u8; buf_size];
     let mut zst_remaining = zst_size;
     let mut bytes_written_payload: u64 = header_bytes.len() as u64;
@@ -617,14 +635,118 @@ fn write_idat_streaming<W: Write, R: Read>(
         }
     }
 
-    // Finish zlib stream then flush IDAT chunks
-    let zlib = row_writer.into_inner();
-    let idat = zlib
+    // Finalize deflate stream (final block + adler32), then flush IDAT chunks
+    let deflate = row_writer.into_inner();
+    let idat = deflate
         .finish()
-        .map_err(|e| anyhow::anyhow!("zlib finish: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("deflate finish: {}", e))?;
     idat.finish()?;
 
     Ok(())
+}
+
+/// Writes a valid zlib stream using only stored deflate blocks (BTYPE=00).
+/// Computes adler32 incrementally with simd-adler32. No matching, no Huffman:
+/// pure memcpy + 5-byte block header every 65535 bytes. Optimal speed on
+/// incompressible data (e.g. zstd output).
+const STORED_DEFLATE_BLOCK_MAX: usize = 65535;
+
+struct StoredDeflateWriter<W: Write> {
+    inner: W,
+    pending: Vec<u8>,
+    adler: simd_adler32::Adler32,
+    header_written: bool,
+}
+
+impl<W: Write> StoredDeflateWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            pending: Vec::with_capacity(STORED_DEFLATE_BLOCK_MAX),
+            adler: simd_adler32::Adler32::new(),
+            header_written: false,
+        }
+    }
+
+    fn ensure_header(&mut self) -> std::io::Result<()> {
+        if !self.header_written {
+            self.inner.write_all(&[0x78, 0x01])?;
+            self.header_written = true;
+        }
+        Ok(())
+    }
+
+    fn emit_block(&mut self, data: &[u8], is_final: bool) -> std::io::Result<()> {
+        let len = data.len() as u16;
+        let nlen = !len;
+        let header = [
+            if is_final { 0x01 } else { 0x00 },
+            (len & 0xff) as u8,
+            (len >> 8) as u8,
+            (nlen & 0xff) as u8,
+            (nlen >> 8) as u8,
+        ];
+        self.inner.write_all(&header)?;
+        if !data.is_empty() {
+            self.inner.write_all(data)?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> std::io::Result<W> {
+        self.ensure_header()?;
+        // Emit pending as the final block. Spec requires at least one block, so
+        // we always emit at least an empty final stored block.
+        let len = self.pending.len() as u16;
+        let nlen = !len;
+        let header = [0x01u8, (len & 0xff) as u8, (len >> 8) as u8, (nlen & 0xff) as u8, (nlen >> 8) as u8];
+        self.inner.write_all(&header)?;
+        if !self.pending.is_empty() {
+            self.inner.write_all(&self.pending)?;
+        }
+        let adler = self.adler.finish().to_be_bytes();
+        self.inner.write_all(&adler)?;
+        Ok(self.inner)
+    }
+}
+
+impl<W: Write> Write for StoredDeflateWriter<W> {
+    fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
+        let total = buf.len();
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.ensure_header()?;
+        self.adler.write(buf);
+
+        while !buf.is_empty() {
+            let space = STORED_DEFLATE_BLOCK_MAX - self.pending.len();
+            let take = space.min(buf.len());
+            self.pending.extend_from_slice(&buf[..take]);
+            buf = &buf[take..];
+
+            // Only flush if pending is full AND there is more incoming data
+            // (so we know this block is non-final). Otherwise keep it pending
+            // for finish() to mark as final.
+            if self.pending.len() == STORED_DEFLATE_BLOCK_MAX && !buf.is_empty() {
+                let header = [
+                    0x00u8,
+                    0xffu8,
+                    0xffu8,
+                    0x00u8,
+                    0x00u8,
+                ];
+                self.inner.write_all(&header)?;
+                self.inner.write_all(&self.pending)?;
+                self.pending.clear();
+            }
+        }
+        Ok(total)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Writer that inserts a PNG filter byte (0 = None) at the start of every scanline.
@@ -686,3 +808,268 @@ fn build_marker_end_bytes() -> [u8; 9] {
     buf
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+
+    fn roundtrip(input: &[u8]) {
+        let mut out = Vec::new();
+        {
+            let mut w = StoredDeflateWriter::new(&mut out);
+            // write in small chunks to exercise the boundary logic
+            for chunk in input.chunks(7_919) {
+                w.write_all(chunk).unwrap();
+            }
+            let _ = w.finish().unwrap();
+        }
+        // Validate by decoding with a standard zlib decoder.
+        let mut decoded = Vec::with_capacity(input.len());
+        ZlibDecoder::new(out.as_slice())
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded.len(), input.len(), "decoded length mismatch");
+        assert_eq!(decoded, input, "decoded payload mismatch");
+    }
+
+    #[test]
+    fn stored_deflate_roundtrip_empty() {
+        roundtrip(&[]);
+    }
+
+    #[test]
+    fn stored_deflate_roundtrip_small() {
+        roundtrip(b"hello, deflate stored blocks");
+    }
+
+    #[test]
+    fn stored_deflate_roundtrip_exactly_one_block() {
+        let data: Vec<u8> = (0..STORED_DEFLATE_BLOCK_MAX).map(|i| (i & 0xff) as u8).collect();
+        roundtrip(&data);
+    }
+
+    #[test]
+    fn stored_deflate_roundtrip_exactly_two_blocks() {
+        let data: Vec<u8> = (0..STORED_DEFLATE_BLOCK_MAX * 2)
+            .map(|i| (i & 0xff) as u8)
+            .collect();
+        roundtrip(&data);
+    }
+
+    #[test]
+    fn stored_deflate_roundtrip_two_and_a_half_blocks() {
+        let n = STORED_DEFLATE_BLOCK_MAX * 2 + 12_345;
+        let data: Vec<u8> = (0..n).map(|i| ((i * 31) & 0xff) as u8).collect();
+        roundtrip(&data);
+    }
+
+    #[test]
+    fn stored_deflate_split_writes_match() {
+        // Same payload, different write granularities, must produce identical
+        // decoded output.
+        let mut data = Vec::with_capacity(200_000);
+        for i in 0..200_000 {
+            data.push(((i * 17 + 3) & 0xff) as u8);
+        }
+
+        for chunk_size in [1, 13, 4096, 65_534, 65_535, 65_536, 200_000] {
+            let mut out = Vec::new();
+            {
+                let mut w = StoredDeflateWriter::new(&mut out);
+                for c in data.chunks(chunk_size) {
+                    w.write_all(c).unwrap();
+                }
+                w.finish().unwrap();
+            }
+            let mut decoded = Vec::new();
+            ZlibDecoder::new(out.as_slice())
+                .read_to_end(&mut decoded)
+                .unwrap();
+            assert_eq!(decoded, data, "mismatch with chunk_size={}", chunk_size);
+        }
+    }
+
+    #[test]
+    fn scanline_filter_writer_inserts_zero_per_row() {
+        let mut out = Vec::new();
+        {
+            let mut w = ScanlineFilterWriter::new(&mut out, 3);
+            // Two scanlines of 3 bytes each, written in different granularities.
+            w.write_all(&[1, 2]).unwrap();
+            w.write_all(&[3, 4, 5, 6]).unwrap();
+        }
+        // Expected: [0, 1, 2, 3, 0, 4, 5, 6]
+        assert_eq!(out, vec![0, 1, 2, 3, 0, 4, 5, 6]);
+    }
+
+    #[test]
+    fn scanline_filter_writer_handles_full_rows() {
+        let mut out = Vec::new();
+        {
+            let mut w = ScanlineFilterWriter::new(&mut out, 4);
+            w.write_all(&[10, 20, 30, 40]).unwrap();
+            w.write_all(&[50, 60, 70, 80]).unwrap();
+        }
+        assert_eq!(out, vec![0, 10, 20, 30, 40, 0, 50, 60, 70, 80]);
+    }
+
+    #[test]
+    fn file_extension_handles_edge_cases() {
+        assert_eq!(file_extension(""), "");
+        assert_eq!(file_extension("noext"), "");
+        assert_eq!(file_extension("foo.js"), "js");
+        assert_eq!(file_extension("foo.bar.tsx"), "tsx");
+        assert_eq!(file_extension("dir/foo.png"), "png");
+        // trailing dot has no extension
+        assert_eq!(file_extension("dotfile."), "");
+        // leading dot: hidden file with no extension
+        assert_eq!(file_extension(".gitignore"), "gitignore");
+    }
+
+    // End-to-end roundtrip: encode a directory, then decode the produced PNG,
+    // verify identical content. Catches any wire-format drift between encoder
+    // and decoder (the kind of bug that produced "Data corruption detected"
+    // mid-zstd-frame in v1.15.0).
+    fn make_test_dir(seed: u64, file_count: usize, max_file_size: usize) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rox_enc_dec_rt_{}_{}", seed, ms));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Cheap LCG for reproducible "random" bytes (no rand crate needed).
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+        for i in 0..file_count {
+            let sz = ((state >> 16) as usize) % max_file_size + 1;
+            let mut bytes = vec![0u8; sz];
+            for b in bytes.iter_mut() {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *b = (state >> 33) as u8;
+            }
+            let ext = match i % 4 {
+                0 => "txt",
+                1 => "bin",
+                2 => "json",
+                _ => "log",
+            };
+            std::fs::write(dir.join(format!("file_{:04}.{}", i, ext)), &bytes).unwrap();
+        }
+        dir
+    }
+
+    fn read_dir_to_map(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        use walkdir::WalkDir;
+        let mut out = std::collections::BTreeMap::new();
+        for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file() {
+                let rel = entry
+                    .path()
+                    .strip_prefix(dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(rel, std::fs::read(entry.path()).unwrap());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn end_to_end_directory_roundtrip_small() {
+        let src = make_test_dir(1, 5, 100);
+        let png = src.with_extension("png");
+        let out_dir = src.with_extension("out");
+        let _ = std::fs::remove_file(&png);
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        encode_dir_to_png(&src, &png, 3, Some("test")).unwrap();
+        assert!(png.exists(), "encoded PNG must exist");
+
+        crate::streaming_decode::streaming_decode_to_dir(&png, &out_dir).unwrap();
+
+        let original = read_dir_to_map(&src);
+        let decoded = read_dir_to_map(&out_dir);
+        assert_eq!(decoded, original, "decoded content differs from original");
+
+        let _ = std::fs::remove_file(png);
+        let _ = std::fs::remove_dir_all(out_dir);
+        let _ = std::fs::remove_dir_all(src);
+    }
+
+    #[test]
+    fn end_to_end_directory_roundtrip_many_small_files() {
+        // ~200 files exercises the small-file parallel batch path.
+        let src = make_test_dir(2, 200, 4096);
+        let png = src.with_extension("png");
+        let out_dir = src.with_extension("out");
+        let _ = std::fs::remove_file(&png);
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        encode_dir_to_png(&src, &png, 3, Some("many")).unwrap();
+        crate::streaming_decode::streaming_decode_to_dir(&png, &out_dir).unwrap();
+
+        let original = read_dir_to_map(&src);
+        let decoded = read_dir_to_map(&out_dir);
+        assert_eq!(
+            decoded.len(),
+            original.len(),
+            "file count mismatch: {} vs {}",
+            decoded.len(),
+            original.len()
+        );
+        for (k, v) in &original {
+            let decoded_v = decoded.get(k).unwrap_or_else(|| panic!("missing file: {}", k));
+            assert_eq!(decoded_v.len(), v.len(), "size mismatch for {}", k);
+            assert_eq!(decoded_v, v, "content mismatch for {}", k);
+        }
+
+        let _ = std::fs::remove_file(png);
+        let _ = std::fs::remove_dir_all(out_dir);
+        let _ = std::fs::remove_dir_all(src);
+    }
+
+    #[test]
+    fn end_to_end_directory_roundtrip_with_large_file() {
+        // One file > MT threshold (8 MB) exercises the large-file sequential
+        // path AND triggers zstd multi-threading.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let src = std::env::temp_dir().join(format!("rox_enc_dec_rt_large_{}", ms));
+        std::fs::create_dir_all(&src).unwrap();
+
+        let mut state = 3u64.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        for i in 0..3 {
+            let sz = 5 * 1024 * 1024 + i * 1024; // ~5 MB each, slightly varied
+            let mut bytes = vec![0u8; sz];
+            for b in bytes.iter_mut() {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *b = (state >> 33) as u8;
+            }
+            std::fs::write(src.join(format!("big_{}.bin", i)), &bytes).unwrap();
+        }
+
+        let png = src.with_extension("png");
+        let out_dir = src.with_extension("out");
+        let _ = std::fs::remove_file(&png);
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        encode_dir_to_png(&src, &png, 3, Some("large")).unwrap();
+        crate::streaming_decode::streaming_decode_to_dir(&png, &out_dir).unwrap();
+
+        let original = read_dir_to_map(&src);
+        let decoded = read_dir_to_map(&out_dir);
+        assert_eq!(decoded.len(), original.len(), "file count mismatch");
+        for (k, v) in &original {
+            assert_eq!(decoded.get(k).expect("missing file"), v, "content mismatch for {}", k);
+        }
+
+        let _ = std::fs::remove_file(png);
+        let _ = std::fs::remove_dir_all(out_dir);
+        let _ = std::fs::remove_dir_all(src);
+    }
+}

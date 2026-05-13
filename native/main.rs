@@ -219,8 +219,37 @@ pub fn parse_windows_mem_available_mb() -> Option<u64> {
 fn parse_total_ram_mb() -> Option<u64> {
     #[cfg(windows)]
     {
-        // Fallback pour Windows - utiliser une valeur raisonnable basée sur le système
-        Some(8192) // 8GB par défaut pour Windows
+        use std::mem;
+
+        unsafe {
+            #[allow(non_snake_case)]
+            #[repr(C)]
+            struct MEMORYSTATUSEX {
+                dwLength: u32,
+                dwMemoryLoad: u32,
+                ullTotalPhys: u64,
+                ullAvailPhys: u64,
+                ullTotalPageFile: u64,
+                ullAvailPageFile: u64,
+                ullTotalVirtual: u64,
+                ullAvailVirtual: u64,
+                ullAvailExtendedVirtual: u64,
+            }
+
+            extern "system" {
+                fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX, dwLength: u32);
+            }
+
+            let mut mem_status: MEMORYSTATUSEX = std::mem::zeroed();
+            mem_status.dwLength = mem::size_of::<MEMORYSTATUSEX>() as u32;
+            GlobalMemoryStatusEx(&mut mem_status, mem_status.dwLength);
+
+            if mem_status.ullTotalPhys > 0 {
+                Some(mem_status.ullTotalPhys / 1024 / 1024)
+            } else {
+                None
+            }
+        }
     }
 
     #[cfg(not(windows))]
@@ -251,28 +280,20 @@ fn get_ram_tier(available_mb: u64) -> &'static str {
     }
 }
 
-/// Calculate adaptive RAM budget with aggressive optimization for Pyxelze
+/// RAM réservée au système pour garder le PC réactif (idéalement 3–4 GB libres).
+/// On vise 4 GB pour rester confortable même si d'autres apps tournent.
+const SYSTEM_RESERVE_MB: u64 = 4096;
+
+/// Calcule le budget RAM: utilise un maximum de RAM tout en réservant
+/// SYSTEM_RESERVE_MB (4 GB) pour le système. Sur une machine 16 GB → 12 GB
+/// de budget. Sur 32 GB → 28 GB. Sur 8 GB → 4 GB. Sur 4 GB → MIN.
 fn auto_ram_budget_mb() -> u64 {
-    let total_mb = parse_total_ram_mb().unwrap_or(4096);
-    let available_mb = parse_linux_mem_available_mb().unwrap_or(total_mb / 2);
-    let cpu_cores = get_cpu_cores();
-
-    // Adjust based on RAM tier and CPU cores
-    let tier_multiplier = match get_ram_tier(total_mb) {
-        "ultra" if cpu_cores >= 8 => 90, // 16GB+ with 8+ cores: 90%
-        "ultra" => 85,                   // 16GB+ with fewer cores
-        "high" if cpu_cores >= 6 => 80,  // 8GB+ with 6+ cores
-        "high" => 75,                    // 8GB+
-        "medium" => 70,                  // 4GB+
-        _ => 65,                         // 2GB+
-    };
-
-    let budget = available_mb.saturating_mul(tier_multiplier) / 100;
-    let budget = budget.max(MIN_RAM_BUDGET_MB);
-
-    // Cap at reasonable maximum to prevent OOM
-    let max_budget = (total_mb / 2).max(8192);
-    budget.min(max_budget)
+    let total_mb = parse_total_ram_mb().unwrap_or(8192);
+    // Soustrait la réserve système. On n'utilise PAS "available" parce que
+    // sur des sessions longues, l'utilisateur peut libérer/occuper de la RAM
+    // pendant l'encode — partir du total physique est plus stable.
+    let budget = total_mb.saturating_sub(SYSTEM_RESERVE_MB);
+    budget.max(MIN_RAM_BUDGET_MB)
 }
 
 /// Auto-select optimal compression level based on file size and available RAM
@@ -333,6 +354,9 @@ fn resolve_ram_budget_mb(cli_value: Option<u64>) -> u64 {
         }
     }
 
+    // auto_ram_budget_mb() = max(total_ram - 4GB, MIN). Permet d'utiliser un
+    // maximum de RAM tout en réservant 4 GB au système pour qu'il reste
+    // réactif pendant l'encode.
     auto_ram_budget_mb()
 }
 

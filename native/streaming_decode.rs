@@ -62,22 +62,36 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
     let zlib_decoder = ZlibDecoder::new(idat_reader);
     let mut reader = ScanlinePixelReader::new(zlib_decoder, width, height);
 
-    // Lecture tolérante: certains fichiers v1.14.x (encodeur buggé) ajoutaient un préfixe
-    // "PXL1" + payload_len(4) AVANT les markers de début, ce qui décale tout de 8 octets.
-    // On scanne donc les 24 premiers octets pour la DERNIÈRE occurrence de "PXL1" et on
-    // continue à partir de juste après. Le format propre place PXL1 à l'offset 12.
+    // Rétrocompatibilité: deux layouts existent en pratique.
+    //   - Format propre (v1.15.0+, et v1.14.x single-file path):
+    //       offsets 0..11 = MARKER_START (9) + MARKER_ZSTD (3)
+    //       offsets 12..15 = "PXL1"
+    //       offsets 16.. = meta_header
+    //   - Format legacy v1.14.x directory-encode (encodeur buggé): un préfixe
+    //     "PXL1" + payload_len(4) avait été ajouté AVANT les markers, ce qui
+    //     décale tout de 8 octets:
+    //       offsets 0..3 = "PXL1" (parasite)
+    //       offsets 4..7 = payload_len u32 BE (parasite)
+    //       offsets 8..19 = markers
+    //       offsets 20..23 = "PXL1" (le vrai)
+    //       offsets 24.. = meta_header
+    // On vérifie EXACTEMENT ces deux positions connues pour éviter un faux
+    // positif si un nom de fichier contenait "PXL1" en tête.
     let mut head_buf = [0u8; 24];
     reader
         .read_exact(&mut head_buf)
         .map_err(|e| format!("read head: {}", e))?;
 
-    let pxl1_end = (0..=head_buf.len() - 4)
-        .rev()
-        .find(|&i| &head_buf[i..i + 4] == PIXEL_MAGIC)
-        .map(|i| i + 4)
-        .ok_or_else(|| {
-            format!("Expected PXL1 in first 24 bytes, got {:?}", &head_buf[..16])
-        })?;
+    let pxl1_end = if &head_buf[12..16] == PIXEL_MAGIC {
+        16 // clean layout
+    } else if &head_buf[20..24] == PIXEL_MAGIC && &head_buf[0..4] == PIXEL_MAGIC {
+        24 // legacy v1.14.x directory-encode bug
+    } else {
+        return Err(format!(
+            "Expected PXL1 at pixel offset 12 (clean) or 20 (legacy), got head {:?}",
+            &head_buf[..16]
+        ));
+    };
 
     let leftover_prefix = head_buf[pxl1_end..].to_vec();
     let mut reader = std::io::Cursor::new(leftover_prefix).chain(reader);
