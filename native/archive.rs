@@ -2,7 +2,6 @@ use std::io::Cursor;
 use std::path::Path;
 use rayon::prelude::*;
 use tar::{Archive, Builder, Header};
-use walkdir::WalkDir;
 
 pub struct TarPackResult {
     pub data: Vec<u8>,
@@ -12,7 +11,7 @@ pub struct TarPackResult {
 pub fn tar_pack_directory_with_list(dir_path: &Path) -> Result<TarPackResult, String> {
     let base = dir_path;
 
-    let entries: Vec<_> = WalkDir::new(dir_path)
+    let entries: Vec<_> = walkdir::WalkDir::new(dir_path)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())

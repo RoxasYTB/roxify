@@ -3,7 +3,6 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use serde::Serialize;
-use walkdir::WalkDir;
 
 use crate::png_chunk_writer::{ChunkedIdatWriter, write_png_chunk};
 
@@ -21,7 +20,7 @@ const MAX_FILE_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
 // Augmenté de 1 MB à 8 MB pour permettre la lecture parallèle des fichiers moyens.
 // Sur un projet typique avec beaucoup de fichiers 1-8 MB, ceci sature beaucoup mieux les cœurs
 // sans exploser la mémoire (batch capé à 256 MB).
-const PARALLEL_IO_FILE_THRESHOLD: u64 = 8 * MB;
+const PARALLEL_IO_FILE_THRESHOLD: u64 = if cfg!(target_os = "windows") { 64 * MB } else { 8 * MB };
 const PARALLEL_IO_BATCH_BYTES: u64 = 512 * MB;
 const PARALLEL_IO_BATCH_FILES: usize = 2048;
 const PARALLEL_IO_MIN_FILES: usize = 2;
@@ -98,9 +97,6 @@ fn compress_dir_to_zst_mem(
 ) -> anyhow::Result<(Vec<u8>, String)> {
     let collected = collect_directory_files(dir_path);
     let mut entries = collected.entries;
-
-    // Filtrer les fichiers inaccessibles AVANT d'écrire le header count,
-    // sinon le decoder essaie de lire plus d'entrées qu'il n'existe → corruption.
     entries.retain(|e| e.path.exists());
     let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
 
@@ -187,7 +183,7 @@ fn write_pack_entry_header<W: Write>(writer: &mut W, rel_path: &str, size: u64) 
 }
 
 fn write_directory_entry<W: Write>(writer: &mut W, entry: &DirectoryFile) -> anyhow::Result<bool> {
-    let file = match File::open(&entry.path) {
+    let file = match open_file_sequential(&entry.path) {
         Ok(file) => file,
         Err(_) => return Ok(false),
     };
@@ -205,8 +201,24 @@ fn load_small_file_batch(entries: &[DirectoryFile]) -> anyhow::Result<Vec<Option
     entries.par_iter().map(load_directory_entry_bytes).collect()
 }
 
+fn open_file_sequential(path: &Path) -> std::io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x08000000;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        File::open(path)
+    }
+}
+
 fn load_directory_entry_bytes(entry: &DirectoryFile) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut file = match File::open(&entry.path) {
+    let mut file = match open_file_sequential(&entry.path) {
         Ok(file) => file,
         Err(_) => return Ok(None),
     };
@@ -287,7 +299,7 @@ fn collect_directory_files(dir_path: &Path) -> CollectedDirectory {
     let mut entries = Vec::new();
     let mut total_bytes = 0u64;
 
-    for entry in WalkDir::new(dir_path)
+    for entry in walkdir::WalkDir::new(dir_path)
         .follow_links(false)
         .into_iter()
         .filter_map(|entry| entry.ok())
@@ -371,27 +383,15 @@ fn select_zstd_window_log(total_bytes: u64) -> u32 {
 }
 
 fn select_zstd_threads(total_bytes: u64) -> u32 {
-    // Logique aggressive: dès qu'on a > 32 MB, on monte rapidement en
-    // workers. zstd MT a un overhead constant par worker (init + dispatch)
-    // mais sur des inputs réalistes (50 MB+) c'est négligeable comparé à la
-    // saturation des cœurs. L'ancienne version Linux avait `... || ram_mb
-    // >= 8192` qui CAPPAIT à 4 workers dès qu'on a 8 GB RAM, indépendamment
-    // de la taille du payload — exactement l'inverse de ce qu'on veut.
     let max_threads = num_cpus::get().max(1) as u32;
 
     if total_bytes <= 8 * MB {
-        return 1; // overhead MT > gain pour les très petits inputs
+        return 1;
     }
     if total_bytes <= 32 * MB {
         return max_threads.min(4);
     }
-    if total_bytes <= 128 * MB {
-        return max_threads.min(8);
-    }
-    // >= 128 MB: saturer la machine. zstd recommande de capper vers 16
-    // workers, au-delà la synchro inter-thread devient un goulot et le ratio
-    // de compression baisse (chaque worker gère un block indépendant).
-    max_threads.min(16)
+    max_threads
 }
 
 fn write_png_from_zst_mem(
@@ -471,17 +471,9 @@ fn write_png_from_zst_mem(
     let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
 
     let out_file = File::create(output_path)?;
-    let buf_capacity = if cfg!(target_os = "windows") {
-        // Windows: buffers ULTRA-GROS pour compenser l'overhead NTFS
-        if total_data_bytes > 512 * 1024 * 1024 { 64 * 1024 * 1024 }  // 64MB!
-        else if total_data_bytes > 128 * 1024 * 1024 { 32 * 1024 * 1024 } // 32MB!
-        else if total_data_bytes > 32 * 1024 * 1024 { 16 * 1024 * 1024 }  // 16MB!
-        else { 8 * 1024 * 1024 }  // 8MB min
-    } else {
-        if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
+    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
         else if total_data_bytes > 16 * 1024 * 1024 { 16 * 1024 * 1024 }
-        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) }
-    };
+        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) };
     let mut w = BufWriter::with_capacity(buf_capacity, out_file);
 
     w.write_all(PNG_HEADER)?;
@@ -958,13 +950,13 @@ mod tests {
         let mut out = std::collections::BTreeMap::new();
         for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
             if entry.file_type().is_file() {
-                let rel = entry
-                    .path()
+                let p = entry.path();
+                let rel = p
                     .strip_prefix(dir)
                     .unwrap()
                     .to_string_lossy()
                     .replace('\\', "/");
-                out.insert(rel, std::fs::read(entry.path()).unwrap());
+                out.insert(rel, std::fs::read(&p).unwrap());
             }
         }
         out

@@ -29,11 +29,11 @@ const MB_U64: u64 = 1024 * 1024;
 const GB_U64: u64 = 1024 * MB_U64;
 
 // Adaptive RAM Budget Configuration - Optimized for Windows
-const MIN_RAM_BUDGET_MB: u64 = 1024; // Increased for Windows
-const DEFAULT_RAM_BUDGET_MB: u64 = 4096; // Increased for Windows
-const RESERVED_RAM_MB: u64 = 512; // Reduced to allow more usage
+const MIN_RAM_BUDGET_MB: u64 = 512;
+const DEFAULT_RAM_BUDGET_MB: u64 = 65536;
+const RESERVED_RAM_MB: u64 = 256;
 const MIN_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024;
-const MAX_WRITE_BUFFER_BYTES: usize = 512 * 1024 * 1024;
+const MAX_WRITE_BUFFER_BYTES: usize = 1024 * 1024 * 1024;
 
 // Performance Targets (under 10 seconds)
 const TARGET_ENCODE_TIME_SECS: u64 = 10;
@@ -283,7 +283,7 @@ fn get_ram_tier(available_mb: u64) -> &'static str {
 /// RAM réservée au système pour garder le PC réactif.
 /// 2 GB suffit pour que le kernel + desktop restent fluides pendant un encode
 /// court. L'objectif est de saturer la RAM pour aller vite, pas d'être poli.
-const SYSTEM_RESERVE_MB: u64 = 2048;
+const SYSTEM_RESERVE_MB: u64 = 512;
 
 /// Calcule le budget RAM: utilise un maximum de RAM tout en réservant
 /// SYSTEM_RESERVE_MB (4 GB) pour le système. Sur une machine 16 GB → 12 GB
@@ -392,19 +392,15 @@ fn should_stream_png_decode(
 }
 
 fn choose_zstd_window_log(total_expected: u64) -> u32 {
-    if cfg!(target_os = "windows") {
-        return 31u32;
-    }
     if total_expected <= 128 * 1024 * 1024 {
-        return 24u32;
+        24u32
+    } else if total_expected <= 512 * 1024 * 1024 {
+        27u32
+    } else if total_expected <= 2 * 1024 * 1024 * 1024u64 {
+        29u32
+    } else {
+        30u32
     }
-    if total_expected <= 512 * 1024 * 1024 {
-        return 27u32;
-    }
-    if total_expected <= 2 * 1024 * 1024 * 1024u64 {
-        return 29u32;
-    }
-    30u32
 }
 
 fn normalize_png_archive_bytes(

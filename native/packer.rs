@@ -4,9 +4,8 @@ use rayon::prelude::*;
 use serde_json::json;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -261,12 +260,12 @@ pub fn count_pack_entries(buf: &[u8]) -> Result<usize> {
 pub fn pack_directory(dir_path: &Path, base_dir: Option<&Path>) -> Result<Vec<u8>> {
     let base = base_dir.unwrap_or(dir_path);
 
-    let files: Vec<PathBuf> = WalkDir::new(dir_path)
+    let files: Vec<PathBuf> = walkdir::WalkDir::new(dir_path)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
+        .map(|e| e.into_path())
         .collect();
 
     let file_data: Vec<(String, Vec<u8>)> = files
@@ -346,12 +345,12 @@ pub fn pack_path_with_metadata(path: &Path) -> Result<PackResult> {
         })
     } else if path.is_dir() {
         let base = path;
-        let files: Vec<PathBuf> = WalkDir::new(path)
+        let files: Vec<PathBuf> = walkdir::WalkDir::new(path)
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-            .map(|e| e.path().to_path_buf())
+            .map(|e| e.into_path())
             .collect();
 
         let file_data: Vec<(String, Vec<u8>)> = files
@@ -486,7 +485,7 @@ pub fn unpack_buffer_to_dir(
     to_write
         .par_iter()
         .try_for_each(|(dest, content)| {
-            std::fs::write(dest, content)
+            write_file_fast(dest, content)
                 .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
         })?;
 
@@ -666,17 +665,13 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         if batch_files.is_empty() {
             return Ok(());
         }
-        let results: Vec<Result<()>> = batch_files
+        batch_files
             .par_iter()
-            .map(|(dest, data)| {
-                std::fs::write(dest, data)
+            .try_for_each(|(dest, data)| -> Result<()> {
+                write_file_fast(dest, data)
                     .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
-            })
-            .collect();
+            })?;
         batch_files.clear();
-        for r in results {
-            r?;
-        }
         Ok(())
     };
 
@@ -721,7 +716,8 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
 
     file_count = read_pack_u32(reader)? as usize;
 
-    const BATCH_RAM_LIMIT: u64 = 512 * 1024 * 1024;
+    const BATCH_RAM_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
+    const BATCH_FILE_LIMIT: usize = 500_000;
 
     for _ in 0..file_count {
         let name_len = read_pack_u16(reader)? as usize;
@@ -757,7 +753,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             }
 
             let batch_bytes: u64 = batch_files.iter().map(|(_, d)| d.len() as u64).sum();
-            if batch_bytes >= BATCH_RAM_LIMIT || batch_files.len() >= 1024 {
+            if batch_bytes >= BATCH_RAM_LIMIT || batch_files.len() >= BATCH_FILE_LIMIT {
                 flush_batch_parallel(&mut batch_files)?;
             }
         } else {
@@ -1024,6 +1020,15 @@ fn open_file_with_share(dest: &Path) -> Result<File> {
 }
 
 // Windows optimization: écriture ultra-optimisée avec Memory Mapping et pré-allocation
+fn write_file_fast(dest: &Path, data: &[u8]) -> Result<()> {
+    if data.len() >= 256 * 1024 {
+        write_file_with_mmap(dest, data)
+    } else {
+        std::fs::write(dest, data)?;
+        Ok(())
+    }
+}
+
 fn write_file_with_mmap(dest: &Path, data: &[u8]) -> Result<()> {
     // Créer le fichier avec pré-allocation
     let file = open_file_with_share(dest)?;

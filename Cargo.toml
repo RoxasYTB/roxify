@@ -1,6 +1,6 @@
 [package]
 name = "roxify_native"
-version = "1.15.2"
+version = "1.15.3"
 edition = "2021"
 publish = false
 
@@ -32,6 +32,7 @@ png = "0.18.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # indicatif removed from default deps to reduce heavy build graph
 walkdir = "2.5.0"
+jwalk = "0.8"
 tar = "0.4"
 aes-gcm = "0.10"
 aes = "0.8"
