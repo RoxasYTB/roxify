@@ -34,23 +34,21 @@ fn effective_budget_mb() -> u64 {
 }
 
 /// In-flight read batch size — drives how many file bytes are held in RAM
-/// at once while reading the directory in parallel. Scales with the RAM
-/// budget so big machines actually use their RAM (≈25% of budget, clamped
-/// to [512 MiB, 4 GiB]).
+/// at once while reading the directory in parallel. We use ~60% of the
+/// effective RAM budget with NO upper clamp: the user explicitly wants
+/// the encoder to spend RAM for speed. Floored at 512 MiB so tiny budgets
+/// still produce a usable batch.
 fn parallel_io_batch_bytes() -> u64 {
-    let mb = (effective_budget_mb() / 4).clamp(512, 4096);
+    let mb = (effective_budget_mb() * 60 / 100).max(512);
     mb * MB
 }
 
-/// Max file count per parallel-read batch. Scales with RAM budget so the
-/// rayon pool has enough work to saturate on directories of small files.
+/// Max file count per parallel-read batch. No real cap — practical limit
+/// is parallel_io_batch_bytes via the bytes accumulator in the caller.
 fn parallel_io_batch_files() -> usize {
     let budget = effective_budget_mb();
-    if budget >= 16384 { 32768 }
-    else if budget >= 8192 { 16384 }
-    else if budget >= 4096 { 8192 }
-    else if budget >= 2048 { 4096 }
-    else { 2048 }
+    // Rough heuristic: ~1 entry slot per KiB of budget, floored at 4096.
+    (budget as usize * 1024 / 16).max(4096)
 }
 
 pub type ProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
@@ -385,29 +383,32 @@ fn normalize_rel_path(path: &Path) -> String {
 }
 
 fn estimate_zst_capacity(total_bytes: u64) -> usize {
-    // Estimation initiale du buffer de sortie zstd. L'ancienne valeur (total/3)
-    // sous-allouait sur des données incompressibles (qui sortent ~= input),
-    // forçant Vec à doubler 2-3 fois en cours d'encode (re-allocation +
-    // memcpy = jusqu'à 2× la taille finale en RAM temporairement, ralentit).
-    // total/2 est un meilleur compromis: couvre le cas "ratio 50%" courant
-    // sans gaspiller pour les payloads très compressibles.
+    // Pre-allocate the zstd output buffer at the full input size: when budget
+    // is generous the user explicitly asked us to spend RAM for speed, and
+    // a single Vec::with_capacity(total) avoids the 2-3 reallocations that
+    // a "fraction of total" estimate causes on incompressible data. Worst
+    // case (best compression ratio) we over-allocate by ~80% which the OS
+    // is fine with on a multi-GiB-RAM system.
     let capped = total_bytes.min(usize::MAX as u64) as usize;
-    (capped / 2).max(MIN_ZST_CAPACITY)
+    capped.max(MIN_ZST_CAPACITY)
 }
 
 fn select_zstd_window_log(total_bytes: u64) -> u32 {
+    // Bigger windows = better compression AND more per-worker RAM under
+    // zstdmt. We pick the largest window that still fits the data; on
+    // multi-GiB-budget systems zstdmt internally caps itself anyway.
     if total_bytes <= 64 * 1024 * 1024 {
         21u32
     } else if total_bytes <= 128 * 1024 * 1024 {
-        22u32
-    } else if total_bytes <= 256 * 1024 * 1024 {
         23u32
+    } else if total_bytes <= 256 * 1024 * 1024 {
+        25u32
     } else if total_bytes <= 512 * 1024 * 1024 {
-        24u32
-    } else if total_bytes <= 1024 * 1024 * 1024 {
         26u32
+    } else if total_bytes <= 1024 * 1024 * 1024 {
+        27u32
     } else if total_bytes <= 2 * 1024 * 1024 * 1024u64 {
-        28u32
+        29u32
     } else {
         30u32
     }
