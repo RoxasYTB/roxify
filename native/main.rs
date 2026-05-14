@@ -251,13 +251,24 @@ fn parse_total_ram_mb() -> Option<u64> {
 /// `--ram-budget-mb` or `ROX_RAM_BUDGET_MB`.
 const SYSTEM_RESERVE_MB: u64 = 4096;
 
-/// Working budget = total physical RAM − [`SYSTEM_RESERVE_MB`], floored at
-/// [`MIN_RAM_BUDGET_MB`]. The streaming encode/decode and the parallel
-/// unpack batches scale with this value (see `parallel_io_batch_bytes` in
-/// streaming_encode.rs and `batch_ram_limit` in packer.rs).
+/// Headroom subtracted from MemAvailable when used as the budget basis.
+/// Prevents an OOM-kill when other apps grow during the encode/decode.
+const AVAILABLE_HEADROOM_MB: u64 = 1024;
+
+/// Working budget = min(total − SYSTEM_RESERVE_MB, available − AVAILABLE_HEADROOM_MB),
+/// floored at MIN_RAM_BUDGET_MB. Picking the smaller of the two avoids
+/// OOM-killing on boxes where the user has 12 GiB total but only 6 GiB
+/// free because other apps already grabbed half the RAM.
 fn auto_ram_budget_mb() -> u64 {
     let total_mb = parse_total_ram_mb().unwrap_or(8192);
-    total_mb.saturating_sub(SYSTEM_RESERVE_MB).max(MIN_RAM_BUDGET_MB)
+    let total_budget = total_mb.saturating_sub(SYSTEM_RESERVE_MB);
+
+    let available_mb = parse_linux_mem_available_mb()
+        .or_else(parse_windows_mem_available_mb)
+        .unwrap_or(total_mb);
+    let available_budget = available_mb.saturating_sub(AVAILABLE_HEADROOM_MB);
+
+    total_budget.min(available_budget).max(MIN_RAM_BUDGET_MB)
 }
 
 fn resolve_ram_budget_mb(cli_value: Option<u64>) -> u64 {
