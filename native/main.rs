@@ -245,12 +245,16 @@ fn parse_total_ram_mb() -> Option<u64> {
     }
 }
 
-/// RAM réservée au système pour garder le PC réactif pendant un encode/decode.
-const SYSTEM_RESERVE_MB: u64 = 512;
+/// RAM laissée libre au système (OS + autres apps). Default policy:
+/// "use total - 4 GiB, leave 4 GiB available, like on every machine".
+/// On a 12 GiB box this gives an 8 GiB working budget. Override with
+/// `--ram-budget-mb` or `ROX_RAM_BUDGET_MB`.
+const SYSTEM_RESERVE_MB: u64 = 4096;
 
-/// Use a large fraction of physical RAM as the working budget, while keeping
-/// SYSTEM_RESERVE_MB free so the OS stays responsive. On a 16 GB box → ~15.5 GB
-/// budget; on 4 GB → MIN_RAM_BUDGET_MB.
+/// Working budget = total physical RAM − [`SYSTEM_RESERVE_MB`], floored at
+/// [`MIN_RAM_BUDGET_MB`]. The streaming encode/decode and the parallel
+/// unpack batches scale with this value (see `parallel_io_batch_bytes` in
+/// streaming_encode.rs and `batch_ram_limit` in packer.rs).
 fn auto_ram_budget_mb() -> u64 {
     let total_mb = parse_total_ram_mb().unwrap_or(8192);
     total_mb.saturating_sub(SYSTEM_RESERVE_MB).max(MIN_RAM_BUDGET_MB)

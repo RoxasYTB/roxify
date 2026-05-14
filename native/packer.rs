@@ -716,7 +716,15 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
 
     file_count = read_pack_u32(reader)? as usize;
 
-    const BATCH_RAM_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
+    // Batch limits scale with the RAM budget set by main.rs at CLI startup.
+    // ~50% of budget for the in-flight write batch (the other 50% covers the
+    // zstd decoder, IDAT scanner, kernel cache, file handles, etc.).
+    // Min 1 GiB, max 16 GiB to keep behavior reasonable on tiny / huge boxes.
+    let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(8192);
+    let batch_ram_limit: u64 = (budget_mb / 2).clamp(1024, 16384) * 1024 * 1024;
     const BATCH_FILE_LIMIT: usize = 500_000;
 
     for _ in 0..file_count {
@@ -753,7 +761,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             }
 
             let batch_bytes: u64 = batch_files.iter().map(|(_, d)| d.len() as u64).sum();
-            if batch_bytes >= BATCH_RAM_LIMIT || batch_files.len() >= BATCH_FILE_LIMIT {
+            if batch_bytes >= batch_ram_limit || batch_files.len() >= BATCH_FILE_LIMIT {
                 flush_batch_parallel(&mut batch_files)?;
             }
         } else {

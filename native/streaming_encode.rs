@@ -19,12 +19,39 @@ const MB: u64 = 1024 * 1024;
 const MAX_FILE_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
 // Augmenté de 1 MB à 8 MB pour permettre la lecture parallèle des fichiers moyens.
 // Sur un projet typique avec beaucoup de fichiers 1-8 MB, ceci sature beaucoup mieux les cœurs
-// sans exploser la mémoire (batch capé à 256 MB).
+// sans exploser la mémoire.
 const PARALLEL_IO_FILE_THRESHOLD: u64 = if cfg!(target_os = "windows") { 64 * MB } else { 8 * MB };
-const PARALLEL_IO_BATCH_BYTES: u64 = 512 * MB;
-const PARALLEL_IO_BATCH_FILES: usize = 2048;
 const PARALLEL_IO_MIN_FILES: usize = 2;
 const HEADER_VERSION_V2: u8 = 2;
+
+/// Read the effective RAM budget (in MiB) set by main.rs at CLI startup.
+/// Falls back to 2 GiB when called outside the CLI path (e.g. NAPI / tests).
+fn effective_budget_mb() -> u64 {
+    std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(2048)
+}
+
+/// In-flight read batch size — drives how many file bytes are held in RAM
+/// at once while reading the directory in parallel. Scales with the RAM
+/// budget so big machines actually use their RAM (≈25% of budget, clamped
+/// to [512 MiB, 4 GiB]).
+fn parallel_io_batch_bytes() -> u64 {
+    let mb = (effective_budget_mb() / 4).clamp(512, 4096);
+    mb * MB
+}
+
+/// Max file count per parallel-read batch. Scales with RAM budget so the
+/// rayon pool has enough work to saturate on directories of small files.
+fn parallel_io_batch_files() -> usize {
+    let budget = effective_budget_mb();
+    if budget >= 16384 { 32768 }
+    else if budget >= 8192 { 16384 }
+    else if budget >= 4096 { 8192 }
+    else if budget >= 2048 { 4096 }
+    else { 2048 }
+}
 
 pub type ProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
 
@@ -223,7 +250,7 @@ fn load_directory_entry_bytes(entry: &DirectoryFile) -> anyhow::Result<Option<Ve
         Err(_) => return Ok(None),
     };
 
-    let reserve = usize::try_from(entry.size.min(PARALLEL_IO_BATCH_BYTES)).unwrap_or(MAX_FILE_BUFFER_CAPACITY);
+    let reserve = usize::try_from(entry.size.min(parallel_io_batch_bytes())).unwrap_or(MAX_FILE_BUFFER_CAPACITY);
     let mut bytes = Vec::with_capacity(reserve.max(8192));
     file.read_to_end(&mut bytes)
         .map_err(|e| anyhow::anyhow!("pack read {}: {}", entry.rel_path, e))?;
@@ -241,16 +268,20 @@ fn select_parallel_batch_end(entries: &[DirectoryFile], start: usize) -> usize {
 
     let mut end = start;
     let mut batch_bytes = 0u64;
+    // Snapshot the dynamic limits once per batch — they only depend on the
+    // RAM budget env var, which doesn't change during a run.
+    let max_bytes = parallel_io_batch_bytes();
+    let max_files = parallel_io_batch_files();
     while end < entries.len() {
         let entry = &entries[end];
         if !should_parallelize_entry(entry) {
             break;
         }
         if end > start {
-            if end - start >= PARALLEL_IO_BATCH_FILES {
+            if end - start >= max_files {
                 break;
             }
-            if batch_bytes.saturating_add(entry.size) > PARALLEL_IO_BATCH_BYTES {
+            if batch_bytes.saturating_add(entry.size) > max_bytes {
                 break;
             }
         }
