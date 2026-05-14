@@ -22,9 +22,9 @@ const MAX_FILE_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
 // Sur un projet typique avec beaucoup de fichiers 1-8 MB, ceci sature beaucoup mieux les cœurs
 // sans exploser la mémoire (batch capé à 256 MB).
 const PARALLEL_IO_FILE_THRESHOLD: u64 = 8 * MB;
-const PARALLEL_IO_BATCH_BYTES: u64 = 256 * MB;
-const PARALLEL_IO_BATCH_FILES: usize = 512;
-const PARALLEL_IO_MIN_FILES: usize = 4;
+const PARALLEL_IO_BATCH_BYTES: u64 = 512 * MB;
+const PARALLEL_IO_BATCH_FILES: usize = 2048;
+const PARALLEL_IO_MIN_FILES: usize = 2;
 const HEADER_VERSION_V2: u8 = 2;
 
 pub type ProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
@@ -97,13 +97,13 @@ fn compress_dir_to_zst_mem(
     progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<(Vec<u8>, String)> {
     let collected = collect_directory_files(dir_path);
-    let total_bytes = collected.total_bytes;
-    let entries = collected.entries;
+    let mut entries = collected.entries;
 
-    // Respect le niveau demandé par l'utilisateur (CLI --level). Clamp uniquement
-    // dans la plage valide zstd [1, 22]. Le défaut CLI est 3 (rapide), mais
-    // --level 9/19/22 doit pouvoir donner un meilleur ratio si l'utilisateur le
-    // demande explicitement.
+    // Filtrer les fichiers inaccessibles AVANT d'écrire le header count,
+    // sinon le decoder essaie de lire plus d'entrées qu'il n'existe → corruption.
+    entries.retain(|e| e.path.exists());
+    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+
     let actual_level = compression_level.clamp(1, 22);
     let mut encoder = zstd::stream::Encoder::new(
         Vec::with_capacity(estimate_zst_capacity(total_bytes)),
@@ -113,12 +113,9 @@ fn compress_dir_to_zst_mem(
 
     let threads = select_zstd_threads(total_bytes);
     if threads > 1 {
-        // Si zstdmt n'est pas dispo, on retombe en mono-thread silencieusement
-        // — c'est ce que faisait l'ancien code. On le signale maintenant pour
-        // diagnostiquer les régressions perf.
         if let Err(e) = encoder.multithread(threads) {
             eprintln!(
-                "warn: zstd multithread({}) failed: {} — compression falls back to single thread",
+                "warn: zstd multithread({}) failed: {} — falls back to single thread",
                 threads, e
             );
         }
@@ -126,8 +123,6 @@ fn compress_dir_to_zst_mem(
     let _ = encoder.long_distance_matching(true);
     let adaptive_window_log = select_zstd_window_log(total_bytes);
     let _ = encoder.window_log(adaptive_window_log);
-    // Aide zstd à planifier sa stratégie (allocation tables, decisions LDM).
-    let _ = encoder.set_pledged_src_size(Some(total_bytes));
 
     encoder.write_all(MAGIC)?;
     encoder.write_all(&PACK_MAGIC.to_be_bytes())?;
@@ -146,16 +141,16 @@ fn compress_dir_to_zst_mem(
                     continue;
                 };
 
-                write_pack_entry_header(&mut encoder, &entry.rel_path, entry.size)?;
+                write_pack_entry_header(&mut encoder, &entry.rel_path, bytes.len() as u64)?;
                 encoder.write_all(&bytes)
                     .map_err(|e| anyhow::anyhow!("pack write {}: {}", entry.rel_path, e))?;
 
                 file_list.push(FileListEntry {
                     name: entry.rel_path.clone(),
-                    size: entry.size,
+                    size: bytes.len() as u64,
                 });
 
-                bytes_processed += entry.size;
+                bytes_processed += bytes.len() as u64;
                 report_compress_progress(progress, total_bytes, bytes_processed, &mut last_pct);
             }
             entry_index = batch_end;
@@ -483,10 +478,9 @@ fn write_png_from_zst_mem(
         else if total_data_bytes > 32 * 1024 * 1024 { 16 * 1024 * 1024 }  // 16MB!
         else { 8 * 1024 * 1024 }  // 8MB min
     } else {
-        // Linux: buffers standards (déjà optimisés)
-        if total_data_bytes > 256 * 1024 * 1024 { 16 * 1024 * 1024 }
-        else if total_data_bytes > 16 * 1024 * 1024 { 8 * 1024 * 1024 }
-        else { (total_data_bytes / 2).max(65536).min(4 * 1024 * 1024) }
+        if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
+        else if total_data_bytes > 16 * 1024 * 1024 { 16 * 1024 * 1024 }
+        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) }
     };
     let mut w = BufWriter::with_capacity(buf_capacity, out_file);
 
@@ -546,7 +540,7 @@ fn write_idat_streaming<W: Write, R: Read>(
     file_list_chunk: Option<&[u8]>,
     encryptor: &mut Option<crate::crypto::StreamingEncryptor>,
     hmac_trailer_len: usize,
-    height: usize,
+    _height: usize,
     row_bytes: usize,
     _marker_end_pos: usize,
     total_data_bytes: usize,

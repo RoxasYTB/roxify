@@ -32,8 +32,8 @@ const GB_U64: u64 = 1024 * MB_U64;
 const MIN_RAM_BUDGET_MB: u64 = 1024; // Increased for Windows
 const DEFAULT_RAM_BUDGET_MB: u64 = 4096; // Increased for Windows
 const RESERVED_RAM_MB: u64 = 512; // Reduced to allow more usage
-const MIN_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024; // Increased for Windows
-const MAX_WRITE_BUFFER_BYTES: usize = 512 * 1024 * 1024; // Increased for Windows
+const MIN_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024;
+const MAX_WRITE_BUFFER_BYTES: usize = 512 * 1024 * 1024;
 
 // Performance Targets (under 10 seconds)
 const TARGET_ENCODE_TIME_SECS: u64 = 10;
@@ -280,9 +280,10 @@ fn get_ram_tier(available_mb: u64) -> &'static str {
     }
 }
 
-/// RAM réservée au système pour garder le PC réactif (idéalement 3–4 GB libres).
-/// On vise 4 GB pour rester confortable même si d'autres apps tournent.
-const SYSTEM_RESERVE_MB: u64 = 4096;
+/// RAM réservée au système pour garder le PC réactif.
+/// 2 GB suffit pour que le kernel + desktop restent fluides pendant un encode
+/// court. L'objectif est de saturer la RAM pour aller vite, pas d'être poli.
+const SYSTEM_RESERVE_MB: u64 = 2048;
 
 /// Calcule le budget RAM: utilise un maximum de RAM tout en réservant
 /// SYSTEM_RESERVE_MB (4 GB) pour le système. Sur une machine 16 GB → 12 GB

@@ -46,7 +46,6 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
 ) -> Result<Vec<String>, String> {
     let mut meta_file = File::open(png_path).map_err(|e| format!("open: {}", e))?;
     let (width, height, idat_ranges, total_expected) = parse_png_metadata(&mut meta_file)?;
-    let _window_log_value = extract_window_log_from_png(png_path, width, height, &idat_ranges).unwrap_or(31);
 
     if let Some(ref cb) = progress {
         cb(2, 100, "parsing_png");
@@ -275,18 +274,14 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     }
 
     let file = std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?;
-    let buf_capacity: usize = if cfg!(target_os = "windows") {
-        16 * 1024 * 1024
-    } else {
-        4 * 1024 * 1024
-    };
+    let buf_capacity: usize = 16 * 1024 * 1024;
     let mut writer = std::io::BufWriter::with_capacity(buf_capacity, file);
 
     writer
         .write_all(&peek[..read_so_far])
         .map_err(|e| format!("write legacy prefix: {}", e))?;
 
-    let mut buf = vec![0u8; 1024 * 1024];
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
     let mut written_bytes: u64 = read_so_far as u64;
     let mut last_pct: u64 = 10;
     loop {

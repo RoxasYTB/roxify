@@ -413,7 +413,6 @@ pub fn unpack_buffer_to_dir(
     files_opt: Option<&[String]>,
 ) -> Result<Vec<String>> {
     use std::convert::TryInto;
-    let mut written = Vec::new();
     let mut pos = 0usize;
 
     if buf.len() < 8 {
@@ -440,6 +439,9 @@ pub fn unpack_buffer_to_dir(
 
     let files_filter: Option<std::collections::HashSet<String>> =
         files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+
+    let mut to_write: Vec<(PathBuf, &[u8])> = Vec::with_capacity(file_count);
+    let mut written_names: Vec<String> = Vec::with_capacity(file_count);
 
     for _ in 0..file_count {
         if pos + 2 > buf.len() {
@@ -468,27 +470,27 @@ pub fn unpack_buffer_to_dir(
 
         if should_write {
             let content = &buf[pos..pos + size];
-            let p = Path::new(&name);
-            let mut safe = std::path::PathBuf::new();
-            for comp in p.components() {
-                if let std::path::Component::Normal(osstr) = comp {
-                    safe.push(osstr);
-                }
-            }
+            let safe = sanitize_pack_path(&name);
             let dest = out_dir.join(&safe);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
             }
-            std::fs::write(&dest, content)
-                .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
-            written.push(safe.to_string_lossy().to_string());
+            to_write.push((dest, content));
+            written_names.push(safe.to_string_lossy().to_string());
         }
 
         pos += size;
     }
 
-    Ok(written)
+    to_write
+        .par_iter()
+        .try_for_each(|(dest, content)| {
+            std::fs::write(dest, content)
+                .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
+        })?;
+
+    Ok(written_names)
 }
 
 fn unpack_entries_sequential(
@@ -660,10 +662,20 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
 
     let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
 
-    let flush_batch_files = |batch_files: &mut Vec<(PathBuf, Vec<u8>)>| -> Result<()> {
-        for (dest, data) in batch_files.drain(..) {
-            std::fs::write(&dest, &data)
-                .map_err(|e| anyhow::anyhow!("Cannot write batched file {:?}: {}", dest, e))?;
+    let flush_batch_parallel = |batch_files: &mut Vec<(PathBuf, Vec<u8>)>| -> Result<()> {
+        if batch_files.is_empty() {
+            return Ok(());
+        }
+        let results: Vec<Result<()>> = batch_files
+            .par_iter()
+            .map(|(dest, data)| {
+                std::fs::write(dest, data)
+                    .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
+            })
+            .collect();
+        batch_files.clear();
+        for r in results {
+            r?;
         }
         Ok(())
     };
@@ -709,6 +721,8 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
 
     file_count = read_pack_u32(reader)? as usize;
 
+    const BATCH_RAM_LIMIT: u64 = 512 * 1024 * 1024;
+
     for _ in 0..file_count {
         let name_len = read_pack_u16(reader)? as usize;
         let mut name_bytes = vec![0u8; name_len];
@@ -725,62 +739,26 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             let safe = sanitize_pack_path(&name);
             let dest = out_dir.join(&safe);
             if let Some(parent) = dest.parent() {
-                // Windows optimization: utiliser le cache pour éviter l'overhead NTFS
-                if cfg!(target_os = "windows") {
-                    if !created_dirs.contains(parent) {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
-                        created_dirs.insert(parent.to_path_buf());
-                    }
-                } else {
-                    // Linux: comportement standard
+                if !created_dirs.contains(parent) {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+                    created_dirs.insert(parent.to_path_buf());
                 }
             }
 
-            // Windows optimization: création de fichiers ultra-optimisée
-            let file = open_file_with_share(&dest)
-                .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+            let mut file_data = vec![0u8; size as usize];
+            reader.read_exact(&mut file_data)?;
+            bytes_processed += size;
 
-            let mut writer: Box<dyn std::io::Write> = if cfg!(target_os = "windows") && size > 1024 * 1024 {
-                // Windows: pour gros fichiers, écriture directe sans buffering
-                Box::new(file)
-            } else {
-                // Linux ou petits fichiers: buffering standard
-                Box::new(std::io::BufWriter::with_capacity(file_buffer_capacity(size), file))
-            };
-            // Windows optimization: extraction par batch pour éviter l'overhead NTFS
-            if cfg!(target_os = "windows") {
-                let mut file_data = vec![0u8; size as usize];
-                reader.read_exact(&mut file_data)?;
-
-                batch_files.push((dest.clone(), file_data));
-                bytes_processed += size;
-            } else {
-                copy_pack_bytes(
-                    reader,
-                    &mut writer,
-                    size,
-                    &mut bytes_processed,
-                    file_count,
-                    processed_files,
-                    total_expected,
-                    progress,
-                    &mut last_pct,
-                )?;
-            }
-            // Windows optimization: finalisation simplifiée pour éviter l'overhead
-            if cfg!(target_os = "windows") {
-                // Windows: pas de finalisation spéciale pour performance
-                drop(writer);
-            } else {
-                // Linux: finalisation standard (on ne peut pas downcast, donc on drop simplement)
-                drop(writer);
-            }
+            batch_files.push((dest, file_data));
             written.push(safe.to_string_lossy().to_string());
             if files_filter.is_some() {
                 requested = requested.saturating_sub(1);
+            }
+
+            let batch_bytes: u64 = batch_files.iter().map(|(_, d)| d.len() as u64).sum();
+            if batch_bytes >= BATCH_RAM_LIMIT || batch_files.len() >= 1024 {
+                flush_batch_parallel(&mut batch_files)?;
             }
         } else {
             discard_pack_bytes(
@@ -806,7 +784,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         );
 
         if requested == 0 {
-            flush_batch_files(&mut batch_files)?;
+            flush_batch_parallel(&mut batch_files)?;
             if let Some(cb) = progress {
                 cb(99, 100, "finishing");
             }
@@ -814,7 +792,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         }
     }
 
-    flush_batch_files(&mut batch_files)?;
+    flush_batch_parallel(&mut batch_files)?;
 
     if let Some(cb) = progress {
         cb(99, 100, "finishing");
@@ -976,19 +954,10 @@ fn sanitize_pack_path(name: &str) -> std::path::PathBuf {
 }
 
 fn file_buffer_capacity(size: u64) -> usize {
-    if cfg!(target_os = "windows") {
-        // Windows: buffers ultra-larges pour performance maximale
-        usize::try_from(size)
-            .unwrap_or(64 * 1024 * 1024)
-            .min(64 * 1024 * 1024) // 64MB max
-            .max(1024 * 1024)       // 1MB min
-    } else {
-        // Linux: buffers standards
-        usize::try_from(size)
-            .unwrap_or(4 * 1024 * 1024)
-            .min(4 * 1024 * 1024)
-            .max(8192)
-    }
+    usize::try_from(size)
+        .unwrap_or(16 * 1024 * 1024)
+        .min(16 * 1024 * 1024)
+        .max(256 * 1024)
 }
 
 fn finalize_output_file(
@@ -1085,34 +1054,31 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
     last_pct: &mut u64,
 ) -> Result<()> {
-    let mut buf = if cfg!(target_os = "windows") {
-        // Windows: buffers ultra-larges pour performance maximale
-        vec![0u8; 64 * 1024 * 1024] // 64MB buffer
+    let buf_size = if remaining > 64 * 1024 * 1024 {
+        16 * 1024 * 1024
+    } else if remaining > 4 * 1024 * 1024 {
+        4 * 1024 * 1024
     } else {
-        // Linux: buffer standard
-        vec![0u8; 1024 * 1024] // 1MB buffer
+        1024 * 1024
     };
+    let mut buf = vec![0u8; buf_size];
 
-    // Windows optimization: pour les très gros transferts, utiliser std::io::copy directement
-    if cfg!(target_os = "windows") && remaining > 100 * 1024 * 1024 {
+    if remaining > 64 * 1024 * 1024 {
         use std::io::copy;
         let mut temp_reader = reader.take(remaining);
         let copied = copy(&mut temp_reader, &mut *writer)
             .map_err(|e| anyhow::anyhow!("Fast copy error: {}", e))?;
         *bytes_processed = bytes_processed.saturating_add(copied as u64);
-
-        // Mettre à jour le progrès une seule fois pour éviter l'overhead
         if let Some(cb) = progress {
             let pct = unpack_progress_percent(total_expected, *bytes_processed, file_count, processed_files);
             if pct > *last_pct {
                 *last_pct = pct;
-                cb(pct, 100, "ultra-fast copy");
+                cb(pct, 100, "extracting");
             }
         }
         return Ok(());
     }
 
-    // Copie standard pour les petits fichiers
     while remaining > 0 {
         let take = remaining.min(buf.len() as u64) as usize;
         let read = reader
