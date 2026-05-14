@@ -34,12 +34,13 @@ fn effective_budget_mb() -> u64 {
 }
 
 /// In-flight read batch size — drives how many file bytes are held in RAM
-/// at once while reading the directory in parallel. We use ~60% of the
-/// effective RAM budget with NO upper clamp: the user explicitly wants
-/// the encoder to spend RAM for speed. Floored at 512 MiB so tiny budgets
-/// still produce a usable batch.
+/// at once while reading the directory in parallel. We use ~70% of the
+/// effective RAM budget (bumped from 60% in 1.16.4): RAM headroom is
+/// already managed by `auto_ram_budget_mb` taking `min(total − 4 GiB,
+/// available − 1 GiB)`, so being a bit more aggressive here is safe.
+/// Floored at 512 MiB so tiny budgets still produce a usable batch.
 fn parallel_io_batch_bytes() -> u64 {
-    let mb = (effective_budget_mb() * 60 / 100).max(512);
+    let mb = (effective_budget_mb() * 70 / 100).max(512);
     mb * MB
 }
 
@@ -145,19 +146,19 @@ fn compress_dir_to_zst_mem(
     let adaptive_window_log = select_zstd_window_log(total_bytes);
     let _ = encoder.window_log(adaptive_window_log);
 
-    // Size each zstdmt worker job to a SAFE fraction of the RAM budget.
+    // Size each zstdmt worker job to a fraction of the RAM budget.
     // Each worker keeps roughly 1.5 × jobSize live (input + output +
     // workspace), so total zstdmt residence is ≈ threads × 1.5 × jobSize.
-    // We target at most ~20% of the budget for the workers — the rest goes
-    // to the in-memory raw batch (up to ~60% of budget) and the zstd output
-    // Vec, leaving headroom so we don't OOM-kill when other apps grow
-    // during the encode. Per-job memory is also capped at 128 MiB regardless
-    // of budget: bigger jobs help compression marginally but blow RAM
+    // Bumped from budget/5 to budget/4 in 1.16.5 (and per-job cap from
+    // 128 to 192 MiB) — the auto_ram_budget_mb formula already accounts
+    // for MemAvailable headroom, so we can spend a bit more here without
+    // re-introducing the 1.16.3 OOM regression. Per-job cap remains
+    // bounded: bigger jobs help compression marginally but blow RAM
     // linearly with thread count on high-core machines.
     if threads > 1 {
         let budget_mb = effective_budget_mb();
-        let target_total_mb = (budget_mb / 5).max(64);
-        let per_worker_mb = (target_total_mb / threads as u64).clamp(8, 128);
+        let target_total_mb = (budget_mb / 4).max(64);
+        let per_worker_mb = (target_total_mb / threads as u64).clamp(8, 192);
         let job_size_bytes = (per_worker_mb * MB).min(u32::MAX as u64) as u32;
         let _ = encoder.set_parameter(zstd::stream::raw::CParameter::JobSize(job_size_bytes));
     }

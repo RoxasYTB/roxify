@@ -717,14 +717,16 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     file_count = read_pack_u32(reader)? as usize;
 
     // Batch limits scale with the RAM budget set by main.rs at CLI startup.
-    // ~50% of budget for the in-flight write batch (the other 50% covers the
-    // zstd decoder, IDAT scanner, kernel cache, file handles, etc.).
+    // Bumped to ~65% of budget in 1.16.5 (was 50% in 1.16.4). The decode
+    // path has no zstdmt workers eating RAM in parallel, so the headroom
+    // can go almost entirely to the in-flight write batch — bigger batches
+    // = more parallel rayon writes per flush = faster unpack.
     // Min 1 GiB, max 16 GiB to keep behavior reasonable on tiny / huge boxes.
     let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(8192);
-    let batch_ram_limit: u64 = (budget_mb / 2).clamp(1024, 16384) * 1024 * 1024;
+    let batch_ram_limit: u64 = (budget_mb * 65 / 100).clamp(1024, 16384) * 1024 * 1024;
     const BATCH_FILE_LIMIT: usize = 500_000;
 
     for _ in 0..file_count {

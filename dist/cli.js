@@ -21,7 +21,7 @@ async function loadJsEngine() {
     };
 }
 // Keep in sync with package.json#version.
-const VERSION = '1.16.4';
+const VERSION = '1.16.5';
 function getDirectorySize(dirPath) {
     let totalSize = 0;
     try {

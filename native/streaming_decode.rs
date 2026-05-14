@@ -19,19 +19,20 @@ fn effective_budget_mb() -> u64 {
 }
 
 /// Per-output-file BufWriter capacity, sized for the RAM budget.
-/// Big buffers reduce syscall count on huge files and give the OS
-/// more freedom to coalesce I/O. Floored at 16 MiB so small budgets
-/// still get a useful buffer.
+/// Bumped from budget/32 to budget/24 in 1.16.5 — bigger buffers reduce
+/// syscall count on huge files and give the OS more freedom to coalesce
+/// I/O. Floored at 16 MiB so small budgets still get a useful buffer.
 fn decode_writer_capacity() -> usize {
-    let mb = (effective_budget_mb() / 32).max(16);
+    let mb = (effective_budget_mb() / 24).max(16);
     (mb * 1024 * 1024) as usize
 }
 
 /// Intermediate decompression read buffer. The zstd decoder is fed
 /// in chunks of this size — bigger = fewer iterations + better SIMD
-/// utilization at the cost of RAM.
+/// utilization at the cost of RAM. Bumped budget/128 → budget/96 in
+/// 1.16.5 (≈ +33% buffer on a given budget).
 fn decode_read_buffer_size() -> usize {
-    let mb = (effective_budget_mb() / 128).max(4);
+    let mb = (effective_budget_mb() / 96).max(4);
     (mb * 1024 * 1024) as usize
 }
 
