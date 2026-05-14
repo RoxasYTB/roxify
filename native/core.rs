@@ -168,23 +168,64 @@ fn compute_entropy_sample(buf: &[u8]) -> f32 {
     ent
 }
 
-/// Honor the requested compression level (clamped to [1, 22]).
-/// Previous versions silently capped this down based on entropy + size, which
-/// hid >50% of the level's effective range. zstd handles memory windows on its
-/// own; if the user asks for 19 and the file is huge, they pay the cost.
-/// For incompressible data (entropy ≥ 7.5) we still drop to level 1 because
-/// higher levels burn CPU on data that won't compress anyway.
-fn compute_adaptive_level(buf: &[u8], requested_level: i32, _total_len: usize) -> i32 {
-    let clamped = requested_level.clamp(1, 22);
-    if clamped <= 1 {
-        return clamped;
-    }
+/// Adaptive level cap by file size × entropy.
+/// Bigger files + higher entropy ⇒ lower level — this keeps RAM bounded on
+/// huge inputs (LDM and large windows only kick in at level ≥ 3, so capping
+/// to 1 on >2 GiB inputs avoids blowing up memory on systems with limited
+/// RAM headroom). Returns `requested_level.min(size_cap)` so the user's
+/// level is honored when it's already low enough.
+fn compute_adaptive_level(buf: &[u8], requested_level: i32, total_len: usize) -> i32 {
     let entropy = compute_entropy_sample(buf);
-    if entropy >= 7.5 {
-        1
-    } else {
-        clamped
-    }
+
+    let size_cap = match total_len {
+        s if s > 2 * 1024 * 1024 * 1024 => 1,
+        s if s > 1024 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 3,
+            _ => 1,
+        },
+        s if s > 256 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 6,
+            e if e < 5.0 => 3,
+            _ => 1,
+        },
+        s if s > 64 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 12,
+            e if e < 5.0 => 6,
+            e if e < 7.0 => 3,
+            _ => 1,
+        },
+        s if s > 16 * 1024 * 1024 => match entropy {
+            e if e < 3.0 => 15,
+            e if e < 5.0 => 9,
+            e if e < 7.0 => 6,
+            e if e < 7.5 => 3,
+            _ => 1,
+        },
+        s if s > 1024 * 1024 => match entropy {
+            e if e < 3.0 => 19,
+            e if e < 5.0 => 12,
+            e if e < 6.5 => 6,
+            e if e < 7.5 => 3,
+            _ => 1,
+        },
+        s if s > 64 * 1024 => match entropy {
+            e if e < 4.0 => 9,
+            e if e < 6.0 => 6,
+            e if e < 7.5 => 3,
+            _ => 1,
+        },
+        s if s > 4096 => match entropy {
+            e if e < 5.0 => 6,
+            e if e < 7.0 => 3,
+            _ => 1,
+        },
+        _ => match entropy {
+            e if e < 6.0 => 3,
+            _ => 1,
+        },
+    };
+
+    requested_level.min(size_cap)
 }
 
 pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {
