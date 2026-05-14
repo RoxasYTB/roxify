@@ -145,6 +145,21 @@ fn compress_dir_to_zst_mem(
     let adaptive_window_log = select_zstd_window_log(total_bytes);
     let _ = encoder.window_log(adaptive_window_log);
 
+    // Aggressively size each zstdmt worker job to consume the RAM budget.
+    // Each worker keeps ~1.5 × jobSize in memory (input + output + workspace),
+    // so total zstdmt working set ≈ threads × 1.5 × jobSize. We target ~50%
+    // of the budget for zstdmt workers (the other 50% covers the raw batch
+    // and the output Vec). Min 8 MiB so small inputs don't degrade to a
+    // single big job. Larger jobs also compress better (more lookback per
+    // job) at the cost of memory.
+    if threads > 1 {
+        let budget_mb = effective_budget_mb();
+        let target_total_mb = (budget_mb / 2).max(64);
+        let per_worker_mb = (target_total_mb / threads as u64).max(8);
+        let job_size_bytes = (per_worker_mb * MB).min(u32::MAX as u64) as u32;
+        let _ = encoder.set_parameter(zstd::stream::raw::CParameter::JobSize(job_size_bytes));
+    }
+
     encoder.write_all(MAGIC)?;
     encoder.write_all(&PACK_MAGIC.to_be_bytes())?;
     encoder.write_all(&(entries.len() as u32).to_be_bytes())?;

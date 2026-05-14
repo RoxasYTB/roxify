@@ -958,9 +958,17 @@ fn sanitize_pack_path(name: &str) -> std::path::PathBuf {
 }
 
 fn file_buffer_capacity(size: u64) -> usize {
+    // Per-output BufWriter capacity. Was hard-clamped to 16 MiB; we now
+    // scale the upper bound with the effective RAM budget so big-memory
+    // systems get bigger write buffers (fewer syscalls, faster bulk I/O).
+    let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(2048);
+    let max_buf = ((budget_mb / 32).max(16) * 1024 * 1024) as usize;
     usize::try_from(size)
-        .unwrap_or(16 * 1024 * 1024)
-        .min(16 * 1024 * 1024)
+        .unwrap_or(max_buf)
+        .min(max_buf)
         .max(256 * 1024)
 }
 

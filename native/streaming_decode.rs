@@ -10,6 +10,31 @@ const HEADER_VERSION_V2: u8 = 2;
 
 type Aes256Ctr = ctr::Ctr64BE<aes::Aes256>;
 
+/// RAM budget set by main.rs at CLI startup (MiB). Fallback 2 GiB.
+fn effective_budget_mb() -> u64 {
+    std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(2048)
+}
+
+/// Per-output-file BufWriter capacity, sized for the RAM budget.
+/// Big buffers reduce syscall count on huge files and give the OS
+/// more freedom to coalesce I/O. Floored at 16 MiB so small budgets
+/// still get a useful buffer.
+fn decode_writer_capacity() -> usize {
+    let mb = (effective_budget_mb() / 32).max(16);
+    (mb * 1024 * 1024) as usize
+}
+
+/// Intermediate decompression read buffer. The zstd decoder is fed
+/// in chunks of this size — bigger = fewer iterations + better SIMD
+/// utilization at the cost of RAM.
+fn decode_read_buffer_size() -> usize {
+    let mb = (effective_budget_mb() / 128).max(4);
+    (mb * 1024 * 1024) as usize
+}
+
 pub type DecodeProgressCallback = Box<dyn Fn(u64, u64, &str) + Send>;
 
 pub fn streaming_decode_to_dir(png_path: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
@@ -274,14 +299,13 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
     }
 
     let file = std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?;
-    let buf_capacity: usize = 16 * 1024 * 1024;
-    let mut writer = std::io::BufWriter::with_capacity(buf_capacity, file);
+    let mut writer = std::io::BufWriter::with_capacity(decode_writer_capacity(), file);
 
     writer
         .write_all(&peek[..read_so_far])
         .map_err(|e| format!("write legacy prefix: {}", e))?;
 
-    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    let mut buf = vec![0u8; decode_read_buffer_size()];
     let mut written_bytes: u64 = read_so_far as u64;
     let mut last_pct: u64 = 10;
     loop {
@@ -668,7 +692,7 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
     progress: Option<DecodeProgressCallback>,
     total_expected: u64,
 ) -> Result<Vec<String>, String> {
-    let buf_reader = std::io::BufReader::with_capacity(8 * 1024 * 1024, reader);
+    let buf_reader = std::io::BufReader::with_capacity(decode_read_buffer_size().max(8 * 1024 * 1024), reader);
     let mut archive = tar::Archive::new(buf_reader);
     let mut written = Vec::new();
     let mut created_dirs = std::collections::HashSet::new();
@@ -750,16 +774,11 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
             }
             crate::io_advice::sync_and_drop(&file, entry_size);
         } else {
-            // Petits fichiers ou Linux: copie standard avec BufWriter
-            let buffer_size = if cfg!(target_os = "windows") {
-                (entry_size as usize)
-                    .min(16 * 1024 * 1024) // 16MB max buffer
-                    .max(256 * 1024)       // 256KB min buffer
-            } else {
-                (entry_size as usize)
-                    .min(16 * 1024 * 1024) // 16MB max buffer
-                    .max(256 * 1024)       // 256KB min buffer
-            };
+            // Petits fichiers ou Linux: copie standard avec BufWriter.
+            // Buffer plafonné par le budget RAM (decode_writer_capacity)
+            // au lieu du 16 MiB fixe, pour bénéficier de gros budgets.
+            let max_buf = decode_writer_capacity();
+            let buffer_size = (entry_size as usize).min(max_buf).max(256 * 1024);
 
             let mut f = std::io::BufWriter::with_capacity(
                 buffer_size,
