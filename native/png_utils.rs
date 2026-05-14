@@ -239,38 +239,25 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn validate_payload_deep(payload: &[u8]) -> bool {
+    // Cheap shape check: payload must start with a known enc flag (0..3) and
+    // — for the unencrypted variant — wrap a zstd frame or a ROX1 raw archive.
+    // Previously we fully decompressed the zstd frame to validate, which on a
+    // 2 GiB payload meant doing the real decode-work TWICE. The zstd frame
+    // magic (4 bytes) is enough to discriminate from random garbage at the
+    // pixel-scan stage.
     if payload.len() < 5 { return false; }
-    if payload[0] == 0x01 || payload[0] == 0x02 || payload[0] == 0x03 { return true; }
-    let compressed = if payload[0] == 0x00 { &payload[1..] } else { payload };
-    if compressed.starts_with(b"ROX1") { return true; }
-
-    // Windows optimization: essayer zstd avec différentes options
-    if crate::core::zstd_decompress_bytes(compressed, None).is_ok() {
-        return true;
-    }
-
-    // Fallback: vérifier si c'est du zstd brut sans magic
-    if compressed.len() > 4 {
-        // Essayer de décompresser avec window_log max pour Windows
-        if let Ok(mut decoder) = zstd::stream::Decoder::new(compressed) {
-            let _ = decoder.window_log_max(31);
-            if decoder.read_to_end(&mut Vec::new()).is_ok() {
-                return true;
-            }
-        }
-    }
-
-    false
+    let flag = payload[0];
+    if flag == 0x01 || flag == 0x02 || flag == 0x03 { return true; }
+    if flag != 0x00 { return false; }
+    let body = &payload[1..];
+    if body.starts_with(b"ROX1") { return true; }
+    // zstd frame magic: 0x28 0xB5 0x2F 0xFD (little-endian as written).
+    body.len() >= 4
+        && body[0] == 0x28 && body[1] == 0xB5 && body[2] == 0x2F && body[3] == 0xFD
 }
 
 fn find_pixel_header(raw: &[u8]) -> Result<usize, String> {
-    let magic = b"PXL1";
-    for i in 0..(raw.len().saturating_sub(magic.len())) {
-        if &raw[i..i + magic.len()] == magic {
-            return Ok(i);
-        }
-    }
-    Err("PIXEL_MAGIC not found".to_string())
+    memchr::memmem::find(raw, b"PXL1").ok_or_else(|| "PIXEL_MAGIC not found".to_string())
 }
 
 fn decode_to_rgb(png_data: &[u8]) -> Result<Vec<u8>, String> {
@@ -334,16 +321,13 @@ fn reconstruct_logical_pixels_from_nn(
         }
     }
 
-    // Si toujours pas trouvé, essayer une recherche linéaire simple
+    // Si toujours pas trouvé, recherche SIMD sur la version "flat RGB" du buffer.
     if header_row.is_none() {
         let flat_pixels: Vec<u8> = pixels.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
-        for i in 0..flat_pixels.len().saturating_sub(4) {
-            if flat_pixels[i..i+4] == magic {
-                let pixel_idx = i / 3;
-                header_row = Some(pixel_idx / w);
-                header_col = Some(pixel_idx % w);
-                break;
-            }
+        if let Some(i) = memchr::memmem::find(&flat_pixels, &magic) {
+            let pixel_idx = i / 3;
+            header_row = Some(pixel_idx / w);
+            header_col = Some(pixel_idx % w);
         }
     }
 
@@ -464,17 +448,8 @@ fn reconstruct_logical_pixels_from_nn(
 fn extract_payload_from_embedded_nn(png_data: &[u8]) -> Result<Vec<u8>, String> {
     let (pixels, width, height) = decode_to_rgba_grid(png_data)?;
     let logical_rgb = reconstruct_logical_pixels_from_nn(&pixels, width, height)?;
-    let pos = {
-        let magic = b"PXL1";
-        let mut found = None;
-        for i in 0..logical_rgb.len().saturating_sub(4) {
-            if &logical_rgb[i..i+4] == magic {
-                found = Some(i);
-                break;
-            }
-        }
-        found.ok_or("PXL1 not found in reconstructed pixels")?
-    };
+    let pos = memchr::memmem::find(&logical_rgb, b"PXL1")
+        .ok_or("PXL1 not found in reconstructed pixels")?;
     let header = parse_pixel_payload_header(&logical_rgb, pos)?;
     let end = header.payload_offset + header.payload_len;
     if end > logical_rgb.len() { return Err("Truncated payload in embedded NN".to_string()); }
@@ -590,12 +565,11 @@ fn extract_name_from_embedded_nn(png_data: &[u8]) -> Result<String, String> {
 fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
     let raw = decode_to_rgb(png_data).map_err(|e| format!("RGB decode: {}", e))?;
 
-    // Search for ROX1 magic in the pixel data
+    // Search for ROX1 magic in the pixel data (SIMD-accelerated).
     let rox1_magic = b"ROX1";
-    for i in 0..raw.len().saturating_sub(rox1_magic.len()) {
-        if &raw[i..i + rox1_magic.len()] == rox1_magic {
-            let compressed = &raw[i + 4..];
-
+    if let Some(i) = memchr::memmem::find(&raw, rox1_magic) {
+        let compressed = &raw[i + 4..];
+        {
             // Try zstd decompression with multiple window logs
             use std::io::Read;
             let wlog_candidates = [10, 11, 12, 13, 14, 15, 17, 19, 21, 22, 24, 25, 27, 29, 31];
@@ -688,66 +662,44 @@ fn extract_payload_from_idat_stream(png_data: &[u8]) -> Result<Vec<u8>, String> 
 }
 
 fn find_payload_in_decompressed_data(data: &[u8]) -> Result<Vec<u8>, String> {
-    // Approche 1: Chercher le magic bytes ROX1
-    let magic = b"ROX1";
-    for i in 0..data.len().saturating_sub(magic.len()) {
-        if &data[i..i+magic.len()] == magic {
-            // Parser le header ROX1
-            if i + 12 > data.len() {
-                return Err("Truncated ROX1 header".to_string());
-            }
+    // Approche 1 : ROX1 (SIMD).
+    if let Some(i) = memchr::memmem::find(data, b"ROX1") {
+        if i + 12 > data.len() {
+            return Err("Truncated ROX1 header".to_string());
+        }
+        let pack_magic = u32::from_be_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]);
+        if pack_magic != 0x524F5850 {
+            return Err("Invalid ROX1 pack magic".to_string());
+        }
+        let payload_start = i + 12;
+        if payload_start >= data.len() {
+            return Err("No payload data".to_string());
+        }
+        // Search-end via zstd-frame magic still uses SIMD memmem rather than O(n) byte loop.
+        let zstd_magic = [0x28u8, 0xb5, 0x2f, 0xfd];
+        let search_window = &data[payload_start + 10..];
+        let payload_end = memchr::memmem::find(search_window, &zstd_magic)
+            .map(|rel| payload_start + 10 + rel)
+            .unwrap_or(data.len());
+        return Ok(data[payload_start..payload_end].to_vec());
+    }
 
-            let pack_magic = u32::from_be_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]);
-            if pack_magic != 0x524F5850 { // "ROXP"
-                return Err("Invalid ROX1 pack magic".to_string());
-            }
-
-            let _entries_count = u32::from_be_bytes([data[i+8], data[i+9], data[i+10], data[i+11]]) as usize;
-
-            // Calculer la position du payload (après les headers)
-            let payload_start = i + 12;
-            if payload_start >= data.len() {
-                return Err("No payload data".to_string());
-            }
-
-            // Essayer de trouver la fin du payload en cherchant zstd magic
-            let zstd_magic = [0x28, 0xb5, 0x2f, 0xfd];
-            let mut payload_end = data.len();
-            for j in (payload_start + 10)..data.len().saturating_sub(4) {
-                if &data[j..j+4] == zstd_magic {
-                    payload_end = j;
-                    break;
-                }
-            }
-
+    // Approche 2 : PXL1 dans le buffer décompressé.
+    if let Some(i) = memchr::memmem::find(data, b"PXL1") {
+        if i + 8 > data.len() {
+            return Err("Truncated PXL1 header".to_string());
+        }
+        let payload_len = u32::from_be_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]) as usize;
+        let payload_start = i + 8;
+        let payload_end = (payload_start + payload_len).min(data.len());
+        if payload_end > payload_start {
             return Ok(data[payload_start..payload_end].to_vec());
         }
     }
 
-    // Approche 2: Chercher PXL1 (pour les données encodées dans les pixels)
-    let pxl1_magic = b"PXL1";
-    for i in 0..data.len().saturating_sub(pxl1_magic.len()) {
-        if &data[i..i+pxl1_magic.len()] == pxl1_magic {
-            // Parser le header PXL1
-            if i + 8 > data.len() {
-                return Err("Truncated PXL1 header".to_string());
-            }
-
-            let payload_len = u32::from_be_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]) as usize;
-            let payload_start = i + 8;
-            let payload_end = (payload_start + payload_len).min(data.len());
-
-            if payload_end > payload_start {
-                return Ok(data[payload_start..payload_end].to_vec());
-            }
-        }
-    }
-
-    // Approche 3: Retourner toutes les données après le premier octet non nul
-    for i in 0..data.len() {
-        if data[i] != 0 {
-            return Ok(data[i..].to_vec());
-        }
+    // Approche 3 : skip de zéros initiaux via memchr (au lieu d'une boucle O(n)).
+    if let Some(first_nonzero) = data.iter().position(|&b| b != 0) {
+        return Ok(data[first_nonzero..].to_vec());
     }
 
     Err("No payload found in IDAT data".to_string())
@@ -763,85 +715,46 @@ fn extract_payload_direct_from_pixels(png_data: &[u8]) -> Result<Vec<u8>, String
         rgb_data.extend_from_slice(&[pixel[0], pixel[1], pixel[2]]);
     }
 
-    let magic = b"PXL1";
-    for i in 0..rgb_data.len().saturating_sub(magic.len()) {
-        if &rgb_data[i..i+magic.len()] == magic {
-            // Parser le header PXL1
-            if i + 8 > rgb_data.len() {
-                return Err("Truncated PXL1 header".to_string());
+    if let Some(i) = memchr::memmem::find(&rgb_data, b"PXL1") {
+        if i + 8 > rgb_data.len() {
+            return Err("Truncated PXL1 header".to_string());
+        }
+        let payload_len = u32::from_be_bytes([
+            rgb_data[i+4], rgb_data[i+5], rgb_data[i+6], rgb_data[i+7]
+        ]) as usize;
+        let payload_start = i + 8;
+        let payload_end = (payload_start + payload_len).min(rgb_data.len());
+        if payload_end > payload_start {
+            let mut payload = rgb_data[payload_start..payload_end].to_vec();
+            if payload.len() >= 3 && payload[0..3] == [0xef, 0xbb, 0xbf] {
+                payload = payload[3..].to_vec();
             }
-
-            let payload_len = u32::from_be_bytes([
-                rgb_data[i+4],
-                rgb_data[i+5],
-                rgb_data[i+6],
-                rgb_data[i+7]
-            ]) as usize;
-
-            let payload_start = i + 8;
-            let payload_end = (payload_start + payload_len).min(rgb_data.len());
-
-            if payload_end > payload_start {
-                let mut payload = rgb_data[payload_start..payload_end].to_vec();
-
-                // Corriger le BOM UTF-8 au début du payload
-                if payload.len() >= 3 && payload[0..3] == [0xef, 0xbb, 0xbf] {
-                    // BOM UTF-8 détecté, le supprimer
-                    payload = payload[3..].to_vec();
-                }
-
-                return Ok(payload);
-            }
+            return Ok(payload);
         }
     }
 
-    // Si PXL1 n'est pas trouvé, chercher ROX1
-    let rox1_magic = b"ROX1";
-    for i in 0..rgb_data.len().saturating_sub(rox1_magic.len()) {
-        if &rgb_data[i..i+rox1_magic.len()] == rox1_magic {
-            // Parser le header ROX1
-            if i + 12 > rgb_data.len() {
-                return Err("Truncated ROX1 header".to_string());
-            }
-
-            let pack_magic = u32::from_be_bytes([
-                rgb_data[i+4],
-                rgb_data[i+5],
-                rgb_data[i+6],
-                rgb_data[i+7]
-            ]);
-
-            if pack_magic != 0x524F5850 { // "ROXP"
-                return Err("Invalid ROX1 pack magic".to_string());
-            }
-
-            let _entries_count = u32::from_be_bytes([
-                rgb_data[i+8],
-                rgb_data[i+9],
-                rgb_data[i+10],
-                rgb_data[i+11]
-            ]) as usize;
-
-            // Calculer la position du payload
-            let payload_start = i + 12;
-            if payload_start >= rgb_data.len() {
-                return Err("No payload data".to_string());
-            }
-
-            // Estimer la fin du payload
-            let estimated_payload_size = rgb_data.len() - payload_start - 50;
-            let payload_end = (payload_start + estimated_payload_size).min(rgb_data.len());
-
-            let mut payload = rgb_data[payload_start..payload_end].to_vec();
-
-            // Corriger le BOM UTF-8 au début du payload
-            if payload.len() >= 3 && payload[0..3] == [0xef, 0xbb, 0xbf] {
-                // BOM UTF-8 détecté, le supprimer
-                payload = payload[3..].to_vec();
-            }
-
-            return Ok(payload);
+    // Fallback : ROX1 (SIMD).
+    if let Some(i) = memchr::memmem::find(&rgb_data, b"ROX1") {
+        if i + 12 > rgb_data.len() {
+            return Err("Truncated ROX1 header".to_string());
         }
+        let pack_magic = u32::from_be_bytes([
+            rgb_data[i+4], rgb_data[i+5], rgb_data[i+6], rgb_data[i+7]
+        ]);
+        if pack_magic != 0x524F5850 {
+            return Err("Invalid ROX1 pack magic".to_string());
+        }
+        let payload_start = i + 12;
+        if payload_start >= rgb_data.len() {
+            return Err("No payload data".to_string());
+        }
+        let estimated_payload_size = rgb_data.len().saturating_sub(payload_start + 50);
+        let payload_end = (payload_start + estimated_payload_size).min(rgb_data.len());
+        let mut payload = rgb_data[payload_start..payload_end].to_vec();
+        if payload.len() >= 3 && payload[0..3] == [0xef, 0xbb, 0xbf] {
+            payload = payload[3..].to_vec();
+        }
+        return Ok(payload);
     }
 
     Err("No payload found in RGB pixel data".to_string())
@@ -861,18 +774,15 @@ fn extract_payload_direct_flexible(png_data: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
 
-    // Fallback: chercher n'importe quel motif ressemblant à PXL1
+    // Fallback : balayer toutes les positions PXL1 (SIMD memmem) au cas où
+    // la première occurrence ne parse pas (préfixe parasite v1.14.x).
     if let Ok(raw) = decode_to_rgb(png_data) {
-        let magic = b"PXL1";
-        for i in 0..(raw.len().saturating_sub(magic.len() + 10)) {
-            if &raw[i..i + magic.len()] == magic {
-                // Essayer de parser à partir de cette position
-                if let Ok(header) = parse_pixel_payload_header(&raw, i) {
-                    let end = header.payload_offset + header.payload_len;
-                    if end <= raw.len() {
-                        let payload = raw[header.payload_offset..end].to_vec();
-                        return Ok(payload);
-                    }
+        for i in memchr::memmem::find_iter(&raw, b"PXL1") {
+            if i + 10 > raw.len() { continue; }
+            if let Ok(header) = parse_pixel_payload_header(&raw, i) {
+                let end = header.payload_offset + header.payload_len;
+                if end <= raw.len() {
+                    return Ok(raw[header.payload_offset..end].to_vec());
                 }
             }
         }

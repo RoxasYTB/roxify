@@ -962,6 +962,7 @@ dependencies = [
  "jwalk",
  "libc",
  "libsais",
+ "memchr",
  "memmap2",
  "mimalloc",
  "napi",

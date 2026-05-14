@@ -166,15 +166,22 @@ function spawnRustCLI(
     let triedExtract = false;
     let tempExe: string | undefined;
     let stdout = '';
+    // Keep a tail of recent stderr lines so a non-zero exit produces an
+    // actionable error message instead of bare "exited with status 1".
+    const STDERR_TAIL = 32;
+    const stderrTail: string[] = [];
+    const pushStderr = (line: string) => {
+      stderrTail.push(line);
+      if (stderrTail.length > STDERR_TAIL) stderrTail.shift();
+    };
 
     const runSpawn = (exePath: string) => {
       let proc;
-      const hasProgress = !!options?.onProgress;
+      // Always pipe stderr so we can surface failure context, even when no
+      // progress callback is registered.
       const stdio: any = options?.collectStdout
-        ? ['pipe', 'pipe', hasProgress ? 'pipe' : 'inherit']
-        : hasProgress
-          ? ['pipe', 'inherit', 'pipe']
-          : 'inherit';
+        ? ['pipe', 'pipe', 'pipe']
+        : ['pipe', 'inherit', 'pipe'];
       try {
         proc = spawn(exePath, args, { stdio });
       } catch (err: any) {
@@ -190,17 +197,19 @@ function spawnRustCLI(
         proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
       }
 
-      if (hasProgress && proc.stderr) {
+      if (proc.stderr) {
+        const hasProgress = !!options?.onProgress;
         let stderrBuf = '';
         proc.stderr.on('data', (chunk: Buffer) => {
           stderrBuf += chunk.toString();
           const lines = stderrBuf.split('\n');
           stderrBuf = lines.pop() || '';
           for (const line of lines) {
-            const match = line.match(/^PROGRESS:(\d+):(\d+):(.+)$/);
+            const match = hasProgress ? line.match(/^PROGRESS:(\d+):(\d+):(.+)$/) : null;
             if (match) {
-              options.onProgress!(Number(match[1]), Number(match[2]), match[3]);
+              options!.onProgress!(Number(match[1]), Number(match[2]), match[3]);
             } else if (line.trim()) {
+              pushStderr(line);
               process.stderr.write(line + '\n');
             }
           }
@@ -219,7 +228,10 @@ function spawnRustCLI(
       proc.on('close', (code, signal) => {
         if (tempExe) { try { unlinkSync(tempExe); } catch (e) { } }
         if (code === 0 || (code === null && signal === null)) resolve(stdout);
-        else reject(new Error(`Rust CLI exited with status ${code ?? signal}`));
+        else {
+          const trailer = stderrTail.length > 0 ? `\n  stderr tail:\n    ${stderrTail.join('\n    ')}` : '';
+          reject(new Error(`Rust CLI exited with status ${code ?? signal}${trailer}`));
+        }
       });
     };
 
@@ -242,12 +254,10 @@ export async function encodeWithRustCLI(
 
   const args = ['encode', '--level', String(compressionLevel)];
 
-  if (name) {
-    try {
-      const helpOut = execSync(`"${cliPath}" --help`, { encoding: 'utf8', timeout: 2000 });
-      if (helpOut && helpOut.includes('--name')) args.push('--name', name);
-    } catch (e) { }
-  }
+  // --name is supported on all roxify_native binaries shipped since 1.14.x.
+  // We used to spawn `--help` here to feature-detect, which cost a full
+  // process fork per encode call. Just pass it.
+  if (name) args.push('--name', name);
 
   if (passphrase) {
     args.push('--passphrase', passphrase);

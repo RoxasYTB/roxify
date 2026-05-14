@@ -395,6 +395,12 @@ pub fn extract_payload_from_png(png_buffer: Buffer) -> Result<Buffer> {
 
 #[cfg(not(test))]
 #[napi]
+pub fn extract_name_from_png(png_buffer: Buffer) -> Option<String> {
+    png_utils::extract_name_from_png(&png_buffer)
+}
+
+#[cfg(not(test))]
+#[napi]
 pub fn extract_file_list_from_pixels(png_buffer: Buffer) -> Result<String> {
     png_utils::extract_file_list_from_pixels(&png_buffer)
         .map_err(|e| Error::from_reason(e))

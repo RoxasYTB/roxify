@@ -44,6 +44,7 @@ rand = "0.8"
 sha2 = "0.10"
 simd-adler32 = "0.3"
 flate2 = "1.0"
+memchr = "2.7"
 
 bytemuck = { version = "1.14", features = ["derive"] }
 parking_lot = "0.12"

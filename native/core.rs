@@ -9,16 +9,11 @@ pub struct PlainScanResult {
 }
 
 pub fn scan_pixels_bytes(buf: &[u8], channels: usize, marker_bytes: Option<&[u8]>) -> PlainScanResult {
-    let magic = b"ROX1";
-
-    let magic_positions: Vec<u32> = if buf.len() >= 4 {
-        (0..(buf.len() - 3))
-            .into_par_iter()
-            .filter_map(|i| if &buf[i..i + 4] == magic { Some(i as u32) } else { None })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // ROX1 lookup: SIMD-accelerated memmem beats par_iter over a 4-byte equality
+    // (the Rayon orchestration cost dominates the actual compare).
+    let magic_positions: Vec<u32> = memchr::memmem::find_iter(buf, b"ROX1")
+        .map(|i| i as u32)
+        .collect();
 
     let markers: Vec<[u8; 3]> = match marker_bytes {
         Some(bytes) if !bytes.is_empty() => {
@@ -30,22 +25,20 @@ pub fn scan_pixels_bytes(buf: &[u8], channels: usize, marker_bytes: Option<&[u8]
         _ => Vec::new(),
     };
 
-    let marker_positions = if markers.is_empty() {
+    let marker_positions = if markers.is_empty() || channels < 3 || buf.len() < 3 {
         Vec::new()
     } else {
-        let markers = Arc::new(markers);
-        let ch = channels as usize;
-        if ch < 3 || buf.len() < 3 {
-            Vec::new()
-        } else {
-            let pixel_count = buf.len() / ch;
+        let ch = channels;
+        let pixel_count = buf.len() / ch;
+        // For multi-marker matching, iterate once and check each marker.
+        // We keep Rayon here only when there are many markers AND a big buffer.
+        if markers.len() > 4 && pixel_count > 100_000 {
+            let markers = Arc::new(markers);
             (0..pixel_count)
                 .into_par_iter()
                 .filter_map(|i| {
                     let base = i * ch;
-                    if base + 3 > buf.len() {
-                        return None;
-                    }
+                    if base + 3 > buf.len() { return None; }
                     for m in markers.iter() {
                         if buf[base] == m[0] && buf[base + 1] == m[1] && buf[base + 2] == m[2] {
                             return Some(i as u32);
@@ -54,6 +47,19 @@ pub fn scan_pixels_bytes(buf: &[u8], channels: usize, marker_bytes: Option<&[u8]
                     None
                 })
                 .collect()
+        } else {
+            let mut out = Vec::new();
+            for i in 0..pixel_count {
+                let base = i * ch;
+                if base + 3 > buf.len() { break; }
+                for m in &markers {
+                    if buf[base] == m[0] && buf[base + 1] == m[1] && buf[base + 2] == m[2] {
+                        out.push(i as u32);
+                        break;
+                    }
+                }
+            }
+            out
         }
     };
 
@@ -162,58 +168,23 @@ fn compute_entropy_sample(buf: &[u8]) -> f32 {
     ent
 }
 
-fn compute_adaptive_level(buf: &[u8], requested_level: i32, total_len: usize) -> i32 {
+/// Honor the requested compression level (clamped to [1, 22]).
+/// Previous versions silently capped this down based on entropy + size, which
+/// hid >50% of the level's effective range. zstd handles memory windows on its
+/// own; if the user asks for 19 and the file is huge, they pay the cost.
+/// For incompressible data (entropy ≥ 7.5) we still drop to level 1 because
+/// higher levels burn CPU on data that won't compress anyway.
+fn compute_adaptive_level(buf: &[u8], requested_level: i32, _total_len: usize) -> i32 {
+    let clamped = requested_level.clamp(1, 22);
+    if clamped <= 1 {
+        return clamped;
+    }
     let entropy = compute_entropy_sample(buf);
-
-    let size_cap = match total_len {
-        s if s > 2 * 1024 * 1024 * 1024 => 1,
-        s if s > 1024 * 1024 * 1024 => match entropy {
-            e if e < 3.0 => 3,
-            _ => 1,
-        },
-        s if s > 256 * 1024 * 1024 => match entropy {
-            e if e < 3.0 => 6,
-            e if e < 5.0 => 3,
-            _ => 1,
-        },
-        s if s > 64 * 1024 * 1024 => match entropy {
-            e if e < 3.0 => 12,
-            e if e < 5.0 => 6,
-            e if e < 7.0 => 3,
-            _ => 1,
-        },
-        s if s > 16 * 1024 * 1024 => match entropy {
-            e if e < 3.0 => 15,
-            e if e < 5.0 => 9,
-            e if e < 7.0 => 6,
-            e if e < 7.5 => 3,
-            _ => 1,
-        },
-        s if s > 1024 * 1024 => match entropy {
-            e if e < 3.0 => 19,
-            e if e < 5.0 => 12,
-            e if e < 6.5 => 6,
-            e if e < 7.5 => 3,
-            _ => 1,
-        },
-        s if s > 64 * 1024 => match entropy {
-            e if e < 4.0 => 9,
-            e if e < 6.0 => 6,
-            e if e < 7.5 => 3,
-            _ => 1,
-        },
-        s if s > 4096 => match entropy {
-            e if e < 5.0 => 6,
-            e if e < 7.0 => 3,
-            _ => 1,
-        },
-        _ => match entropy {
-            e if e < 6.0 => 3,
-            _ => 1,
-        },
-    };
-
-    requested_level.min(size_cap)
+    if entropy >= 7.5 {
+        1
+    } else {
+        clamped
+    }
 }
 
 pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {

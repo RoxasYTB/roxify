@@ -26,32 +26,14 @@ use crate::encoder::ImageFormat;
 use std::path::PathBuf;
 
 const MB_U64: u64 = 1024 * 1024;
-const GB_U64: u64 = 1024 * MB_U64;
 
-// Adaptive RAM Budget Configuration - Optimized for Windows
+// RAM budget tunables (the rest of the previously declared constants —
+// COMPRESSION_*, RAM_TIER_*, TARGET_*_TIME_SECS, RESERVED_RAM_MB,
+// DEFAULT_RAM_BUDGET_MB, FAST_COMPRESSION_THRESHOLD_MB, STREAMING_THRESHOLD_MB —
+// were dead code from an earlier prototype and have been removed).
 const MIN_RAM_BUDGET_MB: u64 = 512;
-const DEFAULT_RAM_BUDGET_MB: u64 = 65536;
-const RESERVED_RAM_MB: u64 = 256;
 const MIN_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WRITE_BUFFER_BYTES: usize = 1024 * 1024 * 1024;
-
-// Performance Targets (under 10 seconds)
-const TARGET_ENCODE_TIME_SECS: u64 = 10;
-const TARGET_DECODE_TIME_SECS: u64 = 10;
-const FAST_COMPRESSION_THRESHOLD_MB: u64 = 100;
-const STREAMING_THRESHOLD_MB: u64 = 500;
-
-// Adaptive Compression Levels - Ultra-optimized for Windows
-const COMPRESSION_ULTRA_FAST: i32 = 1; // < 100MB files, lots of RAM
-const COMPRESSION_FAST: i32 = 1; // < 500MB files - Windows optimization
-const COMPRESSION_BALANCED: i32 = 1; // Windows optimization for 500MB-2GB
-const COMPRESSION_SMALL_FILES: i32 = 1; // Windows optimization for many small files
-
-// RAM Usage Tiers - Optimized for Windows performance
-const RAM_TIER_ULTRA: u64 = 8192; // 8GB+ - Aggressive optimization (lowered threshold)
-const RAM_TIER_HIGH: u64 = 4096; // 4GB+ - Fast mode (lowered threshold)
-const RAM_TIER_MEDIUM: u64 = 2048; // 2GB+ - Balanced (lowered threshold)
-const RAM_TIER_LOW: u64 = 1024; // 1GB+ - Conservative (lowered threshold)
 
 #[derive(Parser)]
 #[command(author, version)]
@@ -88,7 +70,6 @@ enum Commands {
     },
     Scan {
         input: PathBuf,
-        #[arg(short, long, value_name = "FILE")]
         #[arg(short, long, default_value_t = 4)]
         channels: usize,
         #[arg(short, long, value_delimiter = ',')]
@@ -264,84 +245,15 @@ fn parse_total_ram_mb() -> Option<u64> {
     }
 }
 
-fn get_cpu_cores() -> usize {
-    std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(4)
-}
-
-/// Determine RAM tier based on available memory
-fn get_ram_tier(available_mb: u64) -> &'static str {
-    match available_mb {
-        x if x >= RAM_TIER_ULTRA => "ultra",
-        x if x >= RAM_TIER_HIGH => "high",
-        x if x >= RAM_TIER_MEDIUM => "medium",
-        _ => "low",
-    }
-}
-
-/// RAM réservée au système pour garder le PC réactif.
-/// 2 GB suffit pour que le kernel + desktop restent fluides pendant un encode
-/// court. L'objectif est de saturer la RAM pour aller vite, pas d'être poli.
+/// RAM réservée au système pour garder le PC réactif pendant un encode/decode.
 const SYSTEM_RESERVE_MB: u64 = 512;
 
-/// Calcule le budget RAM: utilise un maximum de RAM tout en réservant
-/// SYSTEM_RESERVE_MB (4 GB) pour le système. Sur une machine 16 GB → 12 GB
-/// de budget. Sur 32 GB → 28 GB. Sur 8 GB → 4 GB. Sur 4 GB → MIN.
+/// Use a large fraction of physical RAM as the working budget, while keeping
+/// SYSTEM_RESERVE_MB free so the OS stays responsive. On a 16 GB box → ~15.5 GB
+/// budget; on 4 GB → MIN_RAM_BUDGET_MB.
 fn auto_ram_budget_mb() -> u64 {
     let total_mb = parse_total_ram_mb().unwrap_or(8192);
-    // Soustrait la réserve système. On n'utilise PAS "available" parce que
-    // sur des sessions longues, l'utilisateur peut libérer/occuper de la RAM
-    // pendant l'encode — partir du total physique est plus stable.
-    let budget = total_mb.saturating_sub(SYSTEM_RESERVE_MB);
-    budget.max(MIN_RAM_BUDGET_MB)
-}
-
-/// Auto-select optimal compression level based on file size and available RAM
-fn auto_compression_level(file_size_mb: u64, ram_budget_mb: u64) -> i32 {
-    // Ultra-fast for small files with lots of RAM
-    if file_size_mb < FAST_COMPRESSION_THRESHOLD_MB && ram_budget_mb >= RAM_TIER_HIGH {
-        return COMPRESSION_ULTRA_FAST;
-    }
-
-    // Fast mode for medium files
-    if file_size_mb < STREAMING_THRESHOLD_MB {
-        return COMPRESSION_FAST;
-    }
-
-    // Balanced for large files
-    if ram_budget_mb >= RAM_TIER_MEDIUM {
-        return COMPRESSION_BALANCED;
-    }
-
-    // Conservative for low RAM
-    COMPRESSION_SMALL_FILES
-}
-
-/// Determine if streaming mode should be used
-fn should_use_streaming(file_size_mb: u64, ram_budget_mb: u64) -> bool {
-    // Force streaming for very large files
-    if file_size_mb >= 2048 {
-        // 2GB+
-        return true;
-    }
-
-    // Use streaming when file is larger than 60% of RAM budget
-    let threshold = ram_budget_mb.saturating_mul(60) / 100;
-    file_size_mb >= threshold
-}
-
-/// Get optimal thread count for zstd based on RAM and CPU
-fn optimal_zstd_threads(file_size_mb: u64, _ram_budget_mb: u64) -> i32 {
-    let cpu_cores = get_cpu_cores();
-    let ram_tier = get_ram_tier(parse_total_ram_mb().unwrap_or(4096));
-
-    match ram_tier {
-        "ultra" => cpu_cores.min(16) as i32,
-        "high" => cpu_cores.min(8) as i32,
-        _ if file_size_mb > 1000 => cpu_cores.min(4) as i32,
-        _ => cpu_cores.min(2) as i32,
-    }
+    total_mb.saturating_sub(SYSTEM_RESERVE_MB).max(MIN_RAM_BUDGET_MB)
 }
 
 fn resolve_ram_budget_mb(cli_value: Option<u64>) -> u64 {

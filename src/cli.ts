@@ -36,7 +36,8 @@ async function loadJsEngine() {
 
 type VFSIndexEntry = { path: string; size: number; offset: number };
 
-const VERSION = '1.14.9';
+// Keep in sync with package.json#version.
+const VERSION = '1.15.3';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
@@ -106,7 +107,6 @@ Commands:
 Options:
   --image                   Use PNG container (default)
   --sound                   Use WAV audio container (smaller overhead, faster)
-  --bwt-ans                 Use BWT-ANS compression instead of Zstd
   -p, --passphrase <pass>   Use passphrase (AES-256-GCM)
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
@@ -173,9 +173,6 @@ function parseArgs(args: string[]) {
       } else if (key === 'force-ts') {
         parsed.forceTs = true;
         i++;
-      } else if (key === 'bwt-ans') {
-        parsed.compression = 'bwt-ans';
-        i++;
       } else if (key === 'lossy-resilient') {
         parsed.lossyResilient = true;
         i++;
@@ -233,9 +230,10 @@ function parseArgs(args: string[]) {
           i += 2;
           break;
         case 'm':
+          // -m / --mode (only "screenshot" is supported); kept for compat,
+          // value is consumed but ignored.
           i += 2;
           break;
-
         case 'e':
           parsed.encrypt = value;
           i += 2;
@@ -251,7 +249,6 @@ function parseArgs(args: string[]) {
         case 's':
           parsed.sizes = true;
           i += 1;
-          break;
           break;
         case 'd':
           parsed.debugDir = value;
@@ -338,7 +335,7 @@ async function encodeCommand(args: string[]) {
     }
   } catch (e) { }
 
-  if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound' && parsed.compression !== 'bwt-ans') {
+  if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound') {
     try {
       console.log(
         `Encoding to ${resolvedOutput} (Using native Rust encoder)\n`,
@@ -478,7 +475,6 @@ async function encodeCommand(args: string[]) {
     if (parsed.verbose) options.verbose = true;
 
     if (parsed.noCompress) options.compression = 'none';
-    if (parsed.compression === 'bwt-ans') options.compression = 'bwt-ans';
     if (parsed.passphrase) {
       options.passphrase = parsed.passphrase;
       options.encrypt = parsed.encrypt || 'aes';

@@ -135,9 +135,23 @@ pub fn try_decrypt(buf: &[u8], passphrase: Option<&str>) -> Result<Vec<u8>> {
     }
 }
 
+/// Derive a 32-byte cipher key from passphrase+salt (PBKDF2-HMAC-SHA256).
+/// Kept under its historical name for compatibility with callers.
 pub fn derive_aes_ctr_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
     let mut key = [0u8; 32];
     pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, PBKDF2_ITERS, &mut key);
+    key
+}
+
+/// Derive a 32-byte MAC key independent from the cipher key.
+/// Same passphrase but with a per-purpose suffix on the salt, so even an
+/// attacker who recovers the cipher key learns nothing about the MAC key.
+fn derive_aes_ctr_mac_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
+    let mut salt_mac = Vec::with_capacity(salt.len() + 4);
+    salt_mac.extend_from_slice(salt);
+    salt_mac.extend_from_slice(b"\x00MAC");
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), &salt_mac, PBKDF2_ITERS, &mut key);
     key
 }
 
@@ -154,16 +168,21 @@ impl StreamingEncryptor {
         let mut iv = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut iv);
 
-        let key = derive_aes_ctr_key(passphrase, &salt);
-        let cipher = Aes256Ctr::new_from_slices(&key, &iv)
+        let cipher_key = derive_aes_ctr_key(passphrase, &salt);
+        let mac_key = derive_aes_ctr_mac_key(passphrase, &salt);
+        let cipher = Aes256Ctr::new_from_slices(&cipher_key, &iv)
             .map_err(|e| anyhow!("AES-CTR init: {}", e))?;
-        let hmac = <HmacSha256 as Mac>::new_from_slice(&key)
+        let mut hmac = <HmacSha256 as Mac>::new_from_slice(&mac_key)
             .map_err(|e| anyhow!("HMAC init: {}", e))?;
 
         let mut header = Vec::with_capacity(1 + 16 + 16);
         header.push(ENC_AES_CTR);
         header.extend_from_slice(&salt);
         header.extend_from_slice(&iv);
+
+        // MAC covers the header (flag + salt + IV) so an attacker can't
+        // swap IVs without breaking verification.
+        hmac.update(&header);
 
         Ok(Self { cipher, hmac, header })
     }
@@ -187,21 +206,24 @@ pub fn decrypt_aes_ctr(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     if data.len() < 1 + 16 + 16 + 32 {
         return Err(anyhow!("Invalid AES-CTR payload length"));
     }
+    let header = &data[..33];
     let salt = &data[1..17];
     let iv = &data[17..33];
     let hmac_tag = &data[data.len() - 32..];
     let ciphertext = &data[33..data.len() - 32];
 
-    let key = derive_aes_ctr_key(passphrase, salt);
+    let cipher_key = derive_aes_ctr_key(passphrase, salt);
+    let mac_key = derive_aes_ctr_mac_key(passphrase, salt);
 
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(&key)
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(&mac_key)
         .map_err(|e| anyhow!("HMAC init: {}", e))?;
+    mac.update(header);
     mac.update(ciphertext);
     mac.verify_slice(hmac_tag)
         .map_err(|_| anyhow!("HMAC verification failed - wrong passphrase or corrupted data"))?;
 
     let mut decrypted = ciphertext.to_vec();
-    let mut cipher = Aes256Ctr::new_from_slices(&key, iv)
+    let mut cipher = Aes256Ctr::new_from_slices(&cipher_key, iv)
         .map_err(|e| anyhow!("AES-CTR init: {}", e))?;
     cipher.apply_keystream(&mut decrypted);
 

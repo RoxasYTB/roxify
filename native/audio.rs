@@ -11,10 +11,27 @@ const SAMPLE_RATE: u32 = 44100;
 const BITS_PER_SAMPLE: u16 = 8;
 const NUM_CHANNELS: u16 = 1;
 
+/// Maximum payload that fits in a RIFF data sub-chunk (u32 chunk size header).
+/// Above this we'd silently corrupt the file via integer wrap; callers should
+/// fall back to the PNG container instead.
+const WAV_MAX_DATA_BYTES: usize = (u32::MAX as usize) - WAV_HEADER_SIZE;
+
 /// Pack raw bytes into a WAV file (8-bit PCM, mono, 44100 Hz).
 /// The bytes are stored directly as unsigned PCM samples.
 /// Returns the complete WAV file as a Vec<u8>.
+/// Panics if `data` exceeds [`WAV_MAX_DATA_BYTES`]; use the fallible
+/// [`try_bytes_to_wav`] for caller-side handling.
 pub fn bytes_to_wav(data: &[u8]) -> Vec<u8> {
+    try_bytes_to_wav(data).expect("WAV payload exceeds 4 GiB - 44 B limit")
+}
+
+pub fn try_bytes_to_wav(data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() > WAV_MAX_DATA_BYTES {
+        return Err(format!(
+            "WAV payload too large: {} B exceeds 4 GiB - 44 B limit",
+            data.len()
+        ));
+    }
     let data_size = data.len() as u32;
     let file_size = WAV_HEADER_SIZE as u32 - 8 + data_size; // RIFF chunk size
 
@@ -43,7 +60,7 @@ pub fn bytes_to_wav(data: &[u8]) -> Vec<u8> {
     wav.extend_from_slice(&data_size.to_le_bytes());
     wav.extend_from_slice(data);
 
-    wav
+    Ok(wav)
 }
 
 /// Extract raw bytes from a WAV file.
@@ -77,7 +94,8 @@ pub fn wav_to_bytes(wav: &[u8]) -> Result<Vec<u8>, String> {
 
         if chunk_id == b"data" {
             let data_start = offset + 8;
-            let data_end = data_start + chunk_size;
+            let data_end = data_start.checked_add(chunk_size)
+                .ok_or_else(|| "WAV data chunk size overflows usize".to_string())?;
             if data_end > wav.len() {
                 // Allow truncation: return what we have
                 return Ok(wav[data_start..].to_vec());
@@ -86,9 +104,13 @@ pub fn wav_to_bytes(wav: &[u8]) -> Result<Vec<u8>, String> {
         }
 
         // Skip this chunk (+ padding byte if odd size)
-        offset += 8 + chunk_size;
+        offset = offset
+            .checked_add(8)
+            .and_then(|v| v.checked_add(chunk_size))
+            .ok_or_else(|| "WAV chunk offset overflow".to_string())?;
         if chunk_size % 2 != 0 {
-            offset += 1; // RIFF chunks are word-aligned
+            offset = offset.checked_add(1)
+                .ok_or_else(|| "WAV chunk padding overflow".to_string())?;
         }
     }
 }

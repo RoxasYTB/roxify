@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { native } from './native.js';
 import { DecodeOptions, DecodeResult } from './types.js';
 import { unpackBuffer } from '../pack.js';
+import { tryDecryptIfNeeded } from './helpers.js';
 
 /**
  * Find PXL1 magic in pixel buffer
@@ -126,7 +127,7 @@ function extractPayloadFromPixels(pixels: Buffer): { payload: Buffer; name?: str
  */
 export async function decodePngToBinary(
   input: Buffer | string,
-  _opts: DecodeOptions = {},
+  opts: DecodeOptions = {},
 ): Promise<DecodeResult> {
   // Get PNG buffer
   let pngBuf: Buffer;
@@ -139,27 +140,37 @@ export async function decodePngToBinary(
   const payload = Buffer.from(native.extractPayloadFromPng(pngBuf));
   let name: string | undefined;
 
+  // Single-pass name lookup: ask the native side (which already keeps a
+  // decoded RGB cache during extract_payload_from_png) instead of decoding
+  // pixels again from TS.
   try {
-    const rgbResult = native.pngToRgb(pngBuf);
-    const pixels = Buffer.from(rgbResult.pixels);
-    ({ name } = extractPayloadFromPixels(pixels));
+    const fromNative = (native as any).extractNameFromPng?.(pngBuf);
+    if (typeof fromNative === 'string' && fromNative.length > 0) {
+      name = fromNative;
+    }
   } catch { }
+  if (!name) {
+    // Older native binaries don't expose extractNameFromPng; fall back to the
+    // previous TS path (re-decodes pixels, kept only for compat).
+    try {
+      const rgbResult = native.pngToRgb(pngBuf);
+      const pixels = Buffer.from(rgbResult.pixels);
+      ({ name } = extractPayloadFromPixels(pixels));
+    } catch { }
+  }
 
   if (payload.length === 0) {
     throw new Error('Empty payload extracted');
   }
 
-  // Handle encryption flag (first byte)
-  // 0x00 = none, 0x01 = XOR, 0x02 = AES, 0x03 = AES-CTR
+  // Handle encryption flag (first byte): 0x00 none, 0x01 XOR, 0x02 AES-GCM, 0x03 AES-CTR.
+  // tryDecryptIfNeeded handles 0x00/0x01/0x02; 0x03 (streaming AES-CTR) needs native path.
   let data: Buffer;
-  if (payload[0] !== 0x00) {
-    // Encrypted payload - not supported in current decoder
-    // The native encoder handles encryption, but decoder needs native decrypt support
-    throw new Error('Encrypted payload requires passphrase (not yet implemented in decoder)');
-  } else {
-    // Non-encrypted: skip the flag byte
-    data = payload.subarray(1);
+  const flag = payload[0];
+  if (flag === 0x03) {
+    throw new Error('AES-CTR streaming payload requires the native decoder');
   }
+  data = tryDecryptIfNeeded(payload, opts.passphrase);
 
   // Decompress with zstd
   let decompressed: Buffer;

@@ -90,7 +90,8 @@ export function tryDecryptIfNeeded(buf: Buffer, passphrase?: string): Buffer {
     const tag = buf.slice(29, 45);
     const enc = buf.slice(45);
 
-    const PBKDF2_ITERS = 1_000_000;
+    // Must match native/crypto.rs:PBKDF2_ITERS — derived key depends on it.
+    const PBKDF2_ITERS = 600_000;
     const key = pbkdf2Sync(passphrase, salt, PBKDF2_ITERS, 32, 'sha256');
     const dec = createDecipheriv('aes-256-gcm', key, iv);
     dec.setAuthTag(tag);
