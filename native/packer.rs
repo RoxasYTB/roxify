@@ -1041,7 +1041,7 @@ fn open_file_with_share(dest: &Path) -> Result<File> {
 
 // Windows optimization: écriture ultra-optimisée avec Memory Mapping et pré-allocation
 fn write_file_fast(dest: &Path, data: &[u8]) -> Result<()> {
-    if data.len() >= 256 * 1024 {
+    if data.len() >= 10 * 1024 * 1024 {
         write_file_with_mmap(dest, data)
     } else {
         std::fs::write(dest, data)?;

@@ -627,9 +627,9 @@ fn write_png_from_zst_mem(
     let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
 
     let out_file = File::create(output_path)?;
-    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
-        else if total_data_bytes > 16 * 1024 * 1024 { 16 * 1024 * 1024 }
-        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) };
+    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 64 * 1024 * 1024 }
+        else if total_data_bytes > 16 * 1024 * 1024 { 32 * 1024 * 1024 }
+        else { (total_data_bytes / 2).max(65536).min(16 * 1024 * 1024) };
     let mut w = BufWriter::with_capacity(buf_capacity, out_file);
 
     w.write_all(PNG_HEADER)?;
@@ -744,9 +744,9 @@ fn write_png_from_zst_file(
     let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
 
     let out_file = File::create(output_path)?;
-    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
-        else if total_data_bytes > 16 * 1024 * 1024 { 16 * 1024 * 1024 }
-        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) };
+    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 64 * 1024 * 1024 }
+        else if total_data_bytes > 16 * 1024 * 1024 { 32 * 1024 * 1024 }
+        else { (total_data_bytes / 2).max(65536).min(16 * 1024 * 1024) };
     let mut w = BufWriter::with_capacity(buf_capacity, out_file);
 
     w.write_all(PNG_HEADER)?;
@@ -869,9 +869,9 @@ fn encode_dir_streaming(
 
     // Open output file and write PNG header + IHDR
     let out_file = File::create(output_path)?;
-    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
-        else if total_data_bytes > 16 * 1024 * 1024 { 16 * 1024 * 1024 }
-        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) };
+    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 64 * 1024 * 1024 }
+        else if total_data_bytes > 16 * 1024 * 1024 { 32 * 1024 * 1024 }
+        else { (total_data_bytes / 2).max(65536).min(16 * 1024 * 1024) };
     let mut w = BufWriter::with_capacity(buf_capacity, out_file);
 
     w.write_all(PNG_HEADER)?;
