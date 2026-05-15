@@ -16,11 +16,11 @@ const PACK_MAGIC: u32 = 0x524f5850;
 
 const MIN_ZST_CAPACITY: usize = 16 * 1024 * 1024;
 const MB: u64 = 1024 * 1024;
-const MAX_FILE_BUFFER_CAPACITY: usize = 4 * 1024 * 1024;
+const MAX_FILE_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
 // Augmenté de 1 MB à 8 MB pour permettre la lecture parallèle des fichiers moyens.
 // Sur un projet typique avec beaucoup de fichiers 1-8 MB, ceci sature beaucoup mieux les cœurs
 // sans exploser la mémoire.
-const PARALLEL_IO_FILE_THRESHOLD: u64 = if cfg!(target_os = "windows") { 64 * MB } else { 8 * MB };
+const PARALLEL_IO_FILE_THRESHOLD: u64 = if cfg!(target_os = "windows") { 64 * MB } else { 32 * MB };
 const PARALLEL_IO_MIN_FILES: usize = 2;
 const HEADER_VERSION_V2: u8 = 2;
 
@@ -126,7 +126,11 @@ fn compress_dir_to_zst_mem(
     entries.retain(|e| e.path.exists());
     let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
 
-    let actual_level = compression_level.clamp(1, 22);
+    let actual_level = if compression_level == 0 {
+        select_adaptive_level(&entries)
+    } else {
+        compression_level.clamp(-100, 22)
+    };
     let mut encoder = zstd::stream::Encoder::new(
         Vec::with_capacity(estimate_zst_capacity(total_bytes)),
         actual_level,
@@ -146,19 +150,10 @@ fn compress_dir_to_zst_mem(
     let adaptive_window_log = select_zstd_window_log(total_bytes);
     let _ = encoder.window_log(adaptive_window_log);
 
-    // Size each zstdmt worker job to a fraction of the RAM budget.
-    // Each worker keeps roughly 1.5 × jobSize live (input + output +
-    // workspace), so total zstdmt residence is ≈ threads × 1.5 × jobSize.
-    // Bumped from budget/5 to budget/4 in 1.16.5 (and per-job cap from
-    // 128 to 192 MiB) — the auto_ram_budget_mb formula already accounts
-    // for MemAvailable headroom, so we can spend a bit more here without
-    // re-introducing the 1.16.3 OOM regression. Per-job cap remains
-    // bounded: bigger jobs help compression marginally but blow RAM
-    // linearly with thread count on high-core machines.
     if threads > 1 {
         let budget_mb = effective_budget_mb();
-        let target_total_mb = (budget_mb / 4).max(64);
-        let per_worker_mb = (target_total_mb / threads as u64).clamp(8, 192);
+        let target_total_mb = (budget_mb / 3).max(128);
+        let per_worker_mb = (target_total_mb / threads as u64).clamp(16, 256);
         let job_size_bytes = (per_worker_mb * MB).min(u32::MAX as u64) as u32;
         let _ = encoder.set_parameter(zstd::stream::raw::CParameter::JobSize(job_size_bytes));
     }
@@ -213,6 +208,106 @@ fn compress_dir_to_zst_mem(
     let file_list_json = serde_json::to_string(&file_list)?;
 
     Ok((zst_buf, file_list_json))
+}
+
+fn compress_dir_to_zst_file(
+    dir_path: &Path,
+    tmp_path: &Path,
+    compression_level: i32,
+    progress: &Option<ProgressCallback>,
+) -> anyhow::Result<(u64, String)> {
+    let collected = collect_directory_files(dir_path);
+    let mut entries = collected.entries;
+    entries.retain(|e| e.path.exists());
+    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+
+    // zstd supports negative levels (fast modes: -1 to -131072) for
+    // throughput-oriented workloads, and positive levels 1-22 for ratio.
+    let actual_level = compression_level.clamp(-100, 22);
+    let tmp_file = File::create(tmp_path)?;
+    let mut encoder = zstd::stream::Encoder::new(
+        std::io::BufWriter::with_capacity(8 * 1024 * 1024, tmp_file),
+        actual_level,
+    )
+        .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
+
+    let threads = select_zstd_threads(total_bytes);
+    if threads > 1 {
+        if let Err(e) = encoder.multithread(threads) {
+            eprintln!(
+                "warn: zstd multithread({}) failed: {} — falls back to single thread",
+                threads, e
+            );
+        }
+    }
+    // LDM disabled for throughput — the inter-file redundancy gain doesn't
+    // justify the ~3x throughput penalty on typical workloads.
+    // Window log kept moderate: higher values blow per-worker RAM without
+    // meaningful ratio improvement on heterogeneous directory payloads.
+    let adaptive_window_log = select_zstd_window_log(total_bytes);
+    let _ = encoder.window_log(adaptive_window_log);
+
+    if threads > 1 {
+        let budget_mb = effective_budget_mb();
+        // Smaller job sizes = more parallelism, faster first-byte latency.
+        // Each worker keeps ~1.5 × jobSize live; total ≈ threads × 1.5 × jobSize.
+        let target_total_mb = (budget_mb / 6).max(32);
+        let per_worker_mb = (target_total_mb / threads as u64).clamp(4, 64);
+        let job_size_bytes = (per_worker_mb * MB).min(u32::MAX as u64) as u32;
+        let _ = encoder.set_parameter(zstd::stream::raw::CParameter::JobSize(job_size_bytes));
+    }
+
+    encoder.write_all(MAGIC)?;
+    encoder.write_all(&PACK_MAGIC.to_be_bytes())?;
+    encoder.write_all(&(entries.len() as u32).to_be_bytes())?;
+
+    let mut file_list = Vec::with_capacity(entries.len());
+    let mut bytes_processed: u64 = 0;
+    let mut last_pct: u64 = 0;
+    let mut entry_index = 0usize;
+    while entry_index < entries.len() {
+        let batch_end = select_parallel_batch_end(&entries, entry_index);
+        if batch_end > entry_index + 1 {
+            let loaded = load_small_file_batch(&entries[entry_index..batch_end])?;
+            for (entry, maybe_bytes) in entries[entry_index..batch_end].iter().zip(loaded.into_iter()) {
+                let Some(bytes) = maybe_bytes else {
+                    continue;
+                };
+
+                write_pack_entry_header(&mut encoder, &entry.rel_path, bytes.len() as u64)?;
+                encoder.write_all(&bytes)
+                    .map_err(|e| anyhow::anyhow!("pack write {}: {}", entry.rel_path, e))?;
+
+                file_list.push(FileListEntry {
+                    name: entry.rel_path.clone(),
+                    size: bytes.len() as u64,
+                });
+
+                bytes_processed += bytes.len() as u64;
+                report_compress_progress(progress, total_bytes, bytes_processed, &mut last_pct);
+            }
+            entry_index = batch_end;
+            continue;
+        }
+
+        let entry = &entries[entry_index];
+        if write_directory_entry(&mut encoder, entry)? {
+            file_list.push(FileListEntry {
+                name: entry.rel_path.clone(),
+                size: entry.size,
+            });
+
+            bytes_processed += entry.size;
+            report_compress_progress(progress, total_bytes, bytes_processed, &mut last_pct);
+        }
+        entry_index += 1;
+    }
+
+    encoder.finish().map_err(|e| anyhow::anyhow!("zstd finish: {}", e))?;
+    let zst_size = std::fs::metadata(tmp_path)?.len();
+    let file_list_json = serde_json::to_string(&file_list)?;
+
+    Ok((zst_size, file_list_json))
 }
 
 fn write_pack_entry_header<W: Write>(writer: &mut W, rel_path: &str, size: u64) -> anyhow::Result<()> {
@@ -412,34 +507,45 @@ fn estimate_zst_capacity(total_bytes: u64) -> usize {
 }
 
 fn select_zstd_window_log(total_bytes: u64) -> u32 {
-    // Bigger windows = better compression AND more per-worker RAM under
-    // zstdmt. We pick the largest window that still fits the data; on
-    // multi-GiB-budget systems zstdmt internally caps itself anyway.
-    if total_bytes <= 64 * 1024 * 1024 {
-        21u32
-    } else if total_bytes <= 128 * 1024 * 1024 {
-        23u32
-    } else if total_bytes <= 256 * 1024 * 1024 {
-        25u32
-    } else if total_bytes <= 512 * 1024 * 1024 {
-        26u32
-    } else if total_bytes <= 1024 * 1024 * 1024 {
-        27u32
-    } else if total_bytes <= 2 * 1024 * 1024 * 1024u64 {
-        29u32
-    } else {
-        30u32
+    if total_bytes <= 32 * MB { 22u32 }
+    else if total_bytes <= 128 * MB { 24u32 }
+    else if total_bytes <= 512 * MB { 25u32 }
+    else if total_bytes <= 2048 * MB { 26u32 }
+    else { 27u32 }
+}
+
+fn select_adaptive_level(entries: &[DirectoryFile]) -> i32 {
+    let mut sample_data = Vec::with_capacity(4 * 1024 * 1024);
+    for entry in entries.iter() {
+        if sample_data.len() >= 4 * 1024 * 1024 {
+            break;
+        }
+        if let Ok(mut f) = File::open(&entry.path) {
+            let take = (4 * 1024 * 1024 - sample_data.len()).min(entry.size as usize);
+            let start = sample_data.len();
+            sample_data.resize(start + take, 0);
+            let _ = f.read(&mut sample_data[start..]);
+        }
     }
+    if sample_data.is_empty() {
+        return 3;
+    }
+    let compressed = zstd::bulk::compress(&sample_data, 3).unwrap_or_default();
+    let ratio = compressed.len() as f64 / sample_data.len() as f64;
+
+    if ratio > 0.90 { 1 }
+    else if ratio > 0.75 { 3 }
+    else if ratio < 0.25 { 6 }
+    else { 5 }
 }
 
 fn select_zstd_threads(total_bytes: u64) -> u32 {
     let max_threads = num_cpus::get().max(1) as u32;
 
-    if total_bytes <= 8 * MB {
+    // Use all available threads aggressively — even small payloads benefit
+    // from zstdmt parallelism when job sizes are kept small.
+    if total_bytes <= 1 * MB {
         return 1;
-    }
-    if total_bytes <= 32 * MB {
-        return max_threads.min(4);
     }
     max_threads
 }
@@ -562,6 +668,364 @@ fn write_png_from_zst_mem(
     Ok(())
 }
 
+fn write_png_from_zst_file(
+    tmp_path: &Path,
+    zst_size: u64,
+    output_path: &Path,
+    name: Option<&str>,
+    file_list: Option<&str>,
+    passphrase: Option<&str>,
+    _encrypt_type: Option<&str>,
+    progress: &Option<ProgressCallback>,
+    adaptive_window_log: u32,
+) -> anyhow::Result<()> {
+    let mut encryptor = match passphrase {
+        Some(pass) if !pass.is_empty() => Some(crate::crypto::StreamingEncryptor::new(pass)?),
+        _ => None,
+    };
+
+    let enc_header_len = encryptor.as_ref().map(|e| e.header_len()).unwrap_or(1);
+    let hmac_trailer_len: usize = if encryptor.is_some() { 32 } else { 0 };
+
+    let encrypted_payload_len = enc_header_len + zst_size as usize + hmac_trailer_len;
+
+    let version = HEADER_VERSION_V2;
+    let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
+    let name_len = name_bytes.len().min(255) as u8;
+    let payload_len_bytes = (encrypted_payload_len as u64).to_be_bytes();
+
+    let mut meta_header = Vec::with_capacity(1 + 1 + name_len as usize + 8);
+    meta_header.push(version);
+    meta_header.push(name_len);
+    if name_len > 0 {
+        meta_header.extend_from_slice(&name_bytes[..name_len as usize]);
+    }
+    meta_header.extend_from_slice(&payload_len_bytes);
+
+    let meta_header_len = meta_header.len();
+
+    let file_list_chunk = file_list.map(|fl| {
+        let json_bytes = fl.as_bytes();
+        let mut chunk = Vec::with_capacity(4 + 4 + json_bytes.len());
+        chunk.extend_from_slice(b"rXFL");
+        chunk.extend_from_slice(&(json_bytes.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(json_bytes);
+        chunk
+    });
+    let file_list_inline_len = file_list_chunk.as_ref().map(|c| c.len()).unwrap_or(0);
+
+    let total_meta_pixel_len = meta_header_len + encrypted_payload_len + file_list_inline_len;
+    let raw_payload_len = PIXEL_MAGIC.len() + total_meta_pixel_len;
+    let padding_needed = (3 - (raw_payload_len % 3)) % 3;
+    let padded_len = raw_payload_len + padding_needed;
+
+    let marker_start_len = 12;
+    let marker_end_bytes = 9;
+    let window_log_pixel_bytes = 3;
+    let data_with_markers_len = marker_start_len + padded_len;
+    let data_pixels = (data_with_markers_len + 2) / 3;
+    let end_marker_pixels = 4;
+    let total_pixels = data_pixels + end_marker_pixels;
+
+    let side = (total_pixels as f64).sqrt().ceil() as usize;
+    let side = side.max(end_marker_pixels);
+    let width = side;
+    let height = side;
+    let row_bytes = width * 3;
+    let total_data_bytes = width * height * 3;
+    let marker_end_pos = total_data_bytes - window_log_pixel_bytes - marker_end_bytes;
+
+    let enc_header_bytes = if let Some(ref enc) = encryptor {
+        enc.header.clone()
+    } else {
+        vec![0x00]
+    };
+
+    let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
+
+    let out_file = File::create(output_path)?;
+    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
+        else if total_data_bytes > 16 * 1024 * 1024 { 16 * 1024 * 1024 }
+        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) };
+    let mut w = BufWriter::with_capacity(buf_capacity, out_file);
+
+    w.write_all(PNG_HEADER)?;
+
+    let mut ihdr = [0u8; 13];
+    ihdr[0..4].copy_from_slice(&(width as u32).to_be_bytes());
+    ihdr[4..8].copy_from_slice(&(height as u32).to_be_bytes());
+    ihdr[8] = 8;
+    ihdr[9] = 2;
+    write_png_chunk(&mut w, b"IHDR", &ihdr)?;
+
+    let tmp_file = File::open(tmp_path)?;
+    crate::io_advice::advise_file_sequential(&tmp_file);
+    let mut zst_reader = std::io::BufReader::with_capacity(8 * 1024 * 1024, tmp_file);
+
+    write_idat_streaming(
+        &mut w,
+        &header_bytes,
+        &mut zst_reader,
+        zst_size as usize,
+        file_list_chunk.as_deref(),
+        &mut encryptor,
+        hmac_trailer_len,
+        height,
+        row_bytes,
+        marker_end_pos,
+        total_data_bytes,
+        adaptive_window_log,
+        progress,
+    )?;
+
+    if let Some(fl) = file_list {
+        write_png_chunk(&mut w, b"rXFL", fl.as_bytes())?;
+    }
+    write_png_chunk(&mut w, b"IEND", &[])?;
+    w.flush()?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn encode_dir_streaming(
+    entries: &[DirectoryFile],
+    total_bytes: u64,
+    zst_size_upper: usize,
+    output_path: &Path,
+    compression_level: i32,
+    name: Option<&str>,
+    passphrase: Option<&str>,
+    _encrypt_type: Option<&str>,
+    adaptive_window_log: u32,
+    progress: &Option<ProgressCallback>,
+) -> anyhow::Result<()> {
+    let mut encryptor = match passphrase {
+        Some(pass) if !pass.is_empty() => Some(crate::crypto::StreamingEncryptor::new(pass)?),
+        _ => None,
+    };
+
+    let enc_header_len = encryptor.as_ref().map(|e| e.header_len()).unwrap_or(1);
+    let hmac_trailer_len: usize = if encryptor.is_some() { 32 } else { 0 };
+
+    // Build file list JSON up-front (needed for size calculation)
+    let file_list: Vec<FileListEntry> = entries.iter()
+        .map(|e| FileListEntry { name: e.rel_path.clone(), size: e.size })
+        .collect();
+    let file_list_json = serde_json::to_string(&file_list)?;
+    let file_list_chunk = {
+        let json_bytes = file_list_json.as_bytes();
+        let mut chunk = Vec::with_capacity(4 + 4 + json_bytes.len());
+        chunk.extend_from_slice(b"rXFL");
+        chunk.extend_from_slice(&(json_bytes.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(json_bytes);
+        chunk
+    };
+
+    let encrypted_payload_len = enc_header_len + zst_size_upper + hmac_trailer_len;
+    let file_list_inline_len = file_list_chunk.len();
+
+    let version = HEADER_VERSION_V2;
+    let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
+    let name_len = name_bytes.len().min(255) as u8;
+    let payload_len_bytes = (encrypted_payload_len as u64).to_be_bytes();
+
+    let mut meta_header = Vec::with_capacity(1 + 1 + name_len as usize + 8);
+    meta_header.push(version);
+    meta_header.push(name_len);
+    if name_len > 0 {
+        meta_header.extend_from_slice(&name_bytes[..name_len as usize]);
+    }
+    meta_header.extend_from_slice(&payload_len_bytes);
+    let meta_header_len = meta_header.len();
+
+    let total_meta_pixel_len = meta_header_len + encrypted_payload_len + file_list_inline_len;
+    let raw_payload_len = PIXEL_MAGIC.len() + total_meta_pixel_len;
+    let padding_needed = (3 - (raw_payload_len % 3)) % 3;
+    let padded_len = raw_payload_len + padding_needed;
+
+    let marker_start_len = 12;
+    let marker_end_bytes = 9;
+    let window_log_pixel_bytes = 3;
+    let data_with_markers_len = marker_start_len + padded_len;
+    let data_pixels = (data_with_markers_len + 2) / 3;
+    let end_marker_pixels = 4;
+    let total_pixels = data_pixels + end_marker_pixels;
+
+    let side = (total_pixels as f64).sqrt().ceil() as usize;
+    let side = side.max(end_marker_pixels);
+    let width = side;
+    let height = side;
+    let row_bytes = width * 3;
+    let total_data_bytes = width * height * 3;
+
+    let enc_header_bytes = if let Some(ref enc) = encryptor {
+        enc.header.clone()
+    } else {
+        vec![0x00]
+    };
+
+    let header_bytes = build_header_bytes(&meta_header, &enc_header_bytes);
+
+    // Open output file and write PNG header + IHDR
+    let out_file = File::create(output_path)?;
+    let buf_capacity = if total_data_bytes > 256 * 1024 * 1024 { 32 * 1024 * 1024 }
+        else if total_data_bytes > 16 * 1024 * 1024 { 16 * 1024 * 1024 }
+        else { (total_data_bytes / 2).max(65536).min(8 * 1024 * 1024) };
+    let mut w = BufWriter::with_capacity(buf_capacity, out_file);
+
+    w.write_all(PNG_HEADER)?;
+    let mut ihdr = [0u8; 13];
+    ihdr[0..4].copy_from_slice(&(width as u32).to_be_bytes());
+    ihdr[4..8].copy_from_slice(&(height as u32).to_be_bytes());
+    ihdr[8] = 8;
+    ihdr[9] = 2;
+    write_png_chunk(&mut w, b"IHDR", &ihdr)?;
+
+    // Build the IDAT pipeline: BufWriter → ChunkedIdatWriter → StoredDeflateWriter → ScanlineFilterWriter
+    let idat = ChunkedIdatWriter::new(&mut w);
+    let deflate = StoredDeflateWriter::new(idat);
+    let mut row_writer = ScanlineFilterWriter::new(deflate, row_bytes);
+
+    // 1. Write header bytes into IDAT
+    row_writer.write_all(&header_bytes)
+        .map_err(|e| anyhow::anyhow!("write header: {}", e))?;
+
+    // 2. Compress directory entries directly into the PNG IDAT pipeline
+    let actual_level = compression_level.clamp(-100, 22);
+
+    // Create a counting writer that wraps the row_writer, tracking bytes written.
+    // This lets us know the actual compressed size after zstd finishes.
+    let mut zst_bytes_written: usize = 0;
+    {
+        let mut counting_writer = CountingWriter::new(&mut row_writer, &mut encryptor);
+
+        let mut encoder = zstd::stream::Encoder::new(&mut counting_writer, actual_level)
+            .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
+
+        let threads = select_zstd_threads(total_bytes);
+        if threads > 1 {
+            if let Err(e) = encoder.multithread(threads) {
+                eprintln!("warn: zstd multithread({}) failed: {} — single thread", threads, e);
+            }
+        }
+        let _ = encoder.window_log(adaptive_window_log);
+
+        if threads > 1 {
+            let budget_mb = effective_budget_mb();
+            let target_total_mb = (budget_mb / 6).max(32);
+            let per_worker_mb = (target_total_mb / threads as u64).clamp(4, 64);
+            let job_size_bytes = (per_worker_mb * MB).min(u32::MAX as u64) as u32;
+            let _ = encoder.set_parameter(zstd::stream::raw::CParameter::JobSize(job_size_bytes));
+        }
+
+        // Write pack header
+        encoder.write_all(MAGIC)?;
+        encoder.write_all(&PACK_MAGIC.to_be_bytes())?;
+        encoder.write_all(&(entries.len() as u32).to_be_bytes())?;
+
+        // Write each file entry
+        let mut bytes_processed: u64 = 0;
+        let mut last_pct: u64 = 0;
+        let mut entry_index = 0usize;
+        while entry_index < entries.len() {
+            let batch_end = select_parallel_batch_end(entries, entry_index);
+            if batch_end > entry_index + 1 {
+                let loaded = load_small_file_batch(&entries[entry_index..batch_end])?;
+                for (entry, maybe_bytes) in entries[entry_index..batch_end].iter().zip(loaded.into_iter()) {
+                    let Some(bytes) = maybe_bytes else { continue; };
+                    write_pack_entry_header(&mut encoder, &entry.rel_path, bytes.len() as u64)?;
+                    encoder.write_all(&bytes)
+                        .map_err(|e| anyhow::anyhow!("pack write {}: {}", entry.rel_path, e))?;
+                    bytes_processed += bytes.len() as u64;
+                    report_compress_progress(progress, total_bytes, bytes_processed, &mut last_pct);
+                }
+                entry_index = batch_end;
+                continue;
+            }
+
+            let entry = &entries[entry_index];
+            if write_directory_entry(&mut encoder, entry)? {
+                bytes_processed += entry.size;
+                report_compress_progress(progress, total_bytes, bytes_processed, &mut last_pct);
+            }
+            entry_index += 1;
+        }
+
+        encoder.finish().map_err(|e| anyhow::anyhow!("zstd finish: {}", e))?;
+        zst_bytes_written = counting_writer.bytes_written;
+    }
+
+    // 3. HMAC trailer
+    if let Some(enc) = encryptor.take() {
+        let hmac_bytes = enc.finalize_hmac();
+        row_writer.write_all(&hmac_bytes)
+            .map_err(|e| anyhow::anyhow!("write hmac: {}", e))?;
+    }
+
+    // 4. File list chunk inline
+    row_writer.write_all(&file_list_chunk)
+        .map_err(|e| anyhow::anyhow!("write file list: {}", e))?;
+
+    // 5. Pad with zeros to fill total_data_bytes
+    // Actual payload = header_bytes + zst_actual + hmac + file_list_chunk
+    let actual_payload = header_bytes.len() + zst_bytes_written + hmac_trailer_len + file_list_chunk.len();
+    let padding_after = total_data_bytes.saturating_sub(actual_payload);
+    if padding_after > 0 {
+        let zeros = vec![0u8; 64 * 1024];
+        let mut left = padding_after;
+        while left > 0 {
+            let n = left.min(zeros.len());
+            row_writer.write_all(&zeros[..n])
+                .map_err(|e| anyhow::anyhow!("write padding: {}", e))?;
+            left -= n;
+        }
+    }
+
+    // Finalize deflate + IDAT
+    let deflate = row_writer.into_inner();
+    let idat = deflate.finish()
+        .map_err(|e| anyhow::anyhow!("deflate finish: {}", e))?;
+    idat.finish()?;
+
+    // Write rXFL chunk and IEND
+    write_png_chunk(&mut w, b"rXFL", file_list_json.as_bytes())?;
+    write_png_chunk(&mut w, b"IEND", &[])?;
+    w.flush()?;
+
+    Ok(())
+}
+
+/// Writer that passes data through optional encryption and counts bytes written.
+struct CountingWriter<'a, W: Write> {
+    inner: &'a mut W,
+    encryptor: &'a mut Option<crate::crypto::StreamingEncryptor>,
+    bytes_written: usize,
+}
+
+impl<'a, W: Write> CountingWriter<'a, W> {
+    fn new(inner: &'a mut W, encryptor: &'a mut Option<crate::crypto::StreamingEncryptor>) -> Self {
+        Self { inner, encryptor, bytes_written: 0 }
+    }
+}
+
+impl<W: Write> Write for CountingWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() { return Ok(0); }
+        let mut data = buf.to_vec();
+        if let Some(ref mut enc) = self.encryptor {
+            enc.encrypt_chunk(&mut data);
+        }
+        self.inner.write_all(&data)?;
+        self.bytes_written += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 fn build_header_bytes(meta_header: &[u8], enc_header: &[u8]) -> Vec<u8> {
     let mut header = Vec::with_capacity(12 + PIXEL_MAGIC.len() + meta_header.len() + enc_header.len());
     for m in &MARKER_START {
@@ -608,7 +1072,7 @@ fn write_idat_streaming<W: Write, R: Read>(
         .map_err(|e| anyhow::anyhow!("write header: {}", e))?;
 
     // 2. ZST data (encrypted on the fly if needed)
-    let buf_size: usize = 4 * 1024 * 1024;
+    let buf_size: usize = 16 * 1024 * 1024;
     let mut transfer_buf = vec![0u8; buf_size];
     let mut zst_remaining = zst_size;
     let mut bytes_written_payload: u64 = header_bytes.len() as u64;

@@ -660,6 +660,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     let mut created_dirs = std::collections::HashSet::new();
 
     let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut batch_bytes_acc: u64 = 0;
 
     let flush_batch_parallel = |batch_files: &mut Vec<(PathBuf, Vec<u8>)>| -> Result<()> {
         if batch_files.is_empty() {
@@ -756,15 +757,16 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             reader.read_exact(&mut file_data)?;
             bytes_processed += size;
 
+            batch_bytes_acc += size;
             batch_files.push((dest, file_data));
             written.push(safe.to_string_lossy().to_string());
             if files_filter.is_some() {
                 requested = requested.saturating_sub(1);
             }
 
-            let batch_bytes: u64 = batch_files.iter().map(|(_, d)| d.len() as u64).sum();
-            if batch_bytes >= batch_ram_limit || batch_files.len() >= BATCH_FILE_LIMIT {
+            if batch_bytes_acc >= batch_ram_limit || batch_files.len() >= BATCH_FILE_LIMIT {
                 flush_batch_parallel(&mut batch_files)?;
+                batch_bytes_acc = 0;
             }
         } else {
             discard_pack_bytes(

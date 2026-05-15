@@ -47,7 +47,7 @@ enum Commands {
     Encode {
         input: PathBuf,
         output: PathBuf,
-        #[arg(short, long, default_value_t = 3)]
+        #[arg(short, long, default_value_t = 0)]
         level: i32,
         #[arg(short, long)]
         passphrase: Option<String>,
@@ -249,11 +249,11 @@ fn parse_total_ram_mb() -> Option<u64> {
 /// "use total - 4 GiB, leave 4 GiB available, like on every machine".
 /// On a 12 GiB box this gives an 8 GiB working budget. Override with
 /// `--ram-budget-mb` or `ROX_RAM_BUDGET_MB`.
-const SYSTEM_RESERVE_MB: u64 = 4096;
+const SYSTEM_RESERVE_MB: u64 = 1024;
 
 /// Headroom subtracted from MemAvailable when used as the budget basis.
 /// Prevents an OOM-kill when other apps grow during the encode/decode.
-const AVAILABLE_HEADROOM_MB: u64 = 1024;
+const AVAILABLE_HEADROOM_MB: u64 = 512;
 
 /// Working budget = min(total − SYSTEM_RESERVE_MB, available − AVAILABLE_HEADROOM_MB),
 /// floored at MIN_RAM_BUDGET_MB. Picking the smaller of the two avoids

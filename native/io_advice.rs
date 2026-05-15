@@ -38,6 +38,9 @@ pub fn sync_and_drop(file: &File, len: u64) {
         return;
     }
 
-    let _ = file.sync_data();
+    // Note: file.sync_data() (fdatasync) was removed in v1.16.6+
+    // Rationale: for decode operations, the source file remains intact on failure,
+    // and the fsync() syscall blocks for 1-5ms per call, causing significant
+    // throughput degradation on workloads with many files >8MB.
     advise_drop(file, 0, len);
 }

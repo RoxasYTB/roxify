@@ -32,7 +32,7 @@ fn decode_writer_capacity() -> usize {
 /// utilization at the cost of RAM. Bumped budget/128 → budget/96 in
 /// 1.16.5 (≈ +33% buffer on a given budget).
 fn decode_read_buffer_size() -> usize {
-    let mb = (effective_budget_mb() / 96).max(4);
+    let mb = (effective_budget_mb() / 32).max(16);
     (mb * 1024 * 1024) as usize
 }
 

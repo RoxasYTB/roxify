@@ -75,9 +75,11 @@ pub fn no_encryption(data: &[u8]) -> Vec<u8> {
     result
 }
 
-pub fn no_encryption_in_place(mut data: Vec<u8>) -> Vec<u8> {
-    data.insert(0, ENC_NONE);
-    data
+pub fn no_encryption_in_place(data: Vec<u8>) -> Vec<u8> {
+    let mut result = Vec::with_capacity(1 + data.len());
+    result.push(ENC_NONE);
+    result.extend(data);
+    result
 }
 
 pub fn decrypt_xor(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
