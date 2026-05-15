@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use serde_json::json;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]

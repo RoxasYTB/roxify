@@ -28,11 +28,8 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-png = "0.18.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
-# indicatif removed from default deps to reduce heavy build graph
 walkdir = "2.5.0"
-jwalk = "0.8"
 tar = "0.4"
 aes-gcm = "0.10"
 aes = "0.8"
