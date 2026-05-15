@@ -6,6 +6,7 @@ use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -662,20 +663,6 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut batch_bytes_acc: u64 = 0;
 
-    let flush_batch_parallel = |batch_files: &mut Vec<(PathBuf, Vec<u8>)>| -> Result<()> {
-        if batch_files.is_empty() {
-            return Ok(());
-        }
-        batch_files
-            .par_iter()
-            .try_for_each(|(dest, data)| -> Result<()> {
-                write_file_fast(dest, data)
-                    .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
-            })?;
-        batch_files.clear();
-        Ok(())
-    };
-
     let mut magic = read_pack_u32(reader)?;
     if magic == 0x524f5831u32 {
         magic = read_pack_u32(reader)?;
@@ -717,90 +704,146 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
 
     file_count = read_pack_u32(reader)? as usize;
 
-    // Batch limits scale with the RAM budget set by main.rs at CLI startup.
-    // Bumped to ~65% of budget in 1.16.5 (was 50% in 1.16.4). The decode
-    // path has no zstdmt workers eating RAM in parallel, so the headroom
-    // can go almost entirely to the in-flight write batch — bigger batches
-    // = more parallel rayon writes per flush = faster unpack.
-    // Min 1 GiB, max 16 GiB to keep behavior reasonable on tiny / huge boxes.
+    // RAM budget set by main.rs at CLI startup (MiB). Fallback 8 GiB.
     let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(8192);
-    let batch_ram_limit: u64 = (budget_mb * 65 / 100).clamp(1024, 16384) * 1024 * 1024;
-    const BATCH_FILE_LIMIT: usize = 500_000;
 
-    for _ in 0..file_count {
-        let name_len = read_pack_u16(reader)? as usize;
-        let mut name_bytes = vec![0u8; name_len];
-        read_pack_exact(reader, &mut name_bytes)?;
-        let name = String::from_utf8_lossy(&name_bytes).to_string();
-        let size = read_pack_u64(reader)?;
+    // Pipelined decode: zstd-decompression (this thread) runs *concurrently*
+    // with the parallel file writes (writer thread + rayon pool). Without this,
+    // the decoder sat idle during each rayon write burst — burning the entire
+    // decode wall-clock as the sum of (decode time) + (write time) instead of
+    // their max.
+    //
+    // RAM in flight at peak:
+    //   producer batch (filling)  +  channel-queued batch  +  writer batch
+    //   = 3 batches max
+    // Split the old 65% global cap across those 3 → ~22% each, total ≤ 65%
+    // (same as the pre-pipeline budget). sync_channel(1) keeps the writer
+    // one batch ahead of the producer without unbounded queuing.
+    let batch_ram_limit: u64 = (budget_mb * 22 / 100).clamp(341, 5462) * 1024 * 1024;
+    const BATCH_FILE_LIMIT: usize = 200_000;
 
-        let should_write = match &files_filter {
-            Some(set) => set.contains(&name),
-            None => true,
-        };
-
-        if should_write {
-            let safe = sanitize_pack_path(&name);
-            let dest = out_dir.join(&safe);
-            if let Some(parent) = dest.parent() {
-                if !created_dirs.contains(parent) {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
-                    created_dirs.insert(parent.to_path_buf());
+    // Spawn the writer thread. It drains batches from the channel and writes
+    // each batch in parallel via rayon. Errors are propagated back through
+    // the JoinHandle.
+    let (tx, rx) = mpsc::sync_channel::<Vec<(PathBuf, Vec<u8>)>>(1);
+    let writer_thread = std::thread::Builder::new()
+        .name("rox-decode-writer".into())
+        .spawn(move || -> Result<()> {
+            while let Ok(batch) = rx.recv() {
+                if batch.is_empty() {
+                    continue;
                 }
+                batch
+                    .par_iter()
+                    .try_for_each(|(dest, data)| -> Result<()> {
+                        write_file_fast(dest, data)
+                            .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
+                    })?;
+            }
+            Ok(())
+        })
+        .map_err(|e| anyhow::anyhow!("spawn writer thread: {}", e))?;
+
+    // Run the main decode/parse loop. Errors are captured but we always
+    // join the writer thread before returning so we don't leak it. The
+    // writer's error (if any) takes priority over a producer-side
+    // "channel closed" error since the closed channel is just the symptom.
+    let result: Result<()> = (|| -> Result<()> {
+        for _ in 0..file_count {
+            let name_len = read_pack_u16(reader)? as usize;
+            let mut name_bytes = vec![0u8; name_len];
+            read_pack_exact(reader, &mut name_bytes)?;
+            let name = String::from_utf8_lossy(&name_bytes).to_string();
+            let size = read_pack_u64(reader)?;
+
+            let should_write = match &files_filter {
+                Some(set) => set.contains(&name),
+                None => true,
+            };
+
+            if should_write {
+                let safe = sanitize_pack_path(&name);
+                let dest = out_dir.join(&safe);
+                if let Some(parent) = dest.parent() {
+                    if !created_dirs.contains(parent) {
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e)
+                        })?;
+                        created_dirs.insert(parent.to_path_buf());
+                    }
+                }
+
+                let mut file_data = vec![0u8; size as usize];
+                reader.read_exact(&mut file_data)?;
+                bytes_processed += size;
+
+                batch_bytes_acc += size;
+                batch_files.push((dest, file_data));
+                written.push(safe.to_string_lossy().to_string());
+                if files_filter.is_some() {
+                    requested = requested.saturating_sub(1);
+                }
+
+                if batch_bytes_acc >= batch_ram_limit
+                    || batch_files.len() >= BATCH_FILE_LIMIT
+                {
+                    let batch = std::mem::take(&mut batch_files);
+                    tx.send(batch)
+                        .map_err(|_| anyhow::anyhow!("write worker stopped"))?;
+                    batch_bytes_acc = 0;
+                }
+            } else {
+                discard_pack_bytes(
+                    reader,
+                    size,
+                    &mut bytes_processed,
+                    file_count,
+                    processed_files,
+                    total_expected,
+                    progress,
+                    &mut last_pct,
+                )?;
             }
 
-            let mut file_data = vec![0u8; size as usize];
-            reader.read_exact(&mut file_data)?;
-            bytes_processed += size;
-
-            batch_bytes_acc += size;
-            batch_files.push((dest, file_data));
-            written.push(safe.to_string_lossy().to_string());
-            if files_filter.is_some() {
-                requested = requested.saturating_sub(1);
-            }
-
-            if batch_bytes_acc >= batch_ram_limit || batch_files.len() >= BATCH_FILE_LIMIT {
-                flush_batch_parallel(&mut batch_files)?;
-                batch_bytes_acc = 0;
-            }
-        } else {
-            discard_pack_bytes(
-                reader,
-                size,
-                &mut bytes_processed,
+            processed_files = processed_files.saturating_add(1);
+            report_unpack_progress(
+                progress,
+                total_expected,
+                bytes_processed,
                 file_count,
                 processed_files,
-                total_expected,
-                progress,
                 &mut last_pct,
-            )?;
-        }
+            );
 
-        processed_files = processed_files.saturating_add(1);
-        report_unpack_progress(
-            progress,
-            total_expected,
-            bytes_processed,
-            file_count,
-            processed_files,
-            &mut last_pct,
-        );
-
-        if requested == 0 {
-            flush_batch_parallel(&mut batch_files)?;
-            if let Some(cb) = progress {
-                cb(99, 100, "finishing");
+            if requested == 0 {
+                break;
             }
-            return Ok(written);
         }
-    }
 
-    flush_batch_parallel(&mut batch_files)?;
+        // Final flush — hand off the last (possibly partial) batch.
+        if !batch_files.is_empty() {
+            let batch = std::mem::take(&mut batch_files);
+            tx.send(batch)
+                .map_err(|_| anyhow::anyhow!("write worker stopped"))?;
+        }
+        Ok(())
+    })();
+
+    // Always close the channel and join the writer, even on error, so we
+    // don't leave a dangling thread.
+    drop(tx);
+    let writer_result: Result<()> = match writer_thread.join() {
+        Ok(r) => r,
+        Err(_) => Err(anyhow::anyhow!("writer thread panicked")),
+    };
+
+    // Writer-side errors are the root cause when both fail (the producer
+    // sees a closed channel as a downstream symptom).
+    writer_result?;
+    result?;
 
     if let Some(cb) = progress {
         cb(99, 100, "finishing");
