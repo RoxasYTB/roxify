@@ -26,7 +26,7 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           # ── Linux (Ubuntu 22.04 for glibc 2.35 compat: Debian 12+, Ubuntu 22.04+, Fedora 36+) ──
