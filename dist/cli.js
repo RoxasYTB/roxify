@@ -768,6 +768,7 @@ async function main() {
             await encodeCommand(commandArgs);
             break;
         case 'decode':
+        case 'decompress':
             await decodeCommand(commandArgs);
             break;
         case 'list':

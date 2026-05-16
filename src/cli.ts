@@ -873,6 +873,7 @@ async function main() {
       await encodeCommand(commandArgs);
       break;
     case 'decode':
+    case 'decompress':
       await decodeCommand(commandArgs);
       break;
     case 'list':
@@ -881,7 +882,6 @@ async function main() {
     case 'havepassphrase':
       await havePassphraseCommand(commandArgs);
       break;
-
     default:
       console.error(`Unknown command: ${command}`);
       console.log('Run "npx rox help" for usage information');
