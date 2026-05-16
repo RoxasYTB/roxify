@@ -37,7 +37,7 @@ async function loadJsEngine() {
 type VFSIndexEntry = { path: string; size: number; offset: number };
 
 // Keep in sync with package.json#version.
-const VERSION = '1.16.12';
+const VERSION = '1.16.13';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
@@ -202,8 +202,12 @@ function parseArgs(args: string[]) {
         parsed.debugDir = args[i + 1];
         i += 2;
       } else if (key === 'files') {
-        parsed.files = args[i + 1].split(',');
-        i += 2;
+        if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          parsed.files = args[i + 1].split(',');
+          i += 2;
+        } else {
+          i++;
+        }
       } else if (key === 'dict') {
         parsed.dict = args[i + 1];
         i += 2;
