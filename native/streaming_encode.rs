@@ -844,10 +844,7 @@ fn encode_dir_streaming(
     let padding_needed = (3 - (raw_payload_len % 3)) % 3;
     let padded_len = raw_payload_len + padding_needed;
 
-    let marker_start_len = 12;
-    let marker_end_bytes = 9;
-    let window_log_pixel_bytes = 3;
-    let data_with_markers_len = marker_start_len + padded_len;
+    let data_with_markers_len = 12 + padded_len;
     let data_pixels = (data_with_markers_len + 2) / 3;
     let end_marker_pixels = 4;
     let total_pixels = data_pixels + end_marker_pixels;
@@ -896,6 +893,7 @@ fn encode_dir_streaming(
 
     // Create a counting writer that wraps the row_writer, tracking bytes written.
     // This lets us know the actual compressed size after zstd finishes.
+    #[allow(unused_assignments)]
     let mut zst_bytes_written: usize = 0;
     {
         let mut counting_writer = CountingWriter::new(&mut row_writer, &mut encryptor);

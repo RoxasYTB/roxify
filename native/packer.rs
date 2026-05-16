@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use serde_json::json;
 use std::fs;
 use std::fs::{File, OpenOptions};
+#[allow(unused_imports)]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -957,7 +958,6 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
     let mut written = Vec::new();
     let mut last_pct = 10u64;
     let mut batch: Vec<(PathBuf, Vec<u8>, String)> = Vec::with_capacity(BATCH_SIZE);
-    let mut bytes_processed: u64 = 0;
 
     for i in 0..file_count {
         let name_len = read_pack_u16(reader)? as usize;
@@ -974,8 +974,6 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
             None => true,
         };
 
-        bytes_processed += 2 + name_len as u64 + 8;
-
         if should_write {
             let safe_name = sanitize_pack_path(&name);
             let dest = out_dir.join(&safe_name);
@@ -988,7 +986,6 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
 
             let mut file_data = vec![0u8; size as usize];
             reader.read_exact(&mut file_data)?;
-            bytes_processed += size;
 
             batch.push((dest, file_data, safe_name.to_string_lossy().to_string()));
             written.push(safe_name.to_string_lossy().to_string());
@@ -1001,14 +998,8 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
                 batch.clear();
             }
         } else {
-            let mut skip_buf = vec![0u8; 65536];
-            let mut remaining = size;
-            while remaining > 0 {
-                let to_read = remaining.min(skip_buf.len() as u64) as usize;
-                reader.read_exact(&mut skip_buf[..to_read])?;
-                remaining -= to_read as u64;
-                bytes_processed += to_read as u64;
-            }
+            let mut taken = reader.take(size);
+            std::io::copy(&mut taken, &mut std::io::sink())?;
         }
 
         if let Some(ref cb) = progress {
@@ -1293,22 +1284,22 @@ fn read_pack_u64<R: std::io::Read>(reader: &mut R) -> Result<u64> {
 }
 
 fn sanitize_pack_path(name: &str) -> std::path::PathBuf {
-    let cleaned: String = name.chars()
-        .filter(|&c| c != '\0')
-        .map(|c| {
-            if c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    
-    let p = Path::new(&cleaned);
     let mut safe = std::path::PathBuf::new();
-    for comp in p.components() {
-        if let std::path::Component::Normal(osstr) = comp {
-            safe.push(osstr);
+    for raw in name.split(|c: char| c == '/' || c == '\\') {
+        let cleaned: String = raw.chars()
+            .filter(|&c| c != '\0')
+            .map(|c| {
+                if c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        for comp in Path::new(&cleaned).components() {
+            if let std::path::Component::Normal(osstr) = comp {
+                safe.push(osstr);
+            }
         }
     }
     safe
@@ -1516,7 +1507,8 @@ fn discard_pack_bytes<R: std::io::Read>(
 #[cfg(test)]
 mod stream_tests {
     use super::*;
-    use std::io::{Read, Write};
+#[allow(unused_imports)]
+use std::io::{Read, Write};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct ChunkedReader<R> {
