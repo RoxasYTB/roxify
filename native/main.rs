@@ -389,7 +389,7 @@ fn unpack_archive_bytes(
 
     if starts_with_rox {
         let mut reader: Box<dyn std::io::Read> = Box::new(std::io::Cursor::new(normalized));
-        return packer::unpack_stream_to_dir(&mut reader, out_dir, files_slice, progress, 0)
+        return packer::unpack_stream_to_dir_parallel(&mut reader, out_dir, files_slice, progress, 0)
             .map_err(|e| anyhow::anyhow!(e));
     }
 
@@ -938,7 +938,7 @@ fn main() -> anyhow::Result<()> {
 
                 let written = if starts_with_pack {
                     let mut reader: Box<dyn std::io::Read> = Box::new(Cursor::new(normalized_data));
-                    packer::unpack_stream_to_dir(
+                    packer::unpack_stream_to_dir_parallel(
                         &mut reader,
                         &out_dir,
                         files_slice,

@@ -84,7 +84,8 @@ pub fn streaming_decode_selected_to_dir_encrypted_with_progress(
     let data_file = File::open(png_path).map_err(|e| format!("open data: {}", e))?;
     let idat_reader = IdatRangeReader::new(data_file, idat_ranges)
         .map_err(|e| format!("init IDAT reader: {}", e))?;
-    let zlib_decoder = ZlibDecoder::new(idat_reader);
+    let buf_idat = std::io::BufReader::with_capacity(4 * 1024 * 1024, idat_reader);
+    let zlib_decoder = ZlibDecoder::new(buf_idat);
     let mut reader = ScanlinePixelReader::new(zlib_decoder, width, height);
 
     // Rétrocompatibilité: deux layouts existent en pratique.
@@ -268,7 +269,7 @@ fn read_rox1_and_unpack_with_progress<R: Read>(
 
     if is_pack_magic {
         let mut chained = std::io::Cursor::new(peek[..read_so_far].to_vec()).chain(decoder);
-        return crate::packer::unpack_stream_to_dir(
+        return crate::packer::unpack_stream_to_dir_parallel(
             &mut chained,
             out_dir,
             files_opt,
@@ -606,7 +607,7 @@ impl Read for IdatRangeReader {
 }
 
 struct ScanlinePixelReader<R: Read> {
-    reader: R,
+    reader: std::io::BufReader<R>,
     height: usize,
     row_bytes: usize,
     current_row: usize,
@@ -617,7 +618,7 @@ struct ScanlinePixelReader<R: Read> {
 impl<R: Read> ScanlinePixelReader<R> {
     fn new(reader: R, width: usize, height: usize) -> Self {
         Self {
-            reader,
+            reader: std::io::BufReader::with_capacity(2 * 1024 * 1024, reader),
             height,
             row_bytes: width * 3,
             current_row: 0,
@@ -758,9 +759,7 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
             }
         }
 
-        // Optimisation des buffers pour éviter les fichiers vides
-        if cfg!(target_os = "windows") && entry_size > 1024 * 1024 {
-            // Windows: gros fichiers - copie par blocs de 8MB SANS BufWriter
+if cfg!(target_os = "windows") && entry_size > 1024 * 1024 {
             let mut temp_buffer = vec![0u8; 8 * 1024 * 1024];
             let mut file = std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?;
             let mut copied = 0u64;
@@ -775,17 +774,12 @@ fn tar_unpack_from_reader_with_progress<R: Read>(
             }
             crate::io_advice::sync_and_drop(&file, entry_size);
         } else {
-            // Petits fichiers ou Linux: copie standard avec BufWriter.
-            // Buffer plafonné par le budget RAM (decode_writer_capacity)
-            // au lieu du 16 MiB fixe, pour bénéficier de gros budgets.
             let max_buf = decode_writer_capacity();
             let buffer_size = (entry_size as usize).min(max_buf).max(256 * 1024);
-
             let mut f = std::io::BufWriter::with_capacity(
                 buffer_size,
                 std::fs::File::create(&dest).map_err(|e| format!("create {:?}: {}", dest, e))?,
             );
-
             std::io::copy(&mut entry, &mut f).map_err(|e| format!("write {:?}: {}", dest, e))?;
             let file = f.into_inner().map_err(|e| format!("flush {:?}: {}", dest, e.error()))?;
             crate::io_advice::sync_and_drop(&file, entry_size);

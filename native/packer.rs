@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use serde_json::json;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -641,6 +641,63 @@ fn report_unpack_progress(
     }
 }
 
+#[derive(Clone)]
+struct PackFileEntry {
+    name: String,
+    safe_name: String,
+    dest: PathBuf,
+    size: u64,
+    skip: bool,
+}
+
+fn read_all_pack_headers<R: std::io::Read>(
+    reader: &mut R,
+    file_count: usize,
+    files_filter: &Option<std::collections::HashSet<String>>,
+    out_dir: &Path,
+    created_dirs: &mut std::collections::HashSet<PathBuf>,
+) -> Result<Vec<PackFileEntry>> {
+    let mut entries = Vec::with_capacity(file_count);
+    
+    for _ in 0..file_count {
+        let name_len = read_pack_u16(reader)? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        read_pack_exact(reader, &mut name_bytes)?;
+        let name = String::from_utf8_lossy(&name_bytes)
+            .chars()
+            .filter(|&c| c != '\0')
+            .collect::<String>();
+        let size = read_pack_u64(reader)?;
+
+        let should_write = match files_filter {
+            Some(set) => set.contains(&name),
+            None => true,
+        };
+
+        let safe_name = sanitize_pack_path(&name);
+        let dest = out_dir.join(&safe_name);
+        
+        if should_write {
+            if let Some(parent) = dest.parent() {
+                if !created_dirs.contains(parent) {
+                    std::fs::create_dir_all(parent)?;
+                    created_dirs.insert(parent.to_path_buf());
+                }
+            }
+        }
+
+        entries.push(PackFileEntry {
+            name,
+            safe_name: safe_name.to_string_lossy().to_string(),
+            dest,
+            size,
+            skip: !should_write,
+        });
+    }
+    
+    Ok(entries)
+}
+
 pub fn unpack_stream_to_dir<R: std::io::Read>(
     reader: &mut R,
     out_dir: &Path,
@@ -657,10 +714,9 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     let mut bytes_processed = 0u64;
     let mut last_pct = 10u64;
 
-    // Windows optimization: cache des répertoires déjà créés pour éviter l'overhead NTFS
     let mut created_dirs = std::collections::HashSet::new();
 
-    let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut batch_bytes_acc: u64 = 0;
 
     let mut magic = read_pack_u32(reader)?;
@@ -668,20 +724,15 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
         magic = read_pack_u32(reader)?;
     }
     if magic == 0x524f5849u32 {
-        // ROXI format: index contains file metadata, data follows directly
         let index_len = read_pack_u32(reader)? as u64;
         let mut index_bytes = vec![0u8; index_len as usize];
         read_pack_exact(reader, &mut index_bytes)?;
 
-        // Parse index JSON
         let index: Vec<serde_json::Value> = serde_json::from_slice(&index_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse ROXI index: {}", e))?;
-        // Read next 4 bytes to check for ROXP
         let next = read_pack_u32(reader)?;
 
-        // If no ROXP, data follows directly - put back the 4 bytes we read
         if next != 0x524f5850u32 {
-            // ROXI-only format: put back the 4 bytes and process data stream
             let prefix = next.to_be_bytes();
             let mut chained = std::io::Cursor::new(prefix).chain(reader);
             return unpack_roxi_only_stream(
@@ -694,7 +745,6 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             );
         }
 
-        // ROXP follows - continue with normal ROXP processing
         magic = next;
     }
     if magic != 0x524f5850u32 && magic != 0x524f5856u32 {
@@ -704,8 +754,7 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
 
     file_count = read_pack_u32(reader)? as usize;
 
-    // RAM budget set by main.rs at CLI startup (MiB). Fallback 8 GiB.
-    let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
+let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(8192);
@@ -756,7 +805,10 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
             let name_len = read_pack_u16(reader)? as usize;
             let mut name_bytes = vec![0u8; name_len];
             read_pack_exact(reader, &mut name_bytes)?;
-            let name = String::from_utf8_lossy(&name_bytes).to_string();
+            let name = String::from_utf8_lossy(&name_bytes)
+                .chars()
+                .filter(|&c| c != '\0')
+                .collect::<String>();
             let size = read_pack_u64(reader)?;
 
             let should_write = match &files_filter {
@@ -852,6 +904,233 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
     Ok(written)
 }
 
+pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
+    reader: &mut R,
+    out_dir: &Path,
+    files_opt: Option<&[String]>,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    _total_expected: u64,
+) -> Result<Vec<String>> {
+    let files_filter: Option<std::collections::HashSet<String>> =
+        files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+    let mut created_dirs = std::collections::HashSet::new();
+
+    let mut magic = read_pack_u32(reader)?;
+    if magic == 0x524f5831u32 {
+        magic = read_pack_u32(reader)?;
+    }
+    if magic == 0x524f5849u32 {
+        let index_len = read_pack_u32(reader)? as u64;
+        let mut index_bytes = vec![0u8; index_len as usize];
+        read_pack_exact(reader, &mut index_bytes)?;
+
+        let index: Vec<serde_json::Value> = serde_json::from_slice(&index_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse ROXI index: {}", e))?;
+        let next = read_pack_u32(reader)?;
+
+        if next != 0x524f5850u32 {
+            let prefix = next.to_be_bytes();
+            let mut chained = std::io::Cursor::new(prefix).chain(reader);
+            return unpack_roxi_only_stream_parallel(
+                &mut chained,
+                &index,
+                out_dir,
+                files_filter.as_ref(),
+                progress,
+                0,
+            );
+        }
+
+        magic = next;
+    }
+    if magic != 0x524f5850u32 && magic != 0x524f5856u32 {
+        return Err(anyhow::anyhow!("Invalid pack magic: 0x{:08x}", magic));
+    }
+
+    let file_count = read_pack_u32(reader)? as usize;
+
+    if let Some(ref cb) = progress {
+        cb(10, 100, "reading");
+    }
+
+    const BATCH_SIZE: usize = 512;
+    let mut written = Vec::new();
+    let mut last_pct = 10u64;
+    let mut batch: Vec<(PathBuf, Vec<u8>, String)> = Vec::with_capacity(BATCH_SIZE);
+    let mut bytes_processed: u64 = 0;
+
+    for i in 0..file_count {
+        let name_len = read_pack_u16(reader)? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        read_pack_exact(reader, &mut name_bytes)?;
+        let name = String::from_utf8_lossy(&name_bytes)
+            .chars()
+            .filter(|&c| c != '\0')
+            .collect::<String>();
+        let size = read_pack_u64(reader)?;
+
+        let should_write = match &files_filter {
+            Some(set) => set.contains(&name),
+            None => true,
+        };
+
+        bytes_processed += 2 + name_len as u64 + 8;
+
+        if should_write {
+            let safe_name = sanitize_pack_path(&name);
+            let dest = out_dir.join(&safe_name);
+            if let Some(parent) = dest.parent() {
+                if !created_dirs.contains(parent) {
+                    std::fs::create_dir_all(parent)?;
+                    created_dirs.insert(parent.to_path_buf());
+                }
+            }
+
+            let mut file_data = vec![0u8; size as usize];
+            reader.read_exact(&mut file_data)?;
+            bytes_processed += size;
+
+            batch.push((dest, file_data, safe_name.to_string_lossy().to_string()));
+            written.push(safe_name.to_string_lossy().to_string());
+
+            if batch.len() >= BATCH_SIZE {
+                batch.par_iter()
+                    .try_for_each(|(dest, data, _)| {
+                        write_file_direct(dest, data)
+                    })?;
+                batch.clear();
+            }
+        } else {
+            let mut skip_buf = vec![0u8; 65536];
+            let mut remaining = size;
+            while remaining > 0 {
+                let to_read = remaining.min(skip_buf.len() as u64) as usize;
+                reader.read_exact(&mut skip_buf[..to_read])?;
+                remaining -= to_read as u64;
+                bytes_processed += to_read as u64;
+            }
+        }
+
+        if let Some(ref cb) = progress {
+            let pct = 10 + ((i as u64 * 40) / file_count as u64).min(40);
+            if pct > last_pct {
+                last_pct = pct;
+                cb(pct, 100, "reading");
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        batch.par_iter()
+            .try_for_each(|(dest, data, _)| {
+                write_file_direct(dest, data)
+            })?;
+    }
+
+    if let Some(cb) = progress {
+        cb(100, 100, "done");
+    }
+
+    Ok(written)
+}
+
+fn unpack_roxi_only_stream_parallel<R: std::io::Read>(
+    reader: &mut R,
+    index: &[serde_json::Value],
+    out_dir: &Path,
+    files_filter: Option<&std::collections::HashSet<String>>,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    _total_expected: u64,
+) -> Result<Vec<String>> {
+    let mut created_dirs = std::collections::HashSet::new();
+    let file_count = index.len();
+
+    if let Some(ref cb) = progress {
+        cb(10, 100, "reading");
+    }
+
+    const BATCH_SIZE: usize = 512;
+    let mut written = Vec::new();
+    let mut last_pct = 10u64;
+    let mut batch: Vec<(PathBuf, Vec<u8>, String)> = Vec::with_capacity(BATCH_SIZE);
+
+    for (i, entry) in index.iter().enumerate() {
+        let name = entry
+            .get("path")
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing path in ROXI index"))?
+            .to_string();
+        let size = entry
+            .get("size")
+            .and_then(|s| s.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing size in ROXI index"))?;
+
+        let name_len = name.len() as u64;
+        let header_size = 2 + name_len + 8;
+
+        let mut skip_buf = vec![0u8; header_size as usize];
+        reader.read_exact(&mut skip_buf)?;
+
+        let should_write = match files_filter {
+            Some(set) => set.contains(&name),
+            None => true,
+        };
+
+        if should_write {
+            let safe_name = sanitize_pack_path(&name);
+            let dest = out_dir.join(&safe_name);
+            if let Some(parent) = dest.parent() {
+                if !created_dirs.contains(parent) {
+                    std::fs::create_dir_all(parent)?;
+                    created_dirs.insert(parent.to_path_buf());
+                }
+            }
+
+            let mut file_data = vec![0u8; size as usize];
+            reader.read_exact(&mut file_data)?;
+            batch.push((dest, file_data, safe_name.to_string_lossy().to_string()));
+            written.push(safe_name.to_string_lossy().to_string());
+
+            if batch.len() >= BATCH_SIZE {
+                batch.par_iter()
+                    .try_for_each(|(dest, data, _)| {
+                        write_file_direct(dest, data)
+                    })?;
+                batch.clear();
+            }
+        } else {
+            let mut skip_content = vec![0u8; 65536];
+            let mut remaining = size;
+            while remaining > 0 {
+                let to_read = remaining.min(skip_content.len() as u64) as usize;
+                reader.read_exact(&mut skip_content[..to_read])?;
+                remaining -= to_read as u64;
+            }
+        }
+
+        if let Some(ref cb) = progress {
+            let pct = 10 + ((i as u64 * 40) / file_count as u64).min(40);
+            if pct > last_pct {
+                last_pct = pct;
+                cb(pct, 100, "reading");
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        batch.par_iter()
+            .try_for_each(|(dest, data, _)| {
+                write_file_direct(dest, data)
+            })?;
+    }
+
+    if let Some(cb) = progress {
+        cb(100, 100, "done");
+    }
+
+    Ok(written)
+}
+
 fn unpack_roxi_only_stream<R: std::io::Read>(
     reader: &mut R,
     index: &[serde_json::Value],
@@ -867,7 +1146,27 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
     let file_count = index.len();
     let mut processed_files = 0usize;
 
-    // Files are already in offset order in the index, no sorting needed
+    let mut created_dirs = std::collections::HashSet::new();
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(PathBuf, Vec<u8>)>>(2);
+    let writer_handle = std::thread::spawn(move || -> Result<()> {
+        while let Ok(batch) = rx.recv() {
+            batch
+                .par_iter()
+                .try_for_each(|(dest, data)| -> Result<()> {
+                    write_file_direct(dest, data)
+                        .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
+                })?;
+        }
+        Ok(())
+    });
+
+    let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut batch_bytes: u64 = 0;
+
+    const BATCH_RAM_LIMIT: u64 = 64 * 1024 * 1024;
+    const BATCH_FILE_LIMIT: usize = 4096;
+
     for entry in index {
         let name = entry
             .get("path")
@@ -879,7 +1178,6 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
             .and_then(|s| s.as_u64())
             .ok_or_else(|| anyhow::anyhow!("Missing size in ROXI index"))?;
 
-        // Skip header: nameLen (2) + name (nameLen) + size (8)
         let name_len = name.len() as u64;
         let header_size = 2 + name_len + 8;
         discard_pack_bytes(
@@ -902,34 +1200,29 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
             let safe = sanitize_pack_path(&name);
             let dest = out_dir.join(&safe);
             if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+                if !created_dirs.contains(parent) {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| anyhow::anyhow!("Cannot create parent dir {:?}: {}", parent, e))?;
+                    created_dirs.insert(parent.to_path_buf());
+                }
             }
-            let file = open_file_with_share(&dest)
-                .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
-            let mut writer = std::io::BufWriter::with_capacity(file_buffer_capacity(size), file);
-            copy_pack_bytes(
-                reader,
-                &mut writer,
-                size,
-                &mut bytes_processed,
-                file_count,
-                processed_files,
-                total_expected,
-                progress,
-                &mut last_pct,
-            )?;
-            // Windows optimization: finalisation simplifiée pour éviter l'overhead
-            if cfg!(target_os = "windows") {
-                // Windows: pas de finalisation spéciale pour performance
-                drop(writer);
-            } else {
-                // Linux: finalisation standard (on ne peut pas downcast, donc on drop simplement)
-                drop(writer);
-            }
+
+            let mut file_data = vec![0u8; size as usize];
+            reader.read_exact(&mut file_data)
+                .map_err(|e| anyhow::anyhow!("read ROXI data: {}", e))?;
+            bytes_processed += size;
+            batch_bytes += size;
+
+            batch_files.push((dest, file_data));
             written.push(safe.to_string_lossy().to_string());
             if files_filter.is_some() {
                 requested = requested.saturating_sub(1);
+            }
+
+            if batch_bytes >= BATCH_RAM_LIMIT || batch_files.len() >= BATCH_FILE_LIMIT {
+                tx.send(std::mem::take(&mut batch_files))
+                    .map_err(|_| anyhow::anyhow!("Writer thread died"))?;
+                batch_bytes = 0;
             }
         } else {
             discard_pack_bytes(
@@ -955,12 +1248,18 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
         );
 
         if requested == 0 {
-            if let Some(cb) = progress {
-                cb(99, 100, "finishing");
-            }
-            return Ok(written);
+            break;
         }
     }
+
+    if !batch_files.is_empty() {
+        tx.send(batch_files)
+            .map_err(|_| anyhow::anyhow!("Writer thread died"))?;
+    }
+    drop(tx);
+    writer_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Writer thread panicked"))??;
 
     if let Some(cb) = progress {
         cb(99, 100, "finishing");
@@ -994,7 +1293,18 @@ fn read_pack_u64<R: std::io::Read>(reader: &mut R) -> Result<u64> {
 }
 
 fn sanitize_pack_path(name: &str) -> std::path::PathBuf {
-    let p = Path::new(name);
+    let cleaned: String = name.chars()
+        .filter(|&c| c != '\0')
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    
+    let p = Path::new(&cleaned);
     let mut safe = std::path::PathBuf::new();
     for comp in p.components() {
         if let std::path::Component::Normal(osstr) = comp {
@@ -1082,7 +1392,6 @@ fn open_file_with_share(dest: &Path) -> Result<File> {
     }
 }
 
-// Windows optimization: écriture ultra-optimisée avec Memory Mapping et pré-allocation
 fn write_file_fast(dest: &Path, data: &[u8]) -> Result<()> {
     if data.len() >= 10 * 1024 * 1024 {
         write_file_with_mmap(dest, data)
@@ -1093,22 +1402,21 @@ fn write_file_fast(dest: &Path, data: &[u8]) -> Result<()> {
 }
 
 fn write_file_with_mmap(dest: &Path, data: &[u8]) -> Result<()> {
-    // Créer le fichier avec pré-allocation
     let file = open_file_with_share(dest)?;
-
-    // Pré-allouer l'espace disque (SetEndOfFile)
     file.set_len(data.len() as u64)?;
-
-    // Memory Mapping pour écriture directe
     let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
-
-    // Écriture directe dans la mémoire mappée
     mmap.copy_from_slice(data);
-
-    // Synchronisation asynchrone (pas de flush bloquant)
     mmap.flush_async()?;
-
     Ok(())
+}
+
+fn write_file_direct(dest: &Path, data: &[u8]) -> Result<()> {
+    if data.len() >= 256 * 1024 {
+        write_file_with_mmap(dest, data)
+    } else {
+        std::fs::write(dest, data)?;
+        Ok(())
+    }
 }
 
 fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
