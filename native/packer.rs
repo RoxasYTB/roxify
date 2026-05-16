@@ -9,6 +9,33 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+/// Check whether `path` lives on an NTFS filesystem.
+/// Returns `true` on Linux when the mount point is NTFS (ntfs3 or ntfs-3g).
+/// On non-Linux platforms (macOS, Windows) always returns `false`.
+fn is_ntfs_fs(path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let cstr = match std::ffi::CString::new(path.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statfs(cstr.as_ptr(), &mut st) } != 0 {
+            return false;
+        }
+        // NTFS_SUPER_MAGIC values (varies by driver):
+        //   ntfs-3g (FUSE): 0x5346544e
+        //   ntfs3  (kernel): 0x7366746e
+        let ft = st.f_type as u32;
+        ft == 0x5346544e || ft == 0x7366746e
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
@@ -769,8 +796,9 @@ let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
     const BATCH_FILE_LIMIT: usize = 200_000;
 
     // Spawn the writer thread. It drains batches from the channel and writes
-    // each batch in parallel via rayon. Errors are propagated back through
-    // the JoinHandle.
+    // each batch in parallel via rayon (or sequentially on NTFS, where
+    // concurrent MFT writes cause severe slowdown under ntfs3).
+    let use_parallel = !is_ntfs_fs(out_dir);
     let (tx, rx) = mpsc::sync_channel::<Vec<(PathBuf, Vec<u8>)>>(1);
     let writer_thread = std::thread::Builder::new()
         .name("rox-decode-writer".into())
@@ -779,12 +807,19 @@ let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
                 if batch.is_empty() {
                     continue;
                 }
-                batch
-                    .par_iter()
-                    .try_for_each(|(dest, data)| -> Result<()> {
+                if use_parallel {
+                    batch
+                        .par_iter()
+                        .try_for_each(|(dest, data)| -> Result<()> {
+                            write_file_fast(dest, data)
+                                .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
+                        })?;
+                } else {
+                    for (dest, data) in &batch {
                         write_file_fast(dest, data)
-                            .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
-                    })?;
+                            .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+                    }
+                }
             }
             Ok(())
         })
@@ -947,6 +982,7 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
         cb(10, 100, "reading");
     }
 
+    let use_parallel = !is_ntfs_fs(out_dir);
     const BATCH_SIZE: usize = 512;
     let mut written = Vec::new();
     let mut last_pct = 10u64;
@@ -984,10 +1020,16 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
             written.push(safe_name.to_string_lossy().to_string());
 
             if batch.len() >= BATCH_SIZE {
-                batch.par_iter()
-                    .try_for_each(|(dest, data, _)| {
-                        write_file_direct(dest, data)
-                    })?;
+                if use_parallel {
+                    batch.par_iter()
+                        .try_for_each(|(dest, data, _)| {
+                            write_file_direct(dest, data)
+                        })?;
+                } else {
+                    for (dest, data, _) in &batch {
+                        write_file_direct(dest, data)?;
+                    }
+                }
                 batch.clear();
             }
         } else {
@@ -1005,10 +1047,16 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
     }
 
     if !batch.is_empty() {
-        batch.par_iter()
-            .try_for_each(|(dest, data, _)| {
-                write_file_direct(dest, data)
-            })?;
+        if use_parallel {
+            batch.par_iter()
+                .try_for_each(|(dest, data, _)| {
+                    write_file_direct(dest, data)
+                })?;
+        } else {
+            for (dest, data, _) in &batch {
+                write_file_direct(dest, data)?;
+            }
+        }
     }
 
     if let Some(cb) = progress {
@@ -1033,6 +1081,7 @@ fn unpack_roxi_only_stream_parallel<R: std::io::Read>(
         cb(10, 100, "reading");
     }
 
+    let use_parallel = !is_ntfs_fs(out_dir);
     const BATCH_SIZE: usize = 512;
     let mut written = Vec::new();
     let mut last_pct = 10u64;
@@ -1076,10 +1125,16 @@ fn unpack_roxi_only_stream_parallel<R: std::io::Read>(
             written.push(safe_name.to_string_lossy().to_string());
 
             if batch.len() >= BATCH_SIZE {
-                batch.par_iter()
-                    .try_for_each(|(dest, data, _)| {
-                        write_file_direct(dest, data)
-                    })?;
+                if use_parallel {
+                    batch.par_iter()
+                        .try_for_each(|(dest, data, _)| {
+                            write_file_direct(dest, data)
+                        })?;
+                } else {
+                    for (dest, data, _) in &batch {
+                        write_file_direct(dest, data)?;
+                    }
+                }
                 batch.clear();
             }
         } else {
@@ -1102,10 +1157,16 @@ fn unpack_roxi_only_stream_parallel<R: std::io::Read>(
     }
 
     if !batch.is_empty() {
-        batch.par_iter()
-            .try_for_each(|(dest, data, _)| {
-                write_file_direct(dest, data)
-            })?;
+        if use_parallel {
+            batch.par_iter()
+                .try_for_each(|(dest, data, _)| {
+                    write_file_direct(dest, data)
+                })?;
+        } else {
+            for (dest, data, _) in &batch {
+                write_file_direct(dest, data)?;
+            }
+        }
     }
 
     if let Some(cb) = progress {
@@ -1132,15 +1193,23 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
 
     let mut created_dirs = std::collections::HashSet::new();
 
+    let use_parallel = !is_ntfs_fs(out_dir);
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(PathBuf, Vec<u8>)>>(2);
     let writer_handle = std::thread::spawn(move || -> Result<()> {
         while let Ok(batch) = rx.recv() {
-            batch
-                .par_iter()
-                .try_for_each(|(dest, data)| -> Result<()> {
+            if use_parallel {
+                batch
+                    .par_iter()
+                    .try_for_each(|(dest, data)| -> Result<()> {
+                        write_file_direct(dest, data)
+                            .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
+                    })?;
+            } else {
+                for (dest, data) in &batch {
                     write_file_direct(dest, data)
-                        .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))
-                })?;
+                        .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+                }
+            }
         }
         Ok(())
     });
