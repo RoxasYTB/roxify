@@ -93,8 +93,9 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
-          RUSTFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-C target-cpu=x86-64-v2' || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux') && contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || contains(matrix.target, 'apple') && '-C link-arg=-undefined -C link-arg=dynamic_lookup' || '' }}
           CFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-march=x86-64-v2 -mtune=generic' || '' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'apple') && 'off' || 'thin' }}
         run: |
           cargo build --release --lib --no-default-features --target ${{ matrix.target }}
 
@@ -104,7 +105,8 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
-          RUSTFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-C target-cpu=x86-64-v2' || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux') && contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || contains(matrix.target, 'apple') && '-C link-arg=-undefined -C link-arg=dynamic_lookup' || '' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'apple') && 'off' || 'thin' }}
           CFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-march=x86-64-v2 -mtune=generic' || '' }}
         run: |
           cargo build --release --bin roxify_native --target ${{ matrix.target }}
