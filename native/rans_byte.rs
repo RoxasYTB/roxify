@@ -26,7 +26,7 @@ impl SymbolStats {
             freqs[0] = PROB_SCALE;
             let mut cum = [0u32; 257];
             cum[1] = PROB_SCALE;
-            for i in 2..257 { cum[i] = PROB_SCALE; }
+            cum[2..].fill(PROB_SCALE);
             return SymbolStats { freqs, cum_freqs: cum };
         }
 
@@ -155,9 +155,9 @@ pub fn rans_encode_block(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 32);
 
     let len = data.len();
-    let even_start = if len % 2 == 0 { len } else { len - 1 };
+    let even_start = if len.is_multiple_of(2) { len } else { len - 1 };
 
-    if len % 2 != 0 {
+    if !len.is_multiple_of(2) {
         let sym = data[len - 1] as usize;
         rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym]);
     }
@@ -276,7 +276,7 @@ fn rans_decode_interleaved(
         rans_dec_renorm(&mut s1, encoded, pos);
     }
 
-    if output_len % 2 != 0 {
+    if !output_len.is_multiple_of(2) {
         let slot = s1 & (PROB_SCALE - 1);
         let sym = cum2sym[slot as usize];
         output.push(sym);

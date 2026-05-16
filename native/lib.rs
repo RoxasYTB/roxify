@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::type_complexity, clippy::too_many_arguments)]
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -52,7 +52,7 @@ pub struct CompressionReport {
 #[napi]
 pub fn scan_pixels(buffer: Buffer, channels: u32, marker_bytes: Option<Buffer>) -> Result<ScanResult> {
     let slice: &[u8] = &buffer;
-    let markers_slice: Option<&[u8]> = marker_bytes.as_ref().map(|b| &**b);
+    let markers_slice: Option<&[u8]> = marker_bytes.as_deref();
     let res = core::scan_pixels_bytes(slice, channels as usize, markers_slice);
     Ok(ScanResult { marker_positions: res.marker_positions, magic_positions: res.magic_positions })
 }
@@ -84,27 +84,27 @@ pub fn native_delta_decode(buffer: Buffer) -> Buffer {
 #[cfg(not(test))]
 #[napi]
 pub fn native_zstd_compress(buffer: Buffer, level: i32) -> Result<Buffer> {
-    core::zstd_compress_bytes(&buffer, level, None).map(Buffer::from).map_err(|e| Error::from_reason(e))
+    core::zstd_compress_bytes(&buffer, level, None).map(Buffer::from).map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
 #[napi]
 pub fn native_zstd_compress_with_dict(buffer: Buffer, level: i32, dict: Buffer) -> Result<Buffer> {
     let dict_slice: &[u8] = &dict;
-    core::zstd_compress_bytes(&buffer, level, Some(dict_slice)).map(Buffer::from).map_err(|e| Error::from_reason(e))
+    core::zstd_compress_bytes(&buffer, level, Some(dict_slice)).map(Buffer::from).map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
 #[napi]
 pub fn native_zstd_decompress(buffer: Buffer) -> Result<Buffer> {
-    core::zstd_decompress_bytes(&buffer, None).map(Buffer::from).map_err(|e| Error::from_reason(e))
+    core::zstd_decompress_bytes(&buffer, None).map(Buffer::from).map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
 #[napi]
 pub fn native_zstd_decompress_with_dict(buffer: Buffer, dict: Buffer) -> Result<Buffer> {
     let dict_slice: &[u8] = &dict;
-    core::zstd_decompress_bytes(&buffer, Some(dict_slice)).map(Buffer::from).map_err(|e| Error::from_reason(e))
+    core::zstd_decompress_bytes(&buffer, Some(dict_slice)).map(Buffer::from).map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
@@ -257,7 +257,7 @@ pub struct PngChunkData {
 #[napi]
 pub fn extract_png_chunks(png_buffer: Buffer) -> Result<Vec<PngChunkData>> {
     let chunks = png_utils::extract_png_chunks(&png_buffer)
-        .map_err(|e| Error::from_reason(e))?;
+        .map_err(Error::from_reason)?;
 
     Ok(chunks.into_iter().map(|c| PngChunkData {
         name: c.name,
@@ -277,7 +277,7 @@ pub fn encode_png_chunks(chunks: Vec<PngChunkData>) -> Result<Buffer> {
 
     png_utils::encode_png_chunks(&native_chunks)
         .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 #[napi(object)]
@@ -292,7 +292,7 @@ pub struct PngMetadata {
 #[napi]
 pub fn get_png_metadata(png_buffer: Buffer) -> Result<PngMetadata> {
     let (width, height, bit_depth, color_type) = png_utils::get_png_metadata(&png_buffer)
-        .map_err(|e| Error::from_reason(e))?;
+        .map_err(Error::from_reason)?;
 
     Ok(PngMetadata {
         width,
@@ -319,14 +319,14 @@ pub fn sharp_resize_image(
 ) -> Result<Buffer> {
     image_utils::sharp_resize(&input_buffer, width, height, &kernel)
         .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
 #[napi]
 pub fn sharp_raw_pixels(input_buffer: Buffer) -> Result<Buffer> {
     let (pixels, _w, _h) = image_utils::sharp_raw_pixels(&input_buffer)
-        .map_err(|e| Error::from_reason(e))?;
+        .map_err(Error::from_reason)?;
     Ok(pixels.into())
 }
 
@@ -341,7 +341,7 @@ pub struct RawPixelsWithDimensions {
 #[napi]
 pub fn sharp_to_raw(input_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
     let (pixels, width, height) = image_utils::sharp_raw_pixels(&input_buffer)
-        .map_err(|e| Error::from_reason(e))?;
+        .map_err(Error::from_reason)?;
     Ok(RawPixelsWithDimensions { pixels: pixels.into(), width, height })
 }
 
@@ -349,7 +349,7 @@ pub fn sharp_to_raw(input_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
 #[napi]
 pub fn sharp_metadata(input_buffer: Buffer) -> Result<SharpMetadata> {
     let (width, height, format) = image_utils::sharp_metadata(&input_buffer)
-        .map_err(|e| Error::from_reason(e))?;
+        .map_err(Error::from_reason)?;
     Ok(SharpMetadata { width, height, format })
 }
 
@@ -358,14 +358,14 @@ pub fn sharp_metadata(input_buffer: Buffer) -> Result<SharpMetadata> {
 pub fn rgb_to_png(rgb_buffer: Buffer, width: u32, height: u32) -> Result<Buffer> {
     image_utils::rgb_to_png(&rgb_buffer, width, height)
         .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
 #[napi]
 pub fn png_to_rgb(png_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
     let (pixels, width, height) = image_utils::png_to_rgb(&png_buffer)
-        .map_err(|e| Error::from_reason(e))?;
+        .map_err(Error::from_reason)?;
     Ok(RawPixelsWithDimensions { pixels: pixels.into(), width, height })
 }
 
@@ -374,7 +374,7 @@ pub fn png_to_rgb(png_buffer: Buffer) -> Result<RawPixelsWithDimensions> {
 pub fn crop_and_reconstitute(png_buffer: Buffer) -> Result<Buffer> {
     reconstitution::crop_and_reconstitute(&png_buffer)
         .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
@@ -382,7 +382,7 @@ pub fn crop_and_reconstitute(png_buffer: Buffer) -> Result<Buffer> {
 pub fn unstretch_nn(png_buffer: Buffer) -> Result<Buffer> {
     reconstitution::unstretch_nn(&png_buffer)
         .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
@@ -390,7 +390,7 @@ pub fn unstretch_nn(png_buffer: Buffer) -> Result<Buffer> {
 pub fn extract_payload_from_png(png_buffer: Buffer) -> Result<Buffer> {
     png_utils::extract_payload_from_png(&png_buffer)
         .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]
@@ -403,7 +403,7 @@ pub fn extract_name_from_png(png_buffer: Buffer) -> Option<String> {
 #[napi]
 pub fn extract_file_list_from_pixels(png_buffer: Buffer) -> Result<String> {
     png_utils::extract_file_list_from_pixels(&png_buffer)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 // ─── WAV container NAPI exports ──────────────────────────────────────────────
@@ -475,7 +475,7 @@ pub fn native_bytes_to_wav(buffer: Buffer) -> Buffer {
 pub fn native_wav_to_bytes(wav_buffer: Buffer) -> Result<Buffer> {
     audio::wav_to_bytes(&wav_buffer)
         .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e))
+        .map_err(Error::from_reason)
 }
 
 #[cfg(not(test))]

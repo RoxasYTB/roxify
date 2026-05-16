@@ -40,7 +40,7 @@ fn count_transitions_v(get_pixel: &impl Fn(u32, u32) -> [u8; 4], x: u32, sy: u32
     transition_count(&col)
 }
 
-fn median(v: &mut Vec<u32>) -> u32 {
+fn median(v: &mut [u32]) -> u32 {
     if v.is_empty() { return 0; }
     v.sort_unstable();
     v[v.len() / 2]
@@ -165,7 +165,7 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
 
     // Déduplique les marqueurs proches : garde pour chaque cluster (même ex, ey à ±marker_w)
     // le plus grand. On trie par taille décroissante et on supprime les doublons proches.
-    start_infos.sort_by(|a, b| (b.2 * b.3).cmp(&(a.2 * a.3)));
+    start_infos.sort_by_key(|b| std::cmp::Reverse(b.2 * b.3));
     let mut deduped_starts: Vec<(u32, u32, u32, u32)> = Vec::new();
     for s in &start_infos {
         let is_dup = deduped_starts.iter().any(|d: &(u32, u32, u32, u32)| {
@@ -349,7 +349,7 @@ pub fn crop_and_reconstitute(png_data: &[u8]) -> Result<Vec<u8>, String> {
             // Filtre : la zone encodée NN a des blocs monochromes → intra très bas
             // Zone de fond aléatoire → intra ≈ lw × n_scan × 0.99 >> 0
             // Seuil : lw/8 × n_scan pour permettre ≈ lw/8 pixels parasites
-            let intra_threshold = ((lw as u32 / 2 + 3) * n_scan).max(n_scan * 3);
+            let intra_threshold = ((lw / 2 + 3) * n_scan).max(n_scan * 3);
 
             if intra_final > intra_threshold {
                 continue;

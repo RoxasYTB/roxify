@@ -153,7 +153,7 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     let marker_end_bytes = 9;
 
     let data_with_markers_len = marker_start_len + padded_len;
-    let data_pixels = (data_with_markers_len + 2) / 3;
+    let data_pixels = data_with_markers_len.div_ceil(3);
     let end_marker_pixels = 3;
     let total_pixels = data_pixels + end_marker_pixels;
 
@@ -277,7 +277,7 @@ fn create_raw_deflate_from_rows(flat: &[u8], row_bytes: usize, height: usize) ->
     }
 
     const MAX_BLOCK: usize = 65535;
-    let num_blocks = (scanlines_total + MAX_BLOCK - 1) / MAX_BLOCK;
+    let num_blocks = scanlines_total.div_ceil(MAX_BLOCK);
     let total_size = 2 + num_blocks * 5 + scanlines_total + 4;
     let mut result = Vec::with_capacity(total_size);
 

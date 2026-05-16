@@ -42,7 +42,7 @@ impl<'a, W: Write> ChunkedIdatWriter<'a, W> {
     fn with_max_chunk_len(writer: &'a mut W, max_chunk_len: usize) -> Self {
         Self {
             writer,
-            buffer: Vec::with_capacity(max_chunk_len.max(1).min(MAX_PNG_CHUNK_DATA_LEN)),
+            buffer: Vec::with_capacity(max_chunk_len.clamp(1, MAX_PNG_CHUNK_DATA_LEN)),
             max_chunk_len: max_chunk_len.max(1),
         }
     }

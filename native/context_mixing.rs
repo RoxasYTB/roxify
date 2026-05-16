@@ -30,6 +30,12 @@ pub struct ContextMixer {
     contexts_order2: Vec<[[ProbabilityEstimate; 256]; 256]>,
 }
 
+impl Default for ContextMixer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ContextMixer {
     pub fn new() -> Self {
         ContextMixer {

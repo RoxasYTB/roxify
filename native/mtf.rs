@@ -1,8 +1,5 @@
 pub fn mtf_encode(data: &[u8]) -> Vec<u8> {
-    let mut table = [0u8; 256];
-    for i in 0..256 {
-        table[i] = i as u8;
-    }
+    let mut table = core::array::from_fn::<u8, 256, _>(|i| i as u8);
     let mut output = Vec::with_capacity(data.len());
 
     for &byte in data {
@@ -19,10 +16,7 @@ pub fn mtf_encode(data: &[u8]) -> Vec<u8> {
 }
 
 pub fn mtf_decode(data: &[u8]) -> Vec<u8> {
-    let mut table = [0u8; 256];
-    for i in 0..256 {
-        table[i] = i as u8;
-    }
+    let mut table = core::array::from_fn::<u8, 256, _>(|i| i as u8);
     let mut output = Vec::with_capacity(data.len());
 
     for &idx in data {
@@ -93,9 +87,7 @@ pub fn rle0_decode(data: &[u8]) -> Vec<u8> {
                 run = data[i] as u32;
                 i += 1;
             }
-            for _ in 0..run {
-                output.push(0);
-            }
+            output.resize(output.len() + run as usize, 0);
         } else {
             output.push(data[i]);
             i += 1;

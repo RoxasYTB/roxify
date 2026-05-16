@@ -1,7 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use image::ImageReader;
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use zstd;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -61,6 +60,7 @@ pub fn extract_png_chunks_streaming<R: Read + Seek>(reader: &mut R) -> Result<Ve
     Ok(chunks)
 }
 
+#[allow(clippy::op_ref)]
 pub fn extract_png_chunks(png_data: &[u8]) -> Result<Vec<PngChunk>, String> {
     if png_data.len() < 8 || &png_data[..8] != &PNG_SIG.0 {
         return Err("Invalid PNG signature".to_string());
@@ -142,6 +142,7 @@ pub fn get_png_metadata(png_data: &[u8]) -> Result<(u32, u32, u8, u8), String> {
 
 pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
     // Windows optimization: validation rapide de la signature PNG
+    #[allow(clippy::op_ref)]
     if png_data.len() < 8 || &png_data[..8] != &[137, 80, 78, 71, 13, 10, 26, 10] {
         return Err("Invalid PNG signature".to_string());
     }
@@ -297,18 +298,8 @@ fn reconstruct_logical_pixels_from_nn(
     // Recherche améliorée : plus flexible et robuste
     'outer: for y in 0..h {
         for x in 0..w {
-            // Essayer différentes positions dans le pixel
-            let p = get(x, y);
-            let pixel_data = [p[0], p[1], p[2]];
-
-            // Vérifier si le magic bytes est au début du pixel
-            if pixel_data.len() >= 4 && pixel_data[0..4] == magic {
-                header_row = Some(y);
-                header_col = Some(x);
-                break 'outer;
-            }
-
             // Vérifier si le magic bytes est distribué sur plusieurs pixels
+            let p = get(x, y);
             if x < w.saturating_sub(1) {
                 let p_next = get(x + 1, y);
                 let combined = [p[0], p[1], p[2], p_next[0]];

@@ -27,6 +27,12 @@ pub struct HybridCompressor {
     block_size: usize,
 }
 
+impl Default for HybridCompressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HybridCompressor {
     pub fn new() -> Self {
         HybridCompressor {

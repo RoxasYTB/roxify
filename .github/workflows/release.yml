@@ -138,6 +138,7 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || '' }}
         run: |
           cargo build --release --lib --no-default-features --target ${{ matrix.target }}
 
@@ -146,6 +147,7 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || '' }}
         run: |
           cargo build --release --bin roxify_native --target ${{ matrix.target }}
 

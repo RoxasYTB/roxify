@@ -72,7 +72,7 @@ pub fn tar_file_list_fast(tar_data: &[u8]) -> Vec<(String, u64)> {
         if !name.is_empty() {
             list.push((name, size));
         }
-        let data_blocks = (size as usize + 511) / 512;
+        let data_blocks = (size as usize).div_ceil(512);
         pos += 512 + data_blocks * 512;
     }
     list

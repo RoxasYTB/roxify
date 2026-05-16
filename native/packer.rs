@@ -439,7 +439,7 @@ pub fn unpack_buffer_to_dir(
     pos += 4;
 
     let files_filter: Option<std::collections::HashSet<String>> =
-        files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+        files_opt.map(|l| l.iter().cloned().collect());
 
     let mut to_write: Vec<(PathBuf, &[u8])> = Vec::with_capacity(file_count);
     let mut written_names: Vec<String> = Vec::with_capacity(file_count);
@@ -503,7 +503,7 @@ fn unpack_entries_sequential(
     let mut written = Vec::new();
     let mut pos = start;
     let files_filter: Option<std::collections::HashSet<String>> =
-        files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+        files_opt.map(|l| l.iter().cloned().collect());
 
     while pos + 2 < buf.len() {
         let magic = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap_or([0; 4]));
@@ -572,7 +572,7 @@ fn unpack_rox_vfs_to_dir(
 ) -> Result<Vec<String>> {
     let archive = VfsArchive::from_rox_buffer(buf)?;
     let files_filter: Option<std::collections::HashSet<String>> = files_opt
-        .map(|l| l.iter().map(|s| s.clone()).collect());
+        .map(|l| l.iter().cloned().collect());
     let mut written = Vec::new();
 
     for entry in archive.entries {
@@ -612,29 +612,23 @@ fn unpack_rox_vfs_to_dir(
 fn unpack_progress_percent(
     total_expected: u64,
     bytes_processed: u64,
-    file_count: usize,
-    processed_files: usize,
 ) -> u64 {
-    if total_expected > 0 {
-        return 10 + (bytes_processed.saturating_mul(89) / total_expected).min(89);
-    }
-    if file_count > 0 {
-        return 10 + ((processed_files as u64).saturating_mul(89) / file_count as u64).min(89);
-    }
-    10
+    10 + bytes_processed
+        .saturating_mul(89)
+        .checked_div(total_expected)
+        .map(|pct| pct.min(89))
+        .unwrap_or(0)
 }
 
 fn report_unpack_progress(
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
     total_expected: u64,
     bytes_processed: u64,
-    file_count: usize,
-    processed_files: usize,
     last_pct: &mut u64,
 ) {
     if let Some(cb) = progress {
         let pct =
-            unpack_progress_percent(total_expected, bytes_processed, file_count, processed_files);
+            unpack_progress_percent(total_expected, bytes_processed);
         if pct > *last_pct {
             *last_pct = pct;
             cb(pct, 100, "extracting");
@@ -708,9 +702,8 @@ pub fn unpack_stream_to_dir<R: std::io::Read>(
 ) -> Result<Vec<String>> {
     let mut written = Vec::new();
     let files_filter: Option<std::collections::HashSet<String>> =
-        files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+        files_opt.map(|l| l.iter().cloned().collect());
     let mut requested = files_filter.as_ref().map(|s| s.len()).unwrap_or(usize::MAX);
-    let file_count: usize;
     let mut processed_files = 0usize;
     let mut bytes_processed = 0u64;
     let mut last_pct = 10u64;
@@ -753,7 +746,7 @@ let mut batch_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     }
     let _is_roxv = magic == 0x524f5856u32;
 
-    file_count = read_pack_u32(reader)? as usize;
+    let file_count = read_pack_u32(reader)? as usize;
 
 let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
         .ok()
@@ -866,10 +859,10 @@ let budget_mb = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE")
                 progress,
                 total_expected,
                 bytes_processed,
-                file_count,
-                processed_files,
                 &mut last_pct,
             );
+
+
 
             if requested == 0 {
                 break;
@@ -913,7 +906,7 @@ pub fn unpack_stream_to_dir_parallel<R: std::io::Read>(
     _total_expected: u64,
 ) -> Result<Vec<String>> {
     let files_filter: Option<std::collections::HashSet<String>> =
-        files_opt.map(|l| l.iter().map(|s| s.clone()).collect());
+        files_opt.map(|l| l.iter().cloned().collect());
     let mut created_dirs = std::collections::HashSet::new();
 
     let mut magic = read_pack_u32(reader)?;
@@ -1233,10 +1226,10 @@ fn unpack_roxi_only_stream<R: std::io::Read>(
             progress,
             total_expected,
             bytes_processed,
-            file_count,
-            processed_files,
             &mut last_pct,
         );
+
+
 
         if requested == 0 {
             break;
@@ -1285,7 +1278,7 @@ fn read_pack_u64<R: std::io::Read>(reader: &mut R) -> Result<u64> {
 
 fn sanitize_pack_path(name: &str) -> std::path::PathBuf {
     let mut safe = std::path::PathBuf::new();
-    for raw in name.split(|c: char| c == '/' || c == '\\') {
+    for raw in name.split(['/', '\\']) {
         let cleaned: String = raw.chars()
             .filter(|&c| c != '\0')
             .map(|c| {
@@ -1415,8 +1408,8 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
     writer: &mut W,
     mut remaining: u64,
     bytes_processed: &mut u64,
-    file_count: usize,
-    processed_files: usize,
+    _file_count: usize,
+    _processed_files: usize,
     total_expected: u64,
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
     last_pct: &mut u64,
@@ -1437,7 +1430,7 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
             .map_err(|e| anyhow::anyhow!("Fast copy error: {}", e))?;
         *bytes_processed = bytes_processed.saturating_add(copied as u64);
         if let Some(cb) = progress {
-            let pct = unpack_progress_percent(total_expected, *bytes_processed, file_count, processed_files);
+            let pct = unpack_progress_percent(total_expected, *bytes_processed);
             if pct > *last_pct {
                 *last_pct = pct;
                 cb(pct, 100, "extracting");
@@ -1463,8 +1456,6 @@ fn copy_pack_bytes<R: std::io::Read, W: std::io::Write>(
             progress,
             total_expected,
             *bytes_processed,
-            file_count,
-            processed_files,
             last_pct,
         );
     }
@@ -1475,8 +1466,8 @@ fn discard_pack_bytes<R: std::io::Read>(
     reader: &mut R,
     mut remaining: u64,
     bytes_processed: &mut u64,
-    file_count: usize,
-    processed_files: usize,
+    _file_count: usize,
+    _processed_files: usize,
     total_expected: u64,
     progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
     last_pct: &mut u64,
@@ -1496,8 +1487,6 @@ fn discard_pack_bytes<R: std::io::Read>(
             progress,
             total_expected,
             *bytes_processed,
-            file_count,
-            processed_files,
             last_pct,
         );
     }

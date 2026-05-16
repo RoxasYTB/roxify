@@ -46,7 +46,7 @@ pub fn encode_to_png_file(
     let marker_start_len = 12;
     let marker_end_bytes = 9;
     let data_with_markers_len = marker_start_len + padded_len;
-    let data_pixels = (data_with_markers_len + 2) / 3;
+    let data_pixels = data_with_markers_len.div_ceil(3);
     let end_marker_pixels = 3;
     let total_pixels = data_pixels + end_marker_pixels;
 

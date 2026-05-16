@@ -81,7 +81,7 @@ pub fn crc32_bytes(buf: &[u8]) -> u32 {
                 h.update(chunk);
                 h
             })
-            .reduce(|| crc32fast::Hasher::new(), |mut a, b| {
+            .reduce(crc32fast::Hasher::new, |mut a, b| {
                 a.combine(&b);
                 a
             });
@@ -231,7 +231,7 @@ fn compute_adaptive_level(buf: &[u8], requested_level: i32, total_len: usize) ->
 pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
-    let actual_level = level.min(22).max(1);
+    let actual_level = level.clamp(1, 22);
     let total_len = prefix.len() + buf.len();
     let adaptive_level = compute_adaptive_level(buf, actual_level, total_len);
 

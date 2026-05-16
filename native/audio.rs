@@ -5,7 +5,6 @@
 ///
 /// Compared to PNG (stored deflate): PNG overhead grows with data size
 /// (zlib framing, filter bytes, chunk CRCs). WAV overhead is constant.
-
 const WAV_HEADER_SIZE: usize = 44;
 const SAMPLE_RATE: u32 = 44100;
 const BITS_PER_SAMPLE: u16 = 8;
@@ -108,7 +107,7 @@ pub fn wav_to_bytes(wav: &[u8]) -> Result<Vec<u8>, String> {
             .checked_add(8)
             .and_then(|v| v.checked_add(chunk_size))
             .ok_or_else(|| "WAV chunk offset overflow".to_string())?;
-        if chunk_size % 2 != 0 {
+        if !chunk_size.is_multiple_of(2) {
             offset = offset.checked_add(1)
                 .ok_or_else(|| "WAV chunk padding overflow".to_string())?;
         }
