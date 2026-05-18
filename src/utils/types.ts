@@ -14,8 +14,6 @@ export interface EncodeOptions {
   _skipAuto?: boolean;
   output?: 'auto' | 'png' | 'rox';
   outputFormat?: 'png' | 'webp';
-  /** Container format: 'image' (PNG, default) or 'sound' (WAV) */
-  container?: 'image' | 'sound';
   /**
    * Enable lossy-resilient encoding. When true, the output survives lossy
    * compression (MP3/AAC for audio, JPEG/WebP for image) using QR-code-like

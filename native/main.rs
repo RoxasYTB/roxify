@@ -7,7 +7,6 @@ use std::io::{Read, Write};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod archive;
-mod audio;
 mod core;
 mod crypto;
 mod encoder;

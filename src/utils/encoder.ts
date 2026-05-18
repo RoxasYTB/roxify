@@ -49,30 +49,7 @@ export async function encodeBinaryToPng(
     ? normalizeNativeFileList(opts.fileList as Array<{ name: string; size?: number }>)
     : undefined;
 
-  // --- PNG container via native Rust encoder ---
-  if (opts.container === 'sound') {
-    if (opts.passphrase) {
-      const encryptType = opts.encrypt && opts.encrypt !== 'auto' ? opts.encrypt : 'aes';
-      const result = native.nativeEncodeWavWithEncryptionNameAndFilelist(
-        inputBuf,
-        compressionLevel,
-        opts.passphrase,
-        encryptType,
-        fileName,
-        fileListJson,
-      );
-      return Buffer.from(result);
-    } else {
-      const result = native.nativeEncodeWavWithNameAndFilelist(
-        inputBuf,
-        compressionLevel,
-        fileName,
-        fileListJson,
-      );
-      return Buffer.from(result);
-    }
-  } else {
-    if (opts.passphrase) {
+  if (opts.passphrase) {
       const encryptType = opts.encrypt && opts.encrypt !== 'auto' ? opts.encrypt : 'aes';
       const result = native.nativeEncodePngWithEncryptionNameAndFilelist(
         inputBuf,
@@ -91,7 +68,6 @@ export async function encodeBinaryToPng(
         fileListJson,
       );
       return Buffer.from(result);
-    }
   }
 }
 

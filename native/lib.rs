@@ -20,7 +20,6 @@ mod png_utils;
 mod png_chunk_writer;
 mod io_advice;
 mod image_utils;
-mod audio;
 mod progress;
 mod reconstitution;
 mod archive;
@@ -406,81 +405,4 @@ pub fn extract_file_list_from_pixels(png_buffer: Buffer) -> Result<String> {
         .map_err(Error::from_reason)
 }
 
-// ─── WAV container NAPI exports ──────────────────────────────────────────────
-
-#[cfg(not(test))]
-#[napi]
-pub fn native_encode_wav(buffer: Buffer, compression_level: i32) -> Result<Buffer> {
-    encoder::encode_to_wav(&buffer, compression_level)
-        .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e.to_string()))
-}
-
-#[cfg(not(test))]
-#[napi]
-pub fn native_encode_wav_with_name_and_filelist(
-    buffer: Buffer,
-    compression_level: i32,
-    name: Option<String>,
-    file_list_json: Option<String>,
-) -> Result<Buffer> {
-    encoder::encode_to_wav_with_name_and_filelist(
-        &buffer,
-        compression_level,
-        name.as_deref(),
-        file_list_json.as_deref(),
-    )
-    .map(Buffer::from)
-    .map_err(|e| Error::from_reason(e.to_string()))
-}
-
-#[cfg(not(test))]
-#[napi]
-pub fn native_encode_wav_with_encryption_name_and_filelist(
-    buffer: Buffer,
-    compression_level: i32,
-    passphrase: Option<String>,
-    encrypt_type: Option<String>,
-    name: Option<String>,
-    file_list_json: Option<String>,
-) -> Result<Buffer> {
-    encoder::encode_to_wav_with_encryption_name_and_filelist(
-        &buffer,
-        compression_level,
-        passphrase.as_deref(),
-        encrypt_type.as_deref(),
-        name.as_deref(),
-        file_list_json.as_deref(),
-    )
-    .map(Buffer::from)
-    .map_err(|e| Error::from_reason(e.to_string()))
-}
-
-#[cfg(not(test))]
-#[napi]
-pub fn native_decode_wav_payload(wav_buffer: Buffer) -> Result<Buffer> {
-    encoder::decode_wav_payload(&wav_buffer)
-        .map(Buffer::from)
-        .map_err(|e| Error::from_reason(e.to_string()))
-}
-
-#[cfg(not(test))]
-#[napi]
-pub fn native_bytes_to_wav(buffer: Buffer) -> Buffer {
-    audio::bytes_to_wav(&buffer).into()
-}
-
-#[cfg(not(test))]
-#[napi]
-pub fn native_wav_to_bytes(wav_buffer: Buffer) -> Result<Buffer> {
-    audio::wav_to_bytes(&wav_buffer)
-        .map(Buffer::from)
-        .map_err(Error::from_reason)
-}
-
-#[cfg(not(test))]
-#[napi]
-pub fn native_is_wav(buffer: Buffer) -> bool {
-    audio::is_wav(&buffer)
-}
 

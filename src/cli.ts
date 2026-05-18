@@ -37,7 +37,7 @@ async function loadJsEngine() {
 type VFSIndexEntry = { path: string; size: number; offset: number };
 
 // Keep in sync with package.json#version.
-const VERSION = '1.16.13';
+const VERSION = '1.16.14';
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
@@ -93,20 +93,18 @@ async function readLargeFile(filePath: string): Promise<Buffer> {
 
 function showHelp() {
   console.log(`
-ROX CLI — Encode/decode binary in PNG or WAV
+ROX CLI — Encode/decode binary in PNG
 
 Usage:
   npx rox <command> [options]
 
 Commands:
   encode <input>... [output]   Encode one or more files/directories
-  decode <input> [output]      Decode PNG/WAV to original file
+  decode <input> [output]      Decode PNG to original file
   list <input>                 List files in a Rox archive
   havepassphrase <input>       Check whether the archive requires a passphrase
 
 Options:
-  --image                   Use PNG container (default)
-  --sound                   Use WAV audio container (smaller overhead, faster)
   -p, --passphrase <pass>   Use passphrase (AES-256-GCM)
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
@@ -127,17 +125,10 @@ Lossy-Resilient Encoding:
   --ecc-level <level>       ECC redundancy: low|medium|quartile|high (default: medium)
   --block-size <n>          Robust image block size: 2-8 pixels (default: 4)
 
-  When --lossy-resilient is active, data is encoded with Reed-Solomon ECC
-  and rendered as a QR-code-style grid (image) or MFSK tones (audio).
-  Use --sound or --image to choose the container format.
-
 Examples:
   npx rox encode secret.pdf                      Encode to PNG
-  npx rox encode secret.pdf --sound               Encode to WAV
   npx rox encode secret.pdf --lossy-resilient     Lossy-resilient PNG
-  npx rox encode secret.pdf --lossy-resilient --sound --ecc-level high
   npx rox decode secret.pdf.png                   Decode back
-  npx rox decode secret.pdf.wav                   Decode WAV back
 
 Run "npx rox help" for this message.
 `);
@@ -192,12 +183,6 @@ function parseArgs(args: string[]) {
         }
         parsed.blockSize = bs;
         i += 2;
-      } else if (key === 'sound') {
-        parsed.container = 'sound';
-        i++;
-      } else if (key === 'image') {
-        parsed.container = 'image';
-        i++;
       } else if (key === 'debug-dir') {
         parsed.debugDir = args[i + 1];
         i += 2;
@@ -297,13 +282,12 @@ async function encodeCommand(args: string[]) {
     safeCwd = '/';
   }
   const resolvedInputs = inputPaths.map((p: string) => resolve(safeCwd, p));
-  const containerMode = parsed.container || 'image'; // default: image (PNG)
-  const containerExt = containerMode === 'sound' ? '.wav' : '.png';
-  let outputName = inputPaths.length === 1 ? basename(firstInput) : 'archive';
+  const outputNameBase = inputPaths.length === 1 ? basename(firstInput) : 'archive';
+  let outputName = outputNameBase;
   if (inputPaths.length === 1 && !statSync(resolvedInputs[0]).isDirectory()) {
-    outputName = outputName.replace(/(\.[^.]+)?$/, containerExt);
+    outputName = outputNameBase.replace(/(\.[^.]+)?$/, '.png');
   } else {
-    outputName += containerExt;
+    outputName = outputNameBase + '.png';
   }
   let resolvedOutput;
   try {
@@ -339,7 +323,7 @@ async function encodeCommand(args: string[]) {
     }
   } catch (e) { }
 
-  if (isRustBinaryAvailable() && !parsed.forceTs && containerMode !== 'sound') {
+  if (isRustBinaryAvailable() && !parsed.forceTs) {
     try {
       console.log(
         `Encoding to ${resolvedOutput} (Using native Rust encoder)\n`,
@@ -473,7 +457,6 @@ async function encodeCommand(args: string[]) {
       skipOptimization: false,
       compressionLevel: 6,
       outputFormat: 'auto',
-      container: containerMode,
     });
 
     if (parsed.verbose) options.verbose = true;
@@ -489,7 +472,7 @@ async function encodeCommand(args: string[]) {
       if (parsed.blockSize) options.robustBlockSize = parsed.blockSize;
     }
 
-    console.log(`Encoding to ${resolvedOutput} (Mode: ${mode}, Container: ${containerMode === 'sound' ? 'WAV' : 'PNG'})\n`);
+    console.log(`Encoding to ${resolvedOutput}\n`);
 
     let inputData: Buffer | AsyncGenerator<Buffer>;
     let inputSizeVal = 0;
