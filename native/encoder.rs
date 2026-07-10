@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rayon::prelude::*;
 
 use crate::png_chunk_writer::{write_chunked_idat_bytes, write_png_chunk};
 
@@ -212,16 +213,16 @@ fn create_raw_deflate_from_rows(flat: &[u8], row_bytes: usize, height: usize) ->
     let scanlines_total = height * stride;
 
     let mut scanlines = vec![0u8; scanlines_total];
-
-    for row in 0..height {
-        let flat_start = row * row_bytes;
-        let flat_end = (flat_start + row_bytes).min(flat.len());
-        let copy_len = flat_end.saturating_sub(flat_start);
-        if copy_len > 0 {
-            let dst_start = row * stride + 1;
-            scanlines[dst_start..dst_start + copy_len].copy_from_slice(&flat[flat_start..flat_end]);
-        }
-    }
+    scanlines.par_chunks_mut(stride)
+        .enumerate()
+        .for_each(|(row, chunk)| {
+            let flat_start = row * row_bytes;
+            let flat_end = (flat_start + row_bytes).min(flat.len());
+            let copy_len = flat_end.saturating_sub(flat_start);
+            if copy_len > 0 {
+                chunk[1..1 + copy_len].copy_from_slice(&flat[flat_start..flat_end]);
+            }
+        });
 
     const MAX_BLOCK: usize = 65535;
     let num_blocks = scanlines_total.div_ceil(MAX_BLOCK);

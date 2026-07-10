@@ -158,4 +158,26 @@ function getNativeModule() {
   return nativeRequire(getNativePath());
 }
 
-export const native = getNativeModule();
+let _native: any = null;
+export function getNative(): any {
+  if (_native === null) {
+    try {
+      _native = getNativeModule();
+    } catch {
+      _native = undefined;
+    }
+  }
+  return _native;
+}
+
+export const native: any = new Proxy({}, {
+  get(_, prop) {
+    const mod = getNative();
+    if (!mod) return undefined;
+    return mod[prop];
+  },
+  has(_, prop) {
+    const mod = getNative();
+    return mod ? prop in mod : false;
+  },
+});

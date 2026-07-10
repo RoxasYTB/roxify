@@ -261,19 +261,21 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     };
 
-    let threads = num_cpus::get() as u32;
-    if threads > 1 {
-        let max_threads = if adaptive_level >= 20 { threads.min(4) } else { threads };
-        let _ = encoder.multithread(max_threads);
+    let threads = num_cpus::get().max(1) as u32;
+    if threads > 1 && total_len >= 4 * 1024 * 1024 {
+        let _ = encoder.multithread(threads);
+        let job_size = (16u64 * 1024 * 1024).min(u32::MAX as u64) as u32;
+        let _ = encoder.set_parameter(zstd::stream::raw::CParameter::JobSize(job_size));
     }
 
-    if total_len > 1024 * 1024 * 1024 && adaptive_level >= 3 {
+    if total_len > 32 * 1024 * 1024 {
         let _ = encoder.long_distance_matching(true);
     }
     if total_len > 256 * 1024 {
-        let wlog = if total_len > 1024 * 1024 * 1024 { 25 }
-            else if total_len > 256 * 1024 * 1024 { 24 }
-            else if total_len > 32 * 1024 * 1024 { 23 }
+        let wlog = if total_len > 1024 * 1024 * 1024 { 30 }
+            else if total_len > 512 * 1024 * 1024 { 27 }
+            else if total_len > 128 * 1024 * 1024 { 26 }
+            else if total_len > 32 * 1024 * 1024 { 24 }
             else if total_len > 4 * 1024 * 1024 { 22 }
             else { 21 };
         let _ = encoder.window_log(wlog);
@@ -302,7 +304,7 @@ pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Re
     // sous-estimait pour des payloads incompressibles (un dump 2 GiB → 435 MiB zstd avec
     // window_log=30 plantait avec "Frame requires too much memory").
     let win = 31u32;
-    let estimated = buf.len().saturating_mul(3).max(4096);
+    let estimated = buf.len().max(4096);
     let mut out = Vec::with_capacity(estimated);
     if let Some(d) = dict {
         let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(buf), d)

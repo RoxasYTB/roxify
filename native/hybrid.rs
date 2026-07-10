@@ -182,10 +182,15 @@ fn compress_block(block: &[u8]) -> Result<Vec<u8>> {
 
 fn try_bwt_or_zstd(block: &[u8]) -> Result<Vec<u8>> {
     let bwt = bwt_encode(block)?;
+    let primary_index = bwt.primary_index;
     let mtf_data = mtf_encode(&bwt.transformed);
+    drop(bwt);
     let rle_data = rle0_encode(&mtf_data);
+    let rle_len = rle_data.len();
+    drop(mtf_data);
     let stats = SymbolStats::from_data(&rle_data);
     let encoded = rans_encode_block(&rle_data, &stats);
+    drop(rle_data);
     let stats_bytes = stats.serialize();
 
     let bwt_total = 1 + 4 + 4 + 4 + stats_bytes.len() + encoded.len();
@@ -204,9 +209,9 @@ fn try_bwt_or_zstd(block: &[u8]) -> Result<Vec<u8>> {
 
         let mut result = Vec::with_capacity(bwt_total);
         result.push(BLOCK_FLAG_BWT);
-        result.extend_from_slice(&bwt.primary_index.to_le_bytes());
+        result.extend_from_slice(&primary_index.to_le_bytes());
         result.extend_from_slice(&(block.len() as u32).to_le_bytes());
-        result.extend_from_slice(&(rle_data.len() as u32).to_le_bytes());
+        result.extend_from_slice(&(rle_len as u32).to_le_bytes());
         result.extend_from_slice(&stats_bytes);
         result.extend_from_slice(&encoded);
         return Ok(result);
@@ -256,7 +261,9 @@ fn decompress_block_v2(block: &[u8]) -> Result<Vec<u8>> {
 
             let rle_data = rans_decode_block(encoded, &stats, rle_len)?;
             let mtf_data = rle0_decode(&rle_data);
+            drop(rle_data);
             let bwt_data = mtf_decode(&mtf_data);
+            drop(mtf_data);
             let original = bwt_decode(&bwt_data, primary_index)?;
 
             if original.len() != orig_len {
@@ -282,7 +289,9 @@ fn decompress_block_v1(block: &[u8]) -> Result<Vec<u8>> {
 
     let rle_data = rans_decode_block(encoded, &stats, rle_len)?;
     let mtf_data = rle0_decode(&rle_data);
+    drop(rle_data);
     let bwt_data = mtf_decode(&mtf_data);
+    drop(mtf_data);
     let original = bwt_decode(&bwt_data, primary_index)?;
 
     if original.len() != orig_len {
