@@ -111,10 +111,10 @@ pub fn encode_png_chunks(chunks: &[PngChunk]) -> Result<Vec<u8>, String> {
         output.extend_from_slice(chunk_type);
         output.extend_from_slice(&chunk.data);
 
-        let mut crc_data = Vec::new();
-        crc_data.extend_from_slice(chunk_type);
-        crc_data.extend_from_slice(&chunk.data);
-        let crc = crate::core::crc32_bytes(&crc_data);
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(chunk_type);
+        hasher.update(&chunk.data);
+        let crc = hasher.finalize();
         output.extend_from_slice(&write_u32_be(crc));
     }
 
@@ -480,7 +480,7 @@ fn extract_name_direct(png_data: &[u8]) -> Option<String> {
     idx += 1;
     let name_len = raw[idx] as usize; idx += 1;
     if name_len == 0 || idx + name_len > raw.len() { return None; }
-    String::from_utf8(raw[idx..idx + name_len].to_vec()).ok()
+    std::str::from_utf8(&raw[idx..idx + name_len]).ok().map(|s| s.to_string())
 }
 
 struct PixelPayloadHeader {
@@ -550,7 +550,9 @@ fn extract_name_from_embedded_nn(png_data: &[u8]) -> Result<String, String> {
     idx += 1;
     let name_len = logical_rgb[idx] as usize; idx += 1;
     if name_len == 0 || idx + name_len > logical_rgb.len() { return Err("Truncated name".to_string()); }
-    String::from_utf8(logical_rgb[idx..idx + name_len].to_vec()).map_err(|e| e.to_string())
+    std::str::from_utf8(&logical_rgb[idx..idx + name_len])
+        .map(|s| s.to_string())
+        .map_err(|e| e.to_string())
 }
 
 fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
@@ -561,52 +563,32 @@ fn extract_payload_direct(png_data: &[u8]) -> Result<Vec<u8>, String> {
     if let Some(i) = memchr::memmem::find(&raw, rox1_magic) {
         let compressed = &raw[i + 4..];
         {
-            // Try zstd decompression with multiple window logs
+            // Zstd decode with window_log_max(31) covers all frame sizes
             use std::io::Read;
-            let wlog_candidates = [10, 11, 12, 13, 14, 15, 17, 19, 21, 22, 24, 25, 27, 29, 31];
+            let try_decode = |data: &[u8]| -> Option<Vec<u8>> {
+                let mut dec = zstd::stream::Decoder::new(std::io::Cursor::new(data)).ok()?;
+                dec.window_log_max(31).ok()?;
+                let mut out = Vec::new();
+                dec.read_to_end(&mut out).ok()?;
+                Some(out)
+            };
 
-            for &wlog in &wlog_candidates {
-                if let Ok(mut dec) = zstd::stream::Decoder::new(std::io::Cursor::new(compressed)) {
-                    if dec.window_log_max(wlog).is_ok() {
-                        let mut out = Vec::new();
-                        if dec.read_to_end(&mut out).is_ok() {
-                            if out.starts_with(b"ROX1") {
-                                let inner = &out[4..];
-                                for &wlog2 in &wlog_candidates[..10] {
-                                    if let Ok(mut dec2) = zstd::stream::Decoder::new(std::io::Cursor::new(inner)) {
-                                        if dec2.window_log_max(wlog2).is_ok() {
-                                            let mut out2 = Vec::new();
-                                            if dec2.read_to_end(&mut out2).is_ok() {
-                                                return Ok(out2);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            return Ok(out);
-                        }
+            if let Some(out) = try_decode(compressed) {
+                if out.starts_with(b"ROX1") {
+                    if let Some(inner) = try_decode(&out[4..]) {
+                        return Ok(inner);
                     }
                 }
+                return Ok(out);
             }
 
-            // For small files that couldn't decompress, try raw extraction
-            let mut data_end = compressed.len();
-            for (j, chunk) in compressed.chunks(3).enumerate() {
-                if chunk[0] == 0 && chunk[1] == 0 && chunk[2] == 0 {
-                    data_end = j * 3;
-                    break;
-                }
-            }
+            // Raw extraction fallback (non-compressed payloads)
+            let data_end = compressed.chunks(3)
+                .position(|chunk| chunk.len() == 3 && chunk[0] == 0 && chunk[1] == 0 && chunk[2] == 0)
+                .map(|p| p * 3)
+                .unwrap_or(compressed.len());
 
-            let raw_data = &compressed[..data_end];
-            if raw_data.len() >= 4 {
-                let magic = u32::from_be_bytes([raw_data[0], raw_data[1], raw_data[2], raw_data[3]]);
-                if magic == 0x524f5856 || magic == 0x524f5849 || magic == 0x524f5850 || magic == 0x524f5831 {
-                    return Ok(raw_data.to_vec());
-                }
-            }
-
-            return Ok(raw_data.to_vec());
+            return Ok(compressed[..data_end].to_vec());
         }
     }
 
@@ -823,7 +805,9 @@ fn extract_file_list_from_embedded_nn(png_data: &[u8]) -> Result<String, String>
     idx += 4;
     let json_end = idx + json_len as usize;
     if json_end > logical_rgb.len() { return Err("Truncated file list in embedded NN".to_string()); }
-    String::from_utf8(logical_rgb[idx..json_end].to_vec()).map_err(|e| format!("Invalid UTF-8: {}", e))
+    std::str::from_utf8(&logical_rgb[idx..json_end])
+        .map(|s| s.to_string())
+        .map_err(|e| format!("Invalid UTF-8: {}", e))
 }
 
 fn extract_file_list_direct(png_data: &[u8]) -> Result<String, String> {
@@ -841,5 +825,7 @@ fn extract_file_list_direct(png_data: &[u8]) -> Result<String, String> {
     idx += 4;
     let json_end = idx + json_len as usize;
     if json_end > raw.len() { return Err("Truncated file list JSON".to_string()); }
-    String::from_utf8(raw[idx..json_end].to_vec()).map_err(|e| format!("Invalid UTF-8 in file list: {}", e))
+    std::str::from_utf8(&raw[idx..json_end])
+        .map(|s| s.to_string())
+        .map_err(|e| format!("Invalid UTF-8 in file list: {}", e))
 }

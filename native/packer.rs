@@ -289,51 +289,46 @@ pub fn count_pack_entries(buf: &[u8]) -> Result<usize> {
 pub fn pack_directory(dir_path: &Path, base_dir: Option<&Path>) -> Result<Vec<u8>> {
     let base = base_dir.unwrap_or(dir_path);
 
-    let files: Vec<PathBuf> = walkdir::WalkDir::new(dir_path)
+    let files_meta: Vec<(PathBuf, String, u64)> = walkdir::WalkDir::new(dir_path)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        .collect();
-
-    let file_data: Vec<(String, Vec<u8>)> = files
-        .par_iter()
-        .filter_map(|file_path| {
-            let rel_path = file_path
-                .strip_prefix(base)
-                .unwrap_or(file_path.as_path())
-                .to_string_lossy()
-                .replace('\\', "/");
-
-            match fs::read(file_path) {
-                Ok(content) => Some((rel_path, content)),
-                Err(e) => {
-                    eprintln!("⚠️  Erreur lecture {}: {}", rel_path, e);
-                    None
-                }
-            }
+        .filter_map(|e| {
+            let size = e.metadata().ok()?.len();
+            let path = e.into_path();
+            let rel = path.strip_prefix(base).unwrap_or(path.as_path());
+            let rel_path = rel.to_string_lossy().replace('\\', "/");
+            Some((path, rel_path, size))
         })
         .collect();
 
-    let total_size: usize = file_data
-        .par_iter()
-        .map(|(path, content)| path.len() + content.len() + 10)
-        .sum();
-    let mut result = Vec::with_capacity(8 + total_size);
-
+    let file_count = files_meta.len();
+    let total_meta: usize = files_meta.iter().map(|(_, name, size)| name.len() + 10 + *size as usize).sum();
+    let mut result = Vec::with_capacity(8 + total_meta);
     result.extend_from_slice(&0x524f5850u32.to_be_bytes());
-    result.extend_from_slice(&(file_data.len() as u32).to_be_bytes());
+    result.extend_from_slice(&(file_count as u32).to_be_bytes());
 
-    for (rel_path, content) in file_data {
-        let name_bytes = rel_path.as_bytes();
-        let name_len = (name_bytes.len() as u16).to_be_bytes();
-        let size = (content.len() as u64).to_be_bytes();
-
-        result.extend_from_slice(&name_len);
-        result.extend_from_slice(name_bytes);
-        result.extend_from_slice(&size);
-        result.extend_from_slice(&content);
+    let batch_size = 256usize;
+    for i in (0..files_meta.len()).step_by(batch_size) {
+        let end = (i + batch_size).min(files_meta.len());
+        let batch_results: Vec<_> = files_meta[i..end]
+            .par_iter()
+            .map(|(file_path, rel_path, _file_size)| {
+                (rel_path.clone(), fs::read(file_path).ok())
+            })
+            .collect();
+        for (rel_path, content) in batch_results {
+            if let Some(content) = content {
+                let name_bytes = rel_path.as_bytes();
+                let name_len = (name_bytes.len() as u16).to_be_bytes();
+                let size = (content.len() as u64).to_be_bytes();
+                result.extend_from_slice(&name_len);
+                result.extend_from_slice(name_bytes);
+                result.extend_from_slice(&size);
+                result.extend_from_slice(&content);
+            }
+        }
     }
 
     Ok(result)
@@ -374,56 +369,47 @@ pub fn pack_path_with_metadata(path: &Path) -> Result<PackResult> {
         })
     } else if path.is_dir() {
         let base = path;
-        let files: Vec<PathBuf> = walkdir::WalkDir::new(path)
+        let files_meta: Vec<(PathBuf, String, u64)> = walkdir::WalkDir::new(path)
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-            .map(|e| e.into_path())
-            .collect();
-
-        let file_data: Vec<(String, Vec<u8>)> = files
-            .par_iter()
-            .filter_map(|file_path| {
-                let rel_path = file_path
-                    .strip_prefix(base)
-                    .unwrap_or(file_path.as_path())
-                    .to_string_lossy()
-                    .replace('\\', "/");
-
-                match fs::read(file_path) {
-                    Ok(content) => Some((rel_path, content)),
-                    Err(e) => {
-                        eprintln!("⚠️  Erreur lecture {}: {}", rel_path, e);
-                        None
-                    }
-                }
+            .filter_map(|e| {
+                let size = e.metadata().ok()?.len();
+                let entry_path = e.into_path();
+                let rel = entry_path.strip_prefix(base).unwrap_or(entry_path.as_path());
+                let rel_path = rel.to_string_lossy().replace('\\', "/");
+                Some((entry_path, rel_path, size))
             })
             .collect();
 
-        let file_list: Vec<_> = file_data
-            .iter()
-            .map(|(name, content)| json!({"name": name, "size": content.len()}))
-            .collect();
-
-        let total_size: usize = file_data
-            .par_iter()
-            .map(|(path, content)| path.len() + content.len() + 10)
-            .sum();
-
+        let mut file_list = Vec::with_capacity(files_meta.len());
+        let total_size: usize = files_meta.iter().map(|(_, name, size)| name.len() + 10 + *size as usize).sum();
         let mut result = Vec::with_capacity(8 + total_size);
         result.extend_from_slice(&0x524f5850u32.to_be_bytes());
-        result.extend_from_slice(&(file_data.len() as u32).to_be_bytes());
+        result.extend_from_slice(&(files_meta.len() as u32).to_be_bytes());
 
-        for (rel_path, content) in file_data {
-            let name_bytes = rel_path.as_bytes();
-            let name_len = (name_bytes.len() as u16).to_be_bytes();
-            let size = (content.len() as u64).to_be_bytes();
-
-            result.extend_from_slice(&name_len);
-            result.extend_from_slice(name_bytes);
-            result.extend_from_slice(&size);
-            result.extend_from_slice(&content);
+        let batch_size = 256usize;
+        for i in (0..files_meta.len()).step_by(batch_size) {
+            let end = (i + batch_size).min(files_meta.len());
+            let batch_results: Vec<_> = files_meta[i..end]
+                .par_iter()
+                .map(|(file_path, rel_path, _)| {
+                    (rel_path.clone(), fs::read(file_path).ok())
+                })
+                .collect();
+            for (rel_path, content) in batch_results {
+                if let Some(content) = content {
+                    let name_bytes = rel_path.as_bytes();
+                    let name_len = (name_bytes.len() as u16).to_be_bytes();
+                    let size = (content.len() as u64).to_be_bytes();
+                    result.extend_from_slice(&name_len);
+                    result.extend_from_slice(name_bytes);
+                    result.extend_from_slice(&size);
+                    result.extend_from_slice(&content);
+                    file_list.push(json!({"name": rel_path, "size": content.len()}));
+                }
+            }
         }
 
         Ok(PackResult {

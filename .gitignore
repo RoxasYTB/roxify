@@ -30,3 +30,5 @@ libroxify_native-*
 !roxify_native.node
 pnpm-lock.yaml
 .npmrc
+graphify-out/
+index.js
