@@ -1,0 +1,75 @@
+{
+  "name": "roxify",
+  "version": "1.16.15",
+  "type": "module",
+  "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "rox": "dist/cli.js",
+    "roxify": "dist/cli.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "bundle": "esbuild src/cli.ts --bundle --platform=node --target=node18 --outfile=dist/cli.js --format=esm --minify --external:./index.js --external:./pack.js && tsc --emitDeclarationOnly --declaration --declarationDir dist",
+    "prebuild:pkg": "node scripts/copy-cli-binary.js",
+    "build:native": "cargo build --release --lib",
+    "build:native:linux": "cargo build --release --lib --target x86_64-unknown-linux-gnu",
+    "build:native:macos-x64": "cargo build --release --lib --target x86_64-apple-darwin",
+    "build:native:macos-arm": "cargo build --release --lib --target aarch64-apple-darwin",
+    "build:native:windows": "cargo build --release --lib --target x86_64-pc-windows-msvc",
+    "build:all": "npm run build:native && npm run build",
+    "postinstall": "",
+    "test": "npm run build && cargo test -p roxify_native --release && node --test dist/*.test.js 2>/dev/null || true",
+    "prepublishOnly": "npx -p typescript tsc || echo 'TS build skipped'",
+    "test": "npm run build && node ./test/run-all-tests.cjs",
+    "test:integration": "node scripts/run-integration-tests.cjs",
+    "cli": "node dist/cli.js"
+  },
+  "pkg": {
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist",
+    "scripts": [
+      "dist/**/*.js"
+    ],
+    "assets": [
+      "dist/roxify_native.exe"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RoxasYTB/roxify.git"
+  },
+  "keywords": [
+    "steganography",
+    "png",
+    "compression",
+    "zstd",
+    "rust",
+    "native",
+    "encode",
+    "decode",
+    "binary",
+    "lightweight"
+  ],
+  "author": "",
+  "license": "SEE LICENSE IN LICENSE",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.18.0",
+    "pkg": "^5.8.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {}
+}

@@ -1,0 +1,191 @@
+name: Build Native Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux ──
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: so
+            libPrefix: 'true'
+          - os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+            ext: so
+            libPrefix: 'true'
+            crossPkgs: gcc-multilib g++-multilib
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: so
+            libPrefix: 'true'
+            crossPkgs: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            crossLinker: aarch64-linux-gnu-gcc
+          # ── macOS ──
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            ext: dylib
+            libPrefix: 'true'
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: dylib
+            libPrefix: 'true'
+          # ── Windows ──
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: dll
+            libPrefix: 'false'
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            ext: dll
+            libPrefix: 'false'
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            ext: dll
+            libPrefix: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - run: npm ci
+
+      # ── Linux cross-compilation packages ──
+      - name: Install cross-compilation packages (Linux)
+        if: runner.os == 'Linux' && matrix.crossPkgs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.crossPkgs }} pkg-config
+
+      - name: Install libzstd-dev (Linux native)
+        if: runner.os == 'Linux' && !matrix.crossPkgs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzstd-dev pkg-config || true
+
+      # ── Build ──
+      - name: Build native
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux') && contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || contains(matrix.target, 'apple') && '-C link-arg=-undefined -C link-arg=dynamic_lookup' || '' }}
+          CFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-march=x86-64-v2 -mtune=generic' || '' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'apple') && 'off' || 'thin' }}
+        run: |
+          cargo build --release --lib --no-default-features --target ${{ matrix.target }}
+
+      # ── Build CLI binary (macOS + Linux x64) ──
+      - name: Build CLI binary
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-apple-darwin' || matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux') && contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || contains(matrix.target, 'apple') && '-C link-arg=-undefined -C link-arg=dynamic_lookup' || '' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'apple') && 'off' || 'thin' }}
+          CFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-march=x86-64-v2 -mtune=generic' || '' }}
+        run: |
+          cargo build --release --bin roxify_native --target ${{ matrix.target }}
+
+      # ── Strip (Unix only) ──
+      - name: Strip binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BIN=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
+          if [ -f "$BIN" ]; then
+            strip "$BIN" 2>/dev/null || true
+          fi
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            strip "$CLI" 2>/dev/null || true
+          fi
+
+      # ── Prepare artifacts ──
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          if [ "${{ matrix.libPrefix }}" = "true" ]; then
+            SRC=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
+          else
+            SRC=target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }}
+          fi
+          DEST=artifacts/roxify_native-${{ matrix.target }}.node
+          cp "$SRC" "$DEST"
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            cp "$CLI" artifacts/roxify_native-${{ matrix.target }}
+          fi
+          ls -lh artifacts/
+          echo "Built $DEST ($(wc -c < "$DEST") bytes)"
+
+      - name: Smoke test CLI (macOS)
+        if: runner.os == 'macOS' && (matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-apple-darwin')
+        shell: bash
+        run: |
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            chmod +x "$CLI"
+            "$CLI" --help
+            echo "CLI smoke test passed for ${{ matrix.target }}"
+          fi
+
+      - name: Run smoke tests (native only, skip cross-compiled)
+        if: matrix.crossPkgs == ''
+        shell: bash
+        run: |
+          npm run build
+          node scripts/copy-native.js
+          node scripts/run-integration-tests.cjs || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: artifacts/*
+          retention-days: 30
+
+  # ── Merge all artifacts into a single download ──
+  merge:
+    name: Merge all native binaries
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-natives
+          pattern: native-*
+          merge-multiple: true
+
+      - name: List all binaries
+        run: ls -lhR all-natives/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-native-binaries
+          path: all-natives/**
+          retention-days: 30

@@ -1,0 +1,302 @@
+import { execSync, spawn } from 'child_process';
+import { accessSync, constants, existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+let moduleDir: string;
+if (typeof __dirname !== 'undefined') {
+  moduleDir = __dirname;
+} else {
+  try {
+    moduleDir = dirname(fileURLToPath(import.meta.url));
+  } catch {
+    moduleDir = process.cwd();
+  }
+}
+
+function canExecute(p: string): boolean {
+  if (!existsSync(p)) return false;
+  if (process.platform === 'win32') return true;
+  try {
+    accessSync(p, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findRustBinary(): string | null {
+  const platformBins: Record<string, string[]> = {
+    win32: ['roxify_native.exe', 'roxify-cli.exe', 'roxify_cli.exe'],
+    darwin: ['rox-macos-universal', 'roxify_native-macos-arm64', 'roxify_native-macos-x64', 'roxify_native', 'roxify-cli', 'roxify_cli'],
+    linux: ['roxify_native', 'roxify-cli', 'roxify_cli'],
+  };
+  const binNames = platformBins[process.platform] || platformBins.linux;
+
+  const baseDir = moduleDir;
+
+  for (const name of binNames) {
+    const sameDirPath = join(baseDir, name);
+    if (canExecute(sameDirPath)) return sameDirPath;
+    const parentPath = join(baseDir, '..', name);
+    if (canExecute(parentPath)) return parentPath;
+    const parentDistPath = join(baseDir, '..', 'dist', name);
+    if (canExecute(parentDistPath)) return parentDistPath;
+  }
+
+  if ((process as any).pkg) {
+    const snapshotPaths = [
+      join(baseDir, '..', '..', 'target', 'release'),
+      join(baseDir, '..', 'target', 'release'),
+      join(baseDir, 'target', 'release'),
+    ];
+
+    for (const basePath of snapshotPaths) {
+      for (const name of binNames) {
+        const binPath = join(basePath, name);
+        if (canExecute(binPath)) return binPath;
+      }
+    }
+
+    try {
+      const execDir = require('path').dirname(process.execPath || '');
+      if (execDir) {
+        const execCandidates = [
+          join(execDir, 'tools', 'roxify', 'dist'),
+          join(execDir, 'tools', 'roxify'),
+          join(execDir, '..', 'tools', 'roxify', 'dist'),
+          join(execDir, '..', 'tools', 'roxify'),
+        ];
+        for (const c of execCandidates) {
+          for (const name of binNames) {
+            const p = join(c, name);
+            if (canExecute(p)) return p;
+          }
+        }
+      }
+    } catch { }
+  }
+
+  try {
+    let paths: string[] = [];
+    if (process.platform === 'win32') {
+      try {
+        const out = execSync('where rox', { encoding: 'utf-8', timeout: 5000 }).trim();
+        if (out) paths = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      } catch { }
+    } else {
+      try {
+        const out = execSync('which rox', { encoding: 'utf-8', timeout: 5000 }).trim();
+        if (out) paths = [out.trim()];
+      } catch { }
+    }
+
+    for (const p of paths) {
+      try {
+        const d = dirname(p);
+        const candidates = [
+          d,
+          join(d, 'dist'),
+          join(d, '..', 'dist'),
+          join(d, '..'),
+          join(d, 'node_modules', 'roxify', 'dist'),
+        ];
+        for (const c of candidates) {
+          for (const name of binNames) {
+            const candidate = join(c, name);
+            if (canExecute(candidate)) return candidate;
+          }
+        }
+      } catch { }
+    }
+  } catch { }
+
+  for (const name of binNames) {
+    const parentParentLocal = join(baseDir, '..', '..', name);
+    if (canExecute(parentParentLocal)) return parentParentLocal;
+    const nodeModulesPath = join(baseDir, '..', '..', '..', '..', name);
+    if (canExecute(nodeModulesPath)) return nodeModulesPath;
+  }
+
+  const targetRelease = join(baseDir, '..', '..', 'target', 'release');
+  for (const name of binNames) {
+    const targetPath = join(targetRelease, name);
+    if (canExecute(targetPath)) return targetPath;
+  }
+
+  return null;
+}
+
+export { findRustBinary };
+
+export function isRustBinaryAvailable(): boolean {
+  return findRustBinary() !== null;
+}
+
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
+
+function extractToTemp(pathToRead: string): string {
+  const buf = readFileSync(pathToRead);
+  const tmp = mkdtempSync(join(tmpdir(), 'roxify-'));
+  const dest = join(tmp, pathToRead.replace(/.*[\\/]/, ''));
+  writeFileSync(dest, buf);
+  try {
+    chmodSync(dest, 0o755);
+  } catch (e) { }
+  return dest;
+}
+
+export type ProgressCallback = (current: number, total: number, step: string) => void;
+
+function spawnRustCLI(
+  args: string[],
+  options?: { collectStdout?: boolean; onProgress?: ProgressCallback },
+): Promise<string> {
+  const cliPath = findRustBinary();
+  if (!cliPath) throw new Error('Rust CLI binary not found');
+
+  return new Promise((resolve, reject) => {
+    let triedExtract = false;
+    let tempExe: string | undefined;
+    let stdout = '';
+    // Keep a tail of recent stderr lines so a non-zero exit produces an
+    // actionable error message instead of bare "exited with status 1".
+    const STDERR_TAIL = 32;
+    const stderrTail: string[] = [];
+    const pushStderr = (line: string) => {
+      stderrTail.push(line);
+      if (stderrTail.length > STDERR_TAIL) stderrTail.shift();
+    };
+
+    const runSpawn = (exePath: string) => {
+      let proc;
+      // Always pipe stderr so we can surface failure context, even when no
+      // progress callback is registered.
+      const stdio: any = options?.collectStdout
+        ? ['pipe', 'pipe', 'pipe']
+        : ['pipe', 'inherit', 'pipe'];
+      try {
+        proc = spawn(exePath, args, { stdio });
+      } catch (err: any) {
+        if (!triedExtract) {
+          triedExtract = true;
+          try { tempExe = extractToTemp(cliPath); } catch (ex) { return reject(ex); }
+          return runSpawn(tempExe);
+        }
+        return reject(err);
+      }
+
+      if (options?.collectStdout && proc.stdout) {
+        proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      }
+
+      if (proc.stderr) {
+        const hasProgress = !!options?.onProgress;
+        let stderrBuf = '';
+        proc.stderr.on('data', (chunk: Buffer) => {
+          stderrBuf += chunk.toString();
+          const lines = stderrBuf.split('\n');
+          stderrBuf = lines.pop() || '';
+          for (const line of lines) {
+            const match = hasProgress ? line.match(/^PROGRESS:(\d+):(\d+):(.+)$/) : null;
+            if (match) {
+              options!.onProgress!(Number(match[1]), Number(match[2]), match[3]);
+            } else if (line.trim()) {
+              pushStderr(line);
+              process.stderr.write(line + '\n');
+            }
+          }
+        });
+      }
+
+      proc.on('error', (err: any) => {
+        if (!triedExtract) {
+          triedExtract = true;
+          try { tempExe = extractToTemp(cliPath); } catch (ex) { return reject(ex); }
+          return runSpawn(tempExe);
+        }
+        reject(err);
+      });
+
+      proc.on('close', (code, signal) => {
+        if (tempExe) { try { unlinkSync(tempExe); } catch (e) { } }
+        if (code === 0 || (code === null && signal === null)) resolve(stdout);
+        else {
+          const trailer = stderrTail.length > 0 ? `\n  stderr tail:\n    ${stderrTail.join('\n    ')}` : '';
+          reject(new Error(`Rust CLI exited with status ${code ?? signal}${trailer}`));
+        }
+      });
+    };
+
+    runSpawn(cliPath);
+  });
+}
+
+export async function encodeWithRustCLI(
+  inputPath: string,
+  outputPath: string,
+  compressionLevel = 3,
+  passphrase?: string,
+  encryptType: 'aes' | 'xor' = 'aes',
+  name?: string,
+  ramBudgetMb?: number,
+  onProgress?: ProgressCallback,
+): Promise<void> {
+  const cliPath = findRustBinary();
+  if (!cliPath) throw new Error('Rust CLI binary not found');
+
+  const args = ['encode', '--level', String(compressionLevel)];
+
+  // --name is supported on all roxify_native binaries shipped since 1.14.x.
+  // We used to spawn `--help` here to feature-detect, which cost a full
+  // process fork per encode call. Just pass it.
+  if (name) args.push('--name', name);
+
+  if (passphrase) {
+    args.push('--passphrase', passphrase);
+    args.push('--encrypt', encryptType);
+  }
+
+  if (typeof ramBudgetMb === 'number' && Number.isFinite(ramBudgetMb)) {
+    args.push('--ram-budget-mb', String(Math.max(1, Math.floor(ramBudgetMb))));
+  }
+
+  args.push(inputPath, outputPath);
+  await spawnRustCLI(args, { onProgress });
+}
+
+export async function decodeWithRustCLI(
+  inputPath: string,
+  outputPath: string,
+  passphrase?: string,
+  files?: string[],
+  dict?: string,
+  ramBudgetMb?: number,
+  onProgress?: ProgressCallback,
+): Promise<void> {
+  const args = ['decompress', inputPath, outputPath];
+
+  if (passphrase) args.push('--passphrase', passphrase);
+  if (files && files.length > 0) args.push('--files', JSON.stringify(files));
+  if (dict) args.push('--dict', dict);
+  if (typeof ramBudgetMb === 'number' && Number.isFinite(ramBudgetMb)) {
+    args.push('--ram-budget-mb', String(Math.max(1, Math.floor(ramBudgetMb))));
+  }
+
+  await spawnRustCLI(args, { onProgress });
+}
+
+export async function listWithRustCLI(inputPath: string): Promise<string> {
+  return spawnRustCLI(['list', inputPath], { collectStdout: true });
+}
+
+export async function havepassphraseWithRustCLI(inputPath: string): Promise<string> {
+  return spawnRustCLI(['havepassphrase', inputPath], { collectStdout: true });
+}

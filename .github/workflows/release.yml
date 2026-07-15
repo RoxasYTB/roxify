@@ -1,0 +1,413 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload binaries to (e.g. v1.11.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-and-upload:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux (Ubuntu 22.04 for glibc 2.35 compat: Debian 12+, Ubuntu 22.04+, Fedora 36+) ──
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            ext: so
+            libPrefix: true
+          - os: ubuntu-22.04
+            target: i686-unknown-linux-gnu
+            ext: so
+            libPrefix: true
+            crossPkgs: gcc-multilib g++-multilib
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            ext: so
+            libPrefix: true
+            crossPkgs: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            crossLinker: aarch64-linux-gnu-gcc
+          # ── macOS ──
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            ext: dylib
+            libPrefix: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: dylib
+            libPrefix: true
+          # ── Windows ──
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: dll
+            libPrefix: false
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            ext: dll
+            libPrefix: false
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            ext: dll
+            libPrefix: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source "$HOME/.cargo/env"
+          rustup target add ${{ matrix.target }}
+
+      - name: Install Rust (Linux)
+        if: runner.os == 'Linux'
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Install Rust (Windows)
+        if: runner.os == 'Windows'
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          shared-key: 'release'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install cross-compilation packages (Linux)
+        if: runner.os == 'Linux' && matrix.crossPkgs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.crossPkgs }} pkg-config
+
+      - name: Install libzstd-dev (Linux native)
+        if: runner.os == 'Linux' && !matrix.crossPkgs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzstd-dev pkg-config
+
+      - name: Install and configure OpenMP (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install libomp
+          OPENMP_PREFIX="$(brew --prefix libomp)"
+          echo "CPPFLAGS=-I$OPENMP_PREFIX/include ${CPPFLAGS:-}" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$OPENMP_PREFIX/lib -lomp ${LDFLAGS:-}" >> "$GITHUB_ENV"
+          echo "CFLAGS_aarch64_apple_darwin=-I$OPENMP_PREFIX/include ${CFLAGS_aarch64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "CFLAGS_x86_64_apple_darwin=-I$OPENMP_PREFIX/include ${CFLAGS_x86_64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "CXXFLAGS_aarch64_apple_darwin=-I$OPENMP_PREFIX/include ${CXXFLAGS_aarch64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "CXXFLAGS_x86_64_apple_darwin=-I$OPENMP_PREFIX/include ${CXXFLAGS_x86_64_apple_darwin:-}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$OPENMP_PREFIX/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
+
+      - name: Build native
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux') && contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || contains(matrix.target, 'apple') && '-C link-arg=-undefined -C link-arg=dynamic_lookup' || '' }}
+          CFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-march=x86-64-v2 -mtune=generic' || '' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'apple') && 'off' || 'thin' }}
+        run: |
+          cargo build --release --lib --no-default-features --target ${{ matrix.target }}
+
+      - name: Build CLI binary
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'x86_64-apple-darwin' || matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.crossLinker || '' }}
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux') && contains(matrix.target, 'x86_64') && '-C target-cpu=x86-64-v2' || contains(matrix.target, 'apple') && '-C link-arg=-undefined -C link-arg=dynamic_lookup' || '' }}
+          CFLAGS: ${{ contains(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '-march=x86-64-v2 -mtune=generic' || '' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'apple') && 'off' || 'thin' }}
+        run: |
+          cargo build --release --bin roxify_native --target ${{ matrix.target }}
+
+      - name: Strip binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BIN=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
+          if [ -f "$BIN" ]; then strip "$BIN" 2>/dev/null || true; fi
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then strip "$CLI" 2>/dev/null || true; fi
+
+      - run: npm run build
+
+      - name: Prepare release artifact
+        shell: bash
+        run: |
+          mkdir -p release
+          if [ "${{ matrix.libPrefix }}" = "true" ]; then
+            SRC=target/${{ matrix.target }}/release/libroxify_native.${{ matrix.ext }}
+          else
+            SRC=target/${{ matrix.target }}/release/roxify_native.${{ matrix.ext }}
+          fi
+          cp "$SRC" release/roxify_native-${{ matrix.target }}.node
+          # Copy CLI binary if it exists
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CLI=target/${{ matrix.target }}/release/roxify_native.exe
+            if [ -f "$CLI" ]; then cp "$CLI" release/roxify_native-${{ matrix.target }}.exe; fi
+          else
+            CLI=target/${{ matrix.target }}/release/roxify_native
+            if [ -f "$CLI" ]; then cp "$CLI" release/roxify_native-${{ matrix.target }}; fi
+          fi
+          ls -lh release/
+
+      - name: Smoke test CLI (macOS)
+        if: runner.os == 'macOS' && (matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-apple-darwin')
+        shell: bash
+        run: |
+          CLI=target/${{ matrix.target }}/release/roxify_native
+          if [ -f "$CLI" ]; then
+            chmod +x "$CLI"
+            "$CLI" --help
+            echo "CLI smoke test passed for ${{ matrix.target }}"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release/*
+          retention-days: 30
+
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          for f in release/*; do
+            gh release upload "$TAG" "$f" --clobber
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Create macOS universal binary ──
+  universal-macos:
+    name: Create macOS Universal Binary
+    needs: build-and-upload
+    if: needs.build-and-upload.result == 'success'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenMP runtime (macOS)
+        run: brew install libomp
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-aarch64-apple-darwin
+          path: macos-bins
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-x86_64-apple-darwin
+          path: macos-bins
+
+      - name: Create universal CLI binary
+        run: |
+          mkdir -p release
+          ARM=macos-bins/roxify_native-aarch64-apple-darwin
+          X86=macos-bins/roxify_native-x86_64-apple-darwin
+          if [ -f "$ARM" ] && [ -f "$X86" ]; then
+            lipo -create -output release/rox-macos-universal "$ARM" "$X86"
+            chmod +x release/rox-macos-universal
+            file release/rox-macos-universal
+            cp release/rox-macos-universal release/roxify_native-universal-apple-darwin
+            chmod +x release/roxify_native-universal-apple-darwin
+            echo "Universal binary created successfully"
+          else
+            echo "ERROR: one or both macOS CLI binaries not found"
+            ls -lhR macos-bins/
+            exit 1
+          fi
+
+      - name: Create universal .node module
+        run: |
+          ARM_NODE=macos-bins/roxify_native-aarch64-apple-darwin.node
+          X86_NODE=macos-bins/roxify_native-x86_64-apple-darwin.node
+          if [ -f "$ARM_NODE" ] && [ -f "$X86_NODE" ]; then
+            lipo -create -output release/roxify_native-universal-apple-darwin.node "$ARM_NODE" "$X86_NODE"
+            echo "Universal .node module created"
+          else
+            echo "ERROR: one or both macOS .node binaries not found"
+            ls -lhR macos-bins/
+            exit 1
+          fi
+
+      - name: Smoke test universal binary
+        run: |
+          if [ -f release/rox-macos-universal ]; then
+            ./release/rox-macos-universal --help
+            echo "Universal CLI smoke test passed"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-universal-apple-darwin
+          path: release/*
+          retention-days: 30
+
+      - name: Upload universal binary to GitHub Release
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          for f in release/*; do
+            gh release upload "$TAG" "$f" --clobber
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Publish to npm with all binaries ──
+  publish:
+    name: Publish to npm
+    needs: [build-and-upload, universal-macos]
+    runs-on: ubuntu-latest
+    if: needs.build-and-upload.result == 'success' && needs.universal-macos.result == 'success' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''))
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: native-binaries
+          pattern: release-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-universal-apple-darwin
+          path: native-binaries
+
+      - name: Verify all required binaries are present
+        run: |
+          MISSING=0
+          REQUIRED_NODES=(
+            "roxify_native-x86_64-unknown-linux-gnu.node"
+            "roxify_native-i686-unknown-linux-gnu.node"
+            "roxify_native-aarch64-unknown-linux-gnu.node"
+            "roxify_native-x86_64-apple-darwin.node"
+            "roxify_native-aarch64-apple-darwin.node"
+            "roxify_native-x86_64-pc-windows-msvc.node"
+            "roxify_native-i686-pc-windows-msvc.node"
+            "roxify_native-aarch64-pc-windows-msvc.node"
+          )
+          REQUIRED_CLI=(
+            "roxify_native-x86_64-pc-windows-msvc.exe"
+            "roxify_native-x86_64-unknown-linux-gnu"
+            "roxify_native-aarch64-apple-darwin"
+            "roxify_native-x86_64-apple-darwin"
+          )
+          echo "=== Checking .node binaries ==="
+          for f in "${REQUIRED_NODES[@]}"; do
+            if [ ! -f "native-binaries/$f" ]; then
+              echo "MISSING: $f"
+              MISSING=$((MISSING + 1))
+            else
+              echo "OK: $f"
+            fi
+          done
+          echo "=== Checking CLI binaries ==="
+          for f in "${REQUIRED_CLI[@]}"; do
+            if [ ! -f "native-binaries/$f" ]; then
+              echo "MISSING: $f"
+              MISSING=$((MISSING + 1))
+            else
+              echo "OK: $f"
+            fi
+          done
+          echo ""
+          ls -lhR native-binaries/
+          if [ $MISSING -gt 0 ]; then
+            echo "ERROR: $MISSING required binaries are missing. Aborting publish."
+            exit 1
+          fi
+          echo "All required binaries present."
+
+      - name: Copy all native binaries to package root
+        run: |
+          cp native-binaries/*.node .
+          mkdir -p dist
+          cp native-binaries/roxify_native-x86_64-pc-windows-msvc.exe dist/roxify_native.exe
+          cp native-binaries/roxify_native-x86_64-unknown-linux-gnu dist/roxify_native
+          chmod +x dist/roxify_native
+          cp native-binaries/roxify_native-aarch64-apple-darwin dist/roxify_native-macos-arm64
+          chmod +x dist/roxify_native-macos-arm64
+          cp native-binaries/roxify_native-x86_64-apple-darwin dist/roxify_native-macos-x64
+          chmod +x dist/roxify_native-macos-x64
+          if [ -f native-binaries/rox-macos-universal ]; then
+            cp native-binaries/rox-macos-universal dist/rox-macos-universal
+            chmod +x dist/rox-macos-universal
+          fi
+          ls -lh *.node dist/
+
+      - run: npm run build
+
+      - name: Check if version is already published on npm
+        id: npm_check
+        shell: bash
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "Checking $PKG_NAME@$PKG_VERSION on the npm registry..."
+          # `npm view <pkg>@<version> version` prints the version when published, empty when not.
+          # We retry a couple of times to avoid false negatives from a flaky registry.
+          PUBLISHED=""
+          for i in 1 2 3; do
+            PUBLISHED=$(npm view "$PKG_NAME@$PKG_VERSION" version 2>/dev/null || true)
+            if [ -n "$PUBLISHED" ]; then break; fi
+            sleep 3
+          done
+          if [ -n "$PUBLISHED" ]; then
+            echo "Version $PKG_VERSION already published on npm. Skipping publish step to avoid duplicate release."
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version $PKG_VERSION not yet on npm. Proceeding with publish."
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.npm_check.outputs.already_published != 'true'
+        run: npm publish --access public --provenance=false
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

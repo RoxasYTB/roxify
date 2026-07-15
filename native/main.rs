@@ -1,0 +1,1189 @@
+#![allow(dead_code)]
+use clap::{Parser, Subcommand};
+use std::fs::File;
+use std::io::{Read, Write};
+use memmap2::Mmap;
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+mod archive;
+mod core;
+mod crypto;
+mod encoder;
+mod io_advice;
+mod packer;
+mod png_chunk_writer;
+mod png_utils;
+mod progress;
+mod reconstitution;
+mod streaming;
+mod streaming_decode;
+mod streaming_encode;
+mod rans_byte;
+mod bwt;
+mod mtf;
+mod context_mixing;
+mod hybrid;
+
+use crate::encoder::ImageFormat;
+use std::path::PathBuf;
+
+const MB_U64: u64 = 1024 * 1024;
+
+const MIN_RAM_BUDGET_MB: u64 = 512;
+const MIN_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024;
+const MAX_WRITE_BUFFER_BYTES: usize = 1024 * 1024 * 1024;
+
+#[derive(Parser)]
+#[command(author, version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Encode {
+        input: PathBuf,
+        output: PathBuf,
+        #[arg(short, long, default_value_t = 0)]
+        level: i32,
+        #[arg(short, long)]
+        passphrase: Option<String>,
+        #[arg(short, long, default_value = "aes")]
+        encrypt: String,
+        #[arg(short, long)]
+        name: Option<String>,
+
+        #[arg(long, value_name = "FILE")]
+        dict: Option<PathBuf>,
+        #[arg(long, value_name = "MB")]
+        ram_budget_mb: Option<u64>,
+    },
+
+    List {
+        input: PathBuf,
+    },
+    Havepassphrase {
+        input: PathBuf,
+    },
+    Scan {
+        input: PathBuf,
+        #[arg(short, long, default_value_t = 4)]
+        channels: usize,
+        #[arg(short, long, value_delimiter = ',')]
+        markers: Vec<String>,
+    },
+    DeltaEncode {
+        input: PathBuf,
+        output: Option<PathBuf>,
+    },
+    DeltaDecode {
+        input: PathBuf,
+        output: Option<PathBuf>,
+    },
+    Compress {
+        input: PathBuf,
+        output: Option<PathBuf>,
+        #[arg(short, long, default_value_t = 19)]
+        level: i32,
+
+        #[arg(long, value_name = "FILE")]
+        dict: Option<PathBuf>,
+
+        #[arg(long, default_value_t = false)]
+        bwt_ans: bool,
+    },
+    TrainDict {
+
+        #[arg(short, long, value_name = "FILE", required = true)]
+        samples: Vec<PathBuf>,
+
+        #[arg(short, long, default_value_t = 112640)]
+        size: usize,
+
+        output: PathBuf,
+    },
+    Decompress {
+        input: PathBuf,
+        output: Option<PathBuf>,
+        #[arg(long)]
+        files: Option<String>,
+        #[arg(short, long)]
+        passphrase: Option<String>,
+
+        #[arg(long, value_name = "FILE")]
+        dict: Option<PathBuf>,
+        #[arg(long, value_name = "MB")]
+        ram_budget_mb: Option<u64>,
+        #[arg(long)]
+        out_rox: bool,
+
+        #[arg(long, default_value_t = false)]
+        bwt_ans: bool,
+    },
+    Crc32 {
+        input: PathBuf,
+    },
+    Adler32 {
+        input: PathBuf,
+    },
+}
+
+fn read_all(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
+    let metadata = std::fs::metadata(path)?;
+    let size = metadata.len() as usize;
+    let mut f = File::open(path)?;
+    let mut buf = Vec::with_capacity(size);
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+pub fn parse_linux_mem_available_mb() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kb = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<u64>().ok())?;
+    Some(kb / 1024)
+}
+
+pub fn parse_windows_mem_available_mb() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use std::mem;
+
+        unsafe {
+
+            #[allow(non_snake_case)]
+            #[repr(C)]
+            struct MEMORYSTATUSEX {
+                dwLength: u32,
+                dwMemoryLoad: u32,
+                ullTotalPhys: u64,
+                ullAvailPhys: u64,
+                ullTotalPageFile: u64,
+                ullAvailPageFile: u64,
+                ullTotalVirtual: u64,
+                ullAvailVirtual: u64,
+                ullAvailExtendedVirtual: u64,
+            }
+
+            extern "system" {
+                fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX, dwLength: u32);
+            }
+
+            let mut mem_status = MEMORYSTATUSEX {
+                dwLength: mem::size_of::<MEMORYSTATUSEX>() as u32,
+                dwMemoryLoad: 0,
+                ullTotalPhys: 0,
+                ullAvailPhys: 0,
+                ullTotalPageFile: 0,
+                ullAvailPageFile: 0,
+                ullTotalVirtual: 0,
+                ullAvailVirtual: 0,
+                ullAvailExtendedVirtual: 0,
+            };
+
+            GlobalMemoryStatusEx(&mut mem_status, mem::size_of::<MEMORYSTATUSEX>() as u32);
+
+            if mem_status.ullAvailPhys > 0 {
+                Some(mem_status.ullAvailPhys / 1024 / 1024)
+            } else {
+                None
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn parse_total_ram_mb() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use std::mem;
+
+        unsafe {
+            #[allow(non_snake_case)]
+            #[repr(C)]
+            struct MEMORYSTATUSEX {
+                dwLength: u32,
+                dwMemoryLoad: u32,
+                ullTotalPhys: u64,
+                ullAvailPhys: u64,
+                ullTotalPageFile: u64,
+                ullAvailPageFile: u64,
+                ullTotalVirtual: u64,
+                ullAvailVirtual: u64,
+                ullAvailExtendedVirtual: u64,
+            }
+
+            extern "system" {
+                fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX, dwLength: u32);
+            }
+
+            let mut mem_status: MEMORYSTATUSEX = std::mem::zeroed();
+            mem_status.dwLength = mem::size_of::<MEMORYSTATUSEX>() as u32;
+            GlobalMemoryStatusEx(&mut mem_status, mem_status.dwLength);
+
+            if mem_status.ullTotalPhys > 0 {
+                Some(mem_status.ullTotalPhys / 1024 / 1024)
+            } else {
+                None
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
+        let kb = line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<u64>().ok())?;
+        Some(kb / 1024)
+    }
+}
+
+const SYSTEM_RESERVE_MB: u64 = 1024;
+
+const AVAILABLE_HEADROOM_MB: u64 = 512;
+
+fn auto_ram_budget_mb() -> u64 {
+    let total_mb = parse_total_ram_mb().unwrap_or(8192);
+    let total_budget = total_mb.saturating_sub(SYSTEM_RESERVE_MB);
+
+    let available_mb = parse_linux_mem_available_mb()
+        .or_else(parse_windows_mem_available_mb)
+        .unwrap_or(total_mb);
+    let available_budget = available_mb.saturating_sub(AVAILABLE_HEADROOM_MB);
+
+    total_budget.min(available_budget).max(MIN_RAM_BUDGET_MB)
+}
+
+fn resolve_ram_budget_mb(cli_value: Option<u64>) -> u64 {
+    if let Some(v) = cli_value {
+        return v.max(MIN_RAM_BUDGET_MB);
+    }
+
+    if let Ok(v) = std::env::var("ROX_RAM_BUDGET_MB") {
+        if let Ok(parsed) = v.trim().parse::<u64>() {
+            return parsed.max(MIN_RAM_BUDGET_MB);
+        }
+    }
+
+    auto_ram_budget_mb()
+}
+
+fn effective_ram_budget_mb() -> u64 {
+    if let Ok(v) = std::env::var("ROX_RAM_BUDGET_MB_EFFECTIVE") {
+        if let Ok(parsed) = v.trim().parse::<u64>() {
+            return parsed.max(MIN_RAM_BUDGET_MB);
+        }
+    }
+    resolve_ram_budget_mb(None)
+}
+
+fn ram_budget_bytes(ram_budget_mb: u64) -> u64 {
+    ram_budget_mb.saturating_mul(MB_U64)
+}
+
+fn streaming_preference_threshold_bytes(ram_budget_mb: u64) -> u64 {
+    ram_budget_bytes(ram_budget_mb)
+        .saturating_mul(60)
+        .saturating_div(100)
+        .max(64 * MB_U64)
+}
+
+fn should_stream_png_decode(
+    requested_files: Option<&[String]>,
+    file_size: u64,
+    ram_budget_mb: u64,
+) -> bool {
+    requested_files.is_some()
+        || file_size >= (64 * MB_U64)
+        || file_size >= streaming_preference_threshold_bytes(ram_budget_mb)
+}
+
+fn choose_zstd_window_log(total_expected: u64) -> u32 {
+    if total_expected <= 128 * 1024 * 1024 {
+        24u32
+    } else if total_expected <= 512 * 1024 * 1024 {
+        27u32
+    } else if total_expected <= 2 * 1024 * 1024 * 1024u64 {
+        29u32
+    } else {
+        30u32
+    }
+}
+
+fn normalize_png_archive_bytes(
+    png_data: &[u8],
+    passphrase: Option<&str>,
+) -> anyhow::Result<Vec<u8>> {
+    let payload = png_utils::extract_payload_from_png(png_data).map_err(|e| anyhow::anyhow!(e))?;
+    if payload.is_empty() {
+        return Err(anyhow::anyhow!("Empty payload"));
+    }
+
+    let raw_inner: Vec<u8> = if payload[0] == 0x00u8 {
+        payload[1..].to_vec()
+    } else if payload.starts_with(b"ROX1") || payload.starts_with(b"ROXI") || payload.starts_with(b"ROXP") {
+        payload
+    } else {
+        crate::crypto::try_decrypt(&payload, passphrase)
+            .map_err(|e| anyhow::anyhow!("Encrypted payload: {}", e))?
+    };
+
+    let decompressed: Vec<u8> = if is_zstd_frame(&raw_inner) {
+        crate::core::zstd_decompress_bytes(&raw_inner, None)
+            .map_err(|e| anyhow::anyhow!("zstd decompress error: {}", e))?
+    } else {
+        raw_inner
+    };
+
+    if decompressed.starts_with(b"ROX1") {
+        Ok(decompressed[4..].to_vec())
+    } else {
+        Ok(decompressed)
+    }
+}
+
+fn is_zstd_frame(bytes: &[u8]) -> bool {
+    bytes.len() >= 4
+        && bytes[0] == 0x28
+        && bytes[1] == 0xB5
+        && bytes[2] == 0x2F
+        && bytes[3] == 0xFD
+}
+
+fn unpack_archive_bytes(
+    normalized: Vec<u8>,
+    out_dir: &std::path::Path,
+    files_slice: Option<&[String]>,
+    progress: Option<&(dyn Fn(u64, u64, &str) + Send)>,
+    fallback_name: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let starts_with_rox = if normalized.len() >= 4 {
+        let magic = u32::from_be_bytes([normalized[0], normalized[1], normalized[2], normalized[3]]);
+        magic == 0x524f5831 || magic == 0x524f5856 || magic == 0x524f5849 || magic == 0x524f5850
+    } else {
+        false
+    };
+
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e))?;
+
+    if starts_with_rox {
+        let mut reader: Box<dyn std::io::Read> = Box::new(std::io::Cursor::new(normalized));
+        return packer::unpack_stream_to_dir_parallel(&mut reader, out_dir, files_slice, progress, 0)
+            .map_err(|e| anyhow::anyhow!(e));
+    }
+
+    let raw_name = fallback_name.unwrap_or("file");
+    let safe_name = sanitize_fallback_name(raw_name);
+
+    if let Some(filter) = files_slice {
+        if !filter.iter().any(|f| f == &safe_name || f == raw_name) {
+            return Ok(Vec::new());
+        }
+    }
+
+    let dest = out_dir.join(&safe_name);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("Cannot create parent {:?}: {}", parent, e))?;
+    }
+    std::fs::write(&dest, &normalized)
+        .map_err(|e| anyhow::anyhow!("Cannot write {:?}: {}", dest, e))?;
+
+    if let Some(cb) = progress {
+        cb(100, 100, "done");
+    }
+    Ok(vec![safe_name])
+}
+
+fn sanitize_fallback_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "file".to_string();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
+            _ => out.push(ch),
+        }
+    }
+    if out.is_empty() {
+        "file".to_string()
+    } else {
+        out
+    }
+}
+
+fn write_all(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
+    let f = File::create(path)?;
+    let budget_bytes = ram_budget_bytes(effective_ram_budget_mb());
+    let dynamic_cap = (budget_bytes / 24)
+        .clamp(MIN_WRITE_BUFFER_BYTES as u64, MAX_WRITE_BUFFER_BYTES as u64)
+        as usize;
+    let buf_size = dynamic_cap.min(data.len().max(8192));
+    let mut writer = std::io::BufWriter::with_capacity(buf_size, f);
+    writer.write_all(data)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn parse_markers(v: &[String]) -> Option<Vec<u8>> {
+    if v.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for s in v {
+        let parts: Vec<&str> = s.split(|c| c == ':' || c == ',').collect();
+        if parts.len() >= 3 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                parts[0].parse::<u8>(),
+                parts[1].parse::<u8>(),
+                parts[2].parse::<u8>(),
+            ) {
+                out.push(r);
+                out.push(g);
+                out.push(b);
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    fn parse_requested_files(files: &str) -> anyhow::Result<Vec<String>> {
+        if files.trim_start().starts_with('[') {
+            serde_json::from_str::<Vec<String>>(files)
+                .map_err(|e| anyhow::anyhow!("Invalid JSON for --files: {}", e))
+        } else {
+            Ok(files
+                .split(',')
+                .map(|file| file.trim().to_string())
+                .filter(|file| !file.is_empty())
+                .collect())
+        }
+    }
+    match cli.command {
+        Commands::TrainDict {
+            samples,
+            size,
+            output,
+        } => {
+            let dict = core::train_zstd_dictionary(&samples, size)?;
+            write_all(&output, &dict)?;
+            println!("wrote {} bytes dictionary to {:?}", dict.len(), output);
+            return Ok(());
+        }
+        Commands::Encode {
+            input,
+            output,
+            level,
+            passphrase,
+            encrypt,
+            name,
+            dict,
+            ram_budget_mb,
+        } => {
+            let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
+            std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
+            let is_dir = input.is_dir();
+
+            let file_name = name
+                .as_deref()
+                .or_else(|| input.file_name().and_then(|n| n.to_str()));
+
+            if is_dir && dict.is_none() {
+                streaming_encode::encode_dir_to_png_encrypted_with_progress(
+                    &input,
+                    &output,
+                    level,
+                    file_name,
+                    passphrase.as_deref(),
+                    Some(&encrypt),
+                    Some(Box::new(|current, total, step| {
+                        eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                    })),
+                )?;
+                println!("(directory payload, rXFL chunk embedded)");
+                return Ok(());
+            }
+
+            let (payload, file_list_json) = if is_dir {
+                let result = archive::tar_pack_directory_with_list(&input)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let json_list: Vec<serde_json::Value> = result
+                    .file_list
+                    .iter()
+                    .map(|(name, size)| serde_json::json!({"name": name, "size": size}))
+                    .collect();
+                (result.data, Some(serde_json::to_string(&json_list)?))
+            } else {
+                let pack_result = packer::pack_path_with_metadata(&input)?;
+                (pack_result.data, pack_result.file_list_json)
+            };
+
+            let dict_bytes: Option<Vec<u8>> = match dict {
+                Some(path) => Some(read_all(&path)?),
+                None => None,
+            };
+
+            let use_streaming =
+                (payload.len() as u64) > streaming_preference_threshold_bytes(ram_budget_mb);
+            eprintln!("PROGRESS:50:100:encoding");
+
+            if use_streaming {
+                streaming::encode_to_png_file(
+                    &payload,
+                    &output,
+                    level,
+                    passphrase.as_deref(),
+                    Some(&encrypt),
+                    file_name,
+                    file_list_json.as_deref(),
+                    dict_bytes.as_deref(),
+                )?;
+            } else {
+                let png = if let Some(ref pass) = passphrase {
+                    encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
+                        &payload,
+                        level,
+                        Some(pass),
+                        Some(&encrypt),
+                        ImageFormat::Png,
+                        file_name,
+                        file_list_json.as_deref(),
+                        dict_bytes.as_deref(),
+                    )?
+                } else {
+                    encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
+                        &payload,
+                        level,
+                        None,
+                        None,
+                        ImageFormat::Png,
+                        file_name,
+                        file_list_json.as_deref(),
+                        dict_bytes.as_deref(),
+                    )?
+                };
+                write_all(&output, &png)?;
+            }
+
+            if file_list_json.is_some() {
+                eprintln!("PROGRESS:100:100:done");
+                if is_dir {
+                    println!("(directory payload, rXFL chunk embedded)");
+                } else {
+                    println!("(rXFL chunk embedded)");
+                }
+            }
+        }
+        Commands::List { input } => {
+            let mut file = File::open(&input)?;
+            let mut chunk_scan_error: Option<anyhow::Error> = None;
+            let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+            eprintln!(
+                "LIST: input={:?} size_mb={} start",
+                input,
+                file_size / MB_U64
+            );
+
+            match png_utils::extract_png_chunks_streaming(&mut file) {
+                Ok(chunks) => {
+                    if let Some(rxfl_chunk) = chunks.iter().find(|c| c.name == "rXFL") {
+                        eprintln!(
+                            "LIST: source=chunk_rXFL size_bytes={}",
+                            rxfl_chunk.data.len()
+                        );
+                        println!("{}", String::from_utf8_lossy(&rxfl_chunk.data));
+                        return Ok(());
+                    }
+
+                    if let Some(meta_chunk) = chunks.iter().find(|c| c.name == "rOXm") {
+                        if let Some(pos) = meta_chunk.data.windows(4).position(|w| w == b"rXFL") {
+                            if pos + 8 <= meta_chunk.data.len() {
+                                let json_len = u32::from_be_bytes([
+                                    meta_chunk.data[pos + 4],
+                                    meta_chunk.data[pos + 5],
+                                    meta_chunk.data[pos + 6],
+                                    meta_chunk.data[pos + 7],
+                                ]) as usize;
+
+                                let json_start = pos + 8;
+                                let json_end = json_start + json_len;
+
+                                if json_end <= meta_chunk.data.len() {
+                                    eprintln!("LIST: source=meta_rXFL size_bytes={}", json_len);
+                                    println!(
+                                        "{}",
+                                        String::from_utf8_lossy(
+                                            &meta_chunk.data[json_start..json_end]
+                                        )
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    chunk_scan_error = Some(anyhow::anyhow!(err));
+                }
+            }
+
+            eprintln!("LIST: fallback=pixels size_mb={}", file_size / MB_U64);
+            let png_data = std::fs::read(&input)?;
+            match png_utils::extract_file_list_from_pixels(&png_data) {
+                Ok(json) => {
+                    eprintln!("LIST: source=pixel_scan size_bytes={}", json.len());
+                    println!("{}", json);
+                    return Ok(());
+                }
+                Err(pixel_err) => {
+                    if let Some(chunk_err) = chunk_scan_error {
+                        return Err(anyhow::anyhow!(
+                            "chunk scan: {}; pixel scan: {}",
+                            chunk_err,
+                            pixel_err
+                        ));
+                    }
+                }
+            }
+
+            return Err(anyhow::anyhow!("No file list found in PNG"));
+        }
+        Commands::Havepassphrase { input } => {
+            let buf = read_all(&input)?;
+            let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+            if is_png {
+                let payload =
+                    png_utils::extract_payload_from_png(&buf).map_err(|e| anyhow::anyhow!(e))?;
+                if !payload.is_empty()
+                    && (payload[0] == 0x01 || payload[0] == 0x02 || payload[0] == 0x03)
+                {
+                    println!("Passphrase detected.");
+                } else {
+                    println!("No passphrase detected.");
+                }
+            } else {
+                if !buf.is_empty() && (buf[0] == 0x01 || buf[0] == 0x02 || buf[0] == 0x03) {
+                    println!("Passphrase detected.");
+                } else {
+                    println!("No passphrase detected.");
+                }
+            }
+        }
+        Commands::Scan {
+            input,
+            channels,
+            markers,
+        } => {
+            let buf = read_all(&input)?;
+            let marker_bytes = parse_markers(&markers);
+            let res = crate::core::scan_pixels_bytes(&buf, channels, marker_bytes.as_deref());
+            println!("magic_positions: {:?}", res.magic_positions);
+            println!("marker_positions: {:?}", res.marker_positions);
+        }
+        Commands::DeltaEncode { input, output } => {
+            let buf = read_all(&input)?;
+            let out = crate::core::delta_encode_bytes(&buf);
+            let dest = output.unwrap_or_else(|| PathBuf::from("delta.bin"));
+            write_all(&dest, &out)?;
+        }
+        Commands::DeltaDecode { input, output } => {
+            let buf = read_all(&input)?;
+            let out = crate::core::delta_decode_bytes(&buf);
+            let dest = output.unwrap_or_else(|| PathBuf::from("raw.bin"));
+            write_all(&dest, &out)?;
+        }
+        Commands::Compress {
+            input,
+            output,
+            level,
+            dict,
+            bwt_ans,
+            ..
+        } => {
+            let file = File::open(&input)?;
+            let mmap = unsafe { Mmap::map(&file)? };
+            let data: &[u8] = &mmap;
+            let dest = output.unwrap_or_else(|| PathBuf::from(if bwt_ans { "out.rox" } else { "out.zst" }));
+
+            if bwt_ans {
+                let (out, stats) = crate::hybrid::compress_high_performance(data)?;
+                eprintln!("Compressed: {:.1}% (entropy {:.2} bits/byte)",
+                    stats.ratio * 100.0, stats.entropy_bits);
+                write_all(&dest, &out)?;
+            } else {
+                let dict_bytes: Option<Vec<u8>> = match dict {
+                    Some(path) => Some(read_all(&path)?),
+                    None => None,
+                };
+
+                let dest_file = File::create(&dest)?;
+                let mut encoder = match &dict_bytes {
+                    Some(d) => zstd::stream::Encoder::with_dictionary(dest_file, level.clamp(1, 22), d)
+                        .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?,
+                    None => zstd::stream::Encoder::new(dest_file, level.clamp(1, 22))
+                        .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?,
+                };
+                encoder.window_log(27)
+                    .map_err(|e| anyhow::anyhow!("window_log: {}", e))?;
+                let threads = num_cpus::get().max(1) as u32;
+                if threads > 1 {
+                    let _ = encoder.multithread(threads);
+                }
+                use std::io::Write;
+                encoder.write_all(data)?;
+                encoder.finish()?;
+            }
+        }
+        Commands::Decompress {
+            input,
+            output,
+            files,
+            passphrase,
+            dict,
+            ram_budget_mb,
+            out_rox,
+            bwt_ans,
+        } => {
+            let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
+            std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
+            let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+            let is_png_file = input.extension().map(|e| e == "png").unwrap_or(false)
+                || (file_size >= 8 && {
+                    let mut sig = [0u8; 8];
+                    std::fs::File::open(&input)
+                        .and_then(|mut f| {
+                            use std::io::Read;
+                            f.read_exact(&mut sig)
+                        })
+                        .is_ok()
+                        && sig == [137, 80, 78, 71, 13, 10, 26, 10]
+                });
+
+            let requested_files = match files.as_deref() {
+                Some(files_str) => Some(parse_requested_files(files_str)?),
+                None => None,
+            };
+
+            let output_is_rox = out_rox
+                || output
+                    .as_ref()
+                    .and_then(|p| p.extension().map(|e| e.eq_ignore_ascii_case("rox")))
+                    .unwrap_or(false);
+
+            if bwt_ans {
+                let in_file = File::open(&input)?;
+                let mmap = unsafe { Mmap::map(&in_file)? };
+                let out = crate::hybrid::decompress_high_performance(&mmap)?;
+                let dest = output.unwrap_or_else(|| PathBuf::from("out.raw"));
+                write_all(&dest, &out)?;
+                eprintln!("Decompressed {} -> {} bytes", mmap.len(), out.len());
+                return Ok(());
+            }
+
+            if is_png_file && dict.is_none() {
+                let out_dir = if requested_files.is_some() {
+                    output.clone().unwrap_or_else(|| PathBuf::from("."))
+                } else {
+                    output.clone().unwrap_or_else(|| PathBuf::from("out.raw"))
+                };
+
+                let should_try_streaming = !output_is_rox
+                    && should_stream_png_decode(requested_files.as_deref(), file_size, ram_budget_mb);
+
+                if should_try_streaming {
+                    let streaming_result = if let Some(ref selected) = requested_files {
+                        streaming_decode::streaming_decode_selected_to_dir_encrypted_with_progress(
+                            &input,
+                            &out_dir,
+                            Some(selected.as_slice()),
+                            passphrase.as_deref(),
+                            Some(Box::new(|current, total, step| {
+                                eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                            })),
+                        )
+                    } else {
+                        streaming_decode::streaming_decode_to_dir_encrypted_with_progress(
+                            &input,
+                            &out_dir,
+                            passphrase.as_deref(),
+                            Some(Box::new(|current, total, step| {
+                                eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                            })),
+                        )
+                    };
+
+                    match streaming_result {
+                        Ok(written) => {
+                            eprintln!("PROGRESS:100:100:done");
+                            println!("Unpacked {} files", written.len());
+                            return Ok(());
+                        }
+                        Err(e) => {
+
+                            eprintln!("PROGRESS:12:100:streaming_fallback");
+                            eprintln!(
+                                "Streaming decode failed (selected-files mode): {}. Attempting full reconstruction fallback.",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                if file_size > ram_budget_bytes(ram_budget_mb) {
+                    return Err(anyhow::anyhow!(
+                        "PNG fallback requires in-memory reconstruction ({} MB file > {} MB RAM budget). Increase --ram-budget-mb.",
+                        file_size / MB_U64,
+                        ram_budget_mb
+                    ));
+                }
+
+                let buf = read_all(&input)?;
+
+                eprintln!("PROGRESS:20:100:decompressing");
+                let progress_cb = |current: u64, total: u64, step: &str| {
+                    eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                };
+
+                let normalized = normalize_png_archive_bytes(&buf, passphrase.as_deref())?;
+                let fallback_name = png_utils::extract_name_from_png(&buf);
+                let written = unpack_archive_bytes(
+                    normalized,
+                    &out_dir,
+                    requested_files.as_deref(),
+                    Some(&progress_cb),
+                    fallback_name.as_deref(),
+                )?;
+                eprintln!("PROGRESS:100:100:done");
+                println!("Unpacked {} files", written.len());
+                return Ok(());
+            }
+
+            if file_size > ram_budget_bytes(ram_budget_mb) {
+                return Err(anyhow::anyhow!(
+                    "Input is {} MB but RAM budget is {} MB. Increase --ram-budget-mb for non-streaming decode paths.",
+                    file_size / MB_U64,
+                    ram_budget_mb
+                ));
+            }
+
+            let buf = read_all(&input)?;
+
+            eprintln!("PROGRESS:20:100:decompressing");
+            let dict_bytes: Option<Vec<u8>> = match dict {
+                Some(path) => Some(read_all(&path)?),
+                None => None,
+            };
+            if requested_files.is_some() {
+                let file_list = requested_files;
+
+                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+
+                use std::io::Cursor;
+                let normalized: Vec<u8> = if is_png {
+                    let payload = png_utils::extract_payload_from_png(&buf)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if payload.is_empty() {
+                        return Err(anyhow::anyhow!("Empty payload"));
+                    }
+                    if payload[0] == 0x00u8 {
+                        payload[1..].to_vec()
+                    } else if payload.starts_with(b"ROX1") || payload.starts_with(b"ROXI") || payload.starts_with(b"ROXP") {
+
+                        if payload.starts_with(b"ROX1") {
+                            payload[4..].to_vec()
+                        } else {
+                            payload
+                        }
+                    } else {
+                        let pass = passphrase.as_ref().map(|s: &String| s.as_str());
+                        match crate::crypto::try_decrypt(&payload, pass) {
+                            Ok(v) => v,
+                            Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
+                        }
+                    }
+                } else {
+                    if buf[0] == 0x00u8 {
+                        buf[1..].to_vec()
+                    } else if buf.starts_with(b"ROX1") {
+                        buf[4..].to_vec()
+                    } else if buf[0] == 0x01u8 || buf[0] == 0x02u8 || buf[0] == 0x03u8 {
+                        let pass = passphrase.as_ref().map(|s: &String| s.as_str());
+                        match crate::crypto::try_decrypt(&buf, pass) {
+                            Ok(v) => v,
+                            Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
+                        }
+                    } else {
+                        buf.to_vec()
+                    }
+                };
+
+                let out_dir = output.unwrap_or_else(|| PathBuf::from("."));
+                std::fs::create_dir_all(&out_dir).map_err(|e| {
+                    anyhow::anyhow!("Cannot create output directory {:?}: {}", out_dir, e)
+                })?;
+                let files_slice = file_list.as_ref().map(|v| v.as_slice());
+                let fallback_name = if is_png { png_utils::extract_name_from_png(&buf) } else { None };
+
+                let normalized_data: Vec<u8> = if normalized.starts_with(b"ROX1") {
+                    normalized[4..].to_vec()
+                } else {
+                    normalized
+                };
+
+                let starts_with_pack = if normalized_data.len() >= 4 {
+                    let m = u32::from_be_bytes([
+                        normalized_data[0],
+                        normalized_data[1],
+                        normalized_data[2],
+                        normalized_data[3],
+                    ]);
+                    m == 0x524f5856 || m == 0x524f5849 || m == 0x524f5850
+                } else {
+                    false
+                };
+
+                let written = if starts_with_pack {
+                    let mut reader: Box<dyn std::io::Read> = Box::new(Cursor::new(normalized_data));
+                    packer::unpack_stream_to_dir_parallel(
+                        &mut reader,
+                        &out_dir,
+                        files_slice,
+                        Some(&|current, total, step| {
+                            eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                        }),
+                        0,
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))?
+                } else {
+                    unpack_archive_bytes(
+                        normalized_data,
+                        &out_dir,
+                        files_slice,
+                        Some(&|current, total, step| {
+                            eprintln!("PROGRESS:{}:{}:{}", current, total, step);
+                        }),
+                        fallback_name.as_deref(),
+                    )?
+                };
+                eprintln!("PROGRESS:100:100:done");
+                println!("Unpacked {} files", written.len());
+            } else {
+                let is_png = buf.len() >= 8 && &buf[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10];
+                let out_bytes = if is_png {
+                    let payload = png_utils::extract_payload_from_png(&buf)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if payload.is_empty() {
+                        return Err(anyhow::anyhow!("Empty payload"));
+                    }
+                    let first = payload[0];
+                    if first == 0x00u8 {
+                        let compressed = payload[1..].to_vec();
+                        match crate::core::zstd_decompress_bytes(&compressed, dict_bytes.as_deref())
+                        {
+                            Ok(mut o) => {
+                                if o.starts_with(b"ROX1") {
+                                    o = o[4..].to_vec();
+                                }
+                                o
+                            }
+                            Err(e) => {
+                                if compressed.starts_with(b"ROX1") {
+                                    eprintln!("⚠️ zstd decompress failed ({}), but payload starts with ROX1: falling back to raw pack", e);
+                                    compressed[4..].to_vec()
+                                } else {
+                                    return Err(anyhow::anyhow!("zstd decompress error: {}", e));
+                                }
+                            }
+                        }
+                    } else {
+                        let pass = passphrase.as_ref().map(|s| s.as_str());
+                        match crate::crypto::try_decrypt(&payload, pass) {
+                            Ok(v) => {
+                                let inner = if v.starts_with(b"ROX1") {
+                                    v[4..].to_vec()
+                                } else {
+                                    v
+                                };
+                                match crate::core::zstd_decompress_bytes(
+                                    &inner,
+                                    dict_bytes.as_deref(),
+                                ) {
+                                    Ok(mut o) => {
+                                        if o.starts_with(b"ROX1") {
+                                            o = o[4..].to_vec();
+                                        }
+                                        o
+                                    }
+                                    Err(_) => inner,
+                                }
+                            }
+                            Err(e) => return Err(anyhow::anyhow!("Encrypted payload: {}", e)),
+                        }
+                    }
+                } else {
+                    match crate::core::zstd_decompress_bytes(&buf, dict_bytes.as_deref()) {
+                        Ok(mut x) => {
+                            if x.starts_with(b"ROX1") {
+                                x = x[4..].to_vec();
+                            }
+                            x
+                        }
+                        Err(e) => {
+                            if buf.starts_with(b"ROX1") {
+                                eprintln!("⚠️ zstd decompress failed ({}), but input already starts with ROX1: using raw pack", e);
+                                buf[4..].to_vec()
+                            } else {
+                                return Err(anyhow::anyhow!("zstd decompress error: {}", e));
+                            }
+                        }
+                    }
+                };
+
+                let dest = if out_rox {
+                    let mut path = output.unwrap_or_else(|| {
+                        input
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("out"))
+                            .with_extension("rox")
+                    });
+                    if path.is_dir() {
+                        path = path
+                            .join(
+                                input
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "out".to_string()),
+                            )
+                            .with_extension("rox");
+                    }
+                    path
+                } else {
+                    output.unwrap_or_else(|| PathBuf::from("out.raw"))
+                };
+
+                if cfg!(target_os = "windows") && dest.is_dir() {
+                    if let Ok(count) = packer::count_pack_entries(&out_bytes) {
+                        if count > 1000 {
+                            eprintln!(
+                                "Performance warning: extracting {} files on Windows. Consider using --out-rox for much faster speeds.",
+                                count
+                            );
+                        }
+                    }
+                }
+
+                if archive::is_tar(&out_bytes) {
+                    let out_dir = if dest.extension().is_none() || dest.is_dir() {
+                        dest
+                    } else {
+                        PathBuf::from(".")
+                    };
+                    std::fs::create_dir_all(&out_dir)
+                        .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", out_dir, e))?;
+                    let written = archive::tar_unpack(&out_bytes, &out_dir)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    println!("Unpacked {} files to {:?}", written.len(), out_dir);
+                } else if out_bytes.len() >= 4
+                    && (u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5850u32
+                        || u32::from_be_bytes(out_bytes[0..4].try_into().unwrap()) == 0x524f5849u32)
+                {
+                    let out_dir = if dest.extension().is_none() || dest.is_dir() {
+                        dest
+                    } else {
+                        PathBuf::from(".")
+                    };
+                    std::fs::create_dir_all(&out_dir)
+                        .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", out_dir, e))?;
+                    let written = packer::unpack_buffer_to_dir(&out_bytes, &out_dir, None)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    println!("Unpacked {} files to {:?}", written.len(), out_dir);
+                } else if dest.extension().map(|e| e.eq_ignore_ascii_case("rox")).unwrap_or(false)
+                    && out_bytes.len() >= 4
+                    && {
+                        let magic = u32::from_be_bytes(out_bytes[0..4].try_into().unwrap());
+                        magic == 0x524f5850u32 || magic == 0x524f5856u32
+                    }
+                {
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| anyhow::anyhow!("mkdir {:?}: {}", parent, e))?;
+                    }
+                    packer::unpack_buffer_to_vfs(&out_bytes, &dest)
+                        .map_err(|e| anyhow::anyhow!("write rox VFS: {}", e))?;
+                    println!("Wrote VFS archive {:?}", dest);
+                } else if dest.is_dir() {
+                    let fname = if is_png {
+                        png_utils::extract_name_from_png(&buf)
+                    } else {
+                        None
+                    }
+                    .unwrap_or_else(|| {
+                        input
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "out.raw".to_string())
+                    });
+                    write_all(&dest.join(&fname), &out_bytes)?;
+                } else {
+                    write_all(&dest, &out_bytes)?;
+                }
+                eprintln!("PROGRESS:100:100:done");
+            }
+        }
+        Commands::Crc32 { input } => {
+            let buf = read_all(&input)?;
+            println!("crc32: {}", crate::core::crc32_bytes(&buf));
+        }
+        Commands::Adler32 { input } => {
+            let buf = read_all(&input)?;
+            println!("adler32: {}", crate::core::adler32_bytes(&buf));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_stream_png_decode;
+
+    #[test]
+    fn selective_png_decode_forces_streaming() {
+        let files = vec![String::from("a.txt")];
+        assert!(should_stream_png_decode(Some(&files), 1, 512));
+    }
+
+    #[test]
+    fn large_png_decode_still_streams_without_selection() {
+        assert!(should_stream_png_decode(None, 128 * 1024 * 1024, 64));
+    }
+
+    #[test]
+    fn tiny_png_decode_can_use_reconstruction_without_selection() {
+        assert!(!should_stream_png_decode(None, 1024, 4096));
+    }
+}

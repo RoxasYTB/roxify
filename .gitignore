@@ -1,0 +1,34 @@
+node_modules/
+dist/
+target*
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+test-native.cjs
+
+test/*
+!test/run-all-tests.cjs
+!test/benchmark.mjs
+*.png
+*.tgz
+test-*
+__pycache__/
+*.pyc
+# Integration test output directory
+output-tests/
+# Ignore platform-specific native artifacts
+libroxify_native-*
+# Build artifacts
+*.node
+!roxify_native.node
+pnpm-lock.yaml
+.npmrc
+graphify-out/
+index.js
