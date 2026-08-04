@@ -47,7 +47,7 @@ impl Default for HybridCompressor {
 
 impl HybridCompressor {
     pub fn new() -> Self {
-        let num_workers = (num_cpus::get() / 4).max(1);
+        let num_workers = default_workers();
         HybridCompressor {
             block_size: BLOCK_SIZE,
             num_workers,
@@ -263,6 +263,42 @@ impl HybridCompressor {
     }
 }
 
+fn ram_budget_mb_from_env() -> Option<u64> {
+    for var in ["ROX_RAM_BUDGET_MB_EFFECTIVE", "ROX_RAM_BUDGET_MB"] {
+        if let Ok(v) = std::env::var(var) {
+            if let Ok(n) = v.trim().parse::<u64>() {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+fn total_ram_mb() -> u64 {
+    #[cfg(target_os = "linux")]
+    if let Ok(info) = std::fs::read_to_string("/proc/meminfo") {
+        if let Some(line) = info.lines().find(|l| l.starts_with("MemTotal:")) {
+            if let Some(kb) = line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()) {
+                return kb.saturating_div(1024);
+            }
+        }
+    }
+    8192
+}
+
+fn default_workers() -> usize {
+    let cpus = num_cpus::get().max(1);
+    if let Ok(v) = std::env::var("ROX_THREADS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            return n.max(1);
+        }
+    }
+    let budget_mb = ram_budget_mb_from_env().unwrap_or_else(total_ram_mb);
+    let per_worker = (BLOCK_SIZE as u64).saturating_mul(6);
+    let ram_cap = (budget_mb.saturating_mul(1024 * 1024) / per_worker).max(1) as usize;
+    cpus.min(ram_cap)
+}
+
 fn compress_block_with_entropy(block: &[u8], entropy: f32) -> Result<Vec<u8>> {
     if block.is_empty() { return Ok(vec![BLOCK_FLAG_STORE]); }
 
@@ -313,7 +349,7 @@ fn try_bwt_or_zstd(block: &[u8]) -> Result<Vec<u8>> {
     use std::io::Write;
     let mut enc = zstd::stream::Encoder::new(Vec::new(), 19)
         .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
-    enc.window_log(27).map_err(|e| anyhow::anyhow!("zstd window_log: {}", e))?;
+    enc.window_log(24).map_err(|e| anyhow::anyhow!("zstd window_log: {}", e))?;
     enc.write_all(block).map_err(|e| anyhow::anyhow!("zstd write: {}", e))?;
     let zc19 = enc.finish().map_err(|e| anyhow::anyhow!("zstd fin: {}", e))?;
     let zt19 = 1 + 4 + zc19.len();
@@ -405,7 +441,17 @@ pub fn compress_high_performance(data: &[u8]) -> Result<(Vec<u8>, CompressionSta
             Ok(e) => e,
             Err(_) => return Ok((bwt_result, stats)),
         };
-        let _ = enc.window_log(27);
+        let total = data.len();
+        let wlog = if total > 1024 * 1024 * 1024 { 30 }
+            else if total > 512 * 1024 * 1024 { 27 }
+            else if total > 128 * 1024 * 1024 { 26 }
+            else if total > 32 * 1024 * 1024 { 24 }
+            else { 22 };
+        let _ = enc.window_log(wlog);
+        let threads = num_cpus::get().max(1) as u32;
+        if threads > 1 {
+            let _ = enc.multithread(threads);
+        }
         if enc.write_all(data).is_err() {
             return Ok((bwt_result, stats));
         }
