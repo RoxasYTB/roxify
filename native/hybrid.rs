@@ -319,7 +319,7 @@ fn compress_block_with_entropy(block: &[u8], entropy: f32) -> Result<Vec<u8>> {
         r.push(BLOCK_FLAG_STORE); r.extend_from_slice(block); return Ok(r);
     }
 
-    try_bwt_or_zstd(block)
+    try_bwt_or_zstd(block, entropy)
 }
 
 fn compress_block(block: &[u8]) -> Result<Vec<u8>> {
@@ -328,7 +328,18 @@ fn compress_block(block: &[u8]) -> Result<Vec<u8>> {
     compress_block_with_entropy(block, entropy)
 }
 
-fn try_bwt_or_zstd(block: &[u8]) -> Result<Vec<u8>> {
+fn encode_bwt(pi: u32, ol: usize, mt_len: usize, sb0: &[u8], enc0: &[u8]) -> Vec<u8> {
+    let mut r = Vec::with_capacity(1 + 4 + 4 + 4 + sb0.len() + enc0.len());
+    r.push(BLOCK_FLAG_BWT);
+    r.extend_from_slice(&pi.to_le_bytes());
+    r.extend_from_slice(&(ol as u32).to_le_bytes());
+    r.extend_from_slice(&(mt_len as u32).to_le_bytes());
+    r.extend_from_slice(sb0);
+    r.extend_from_slice(enc0);
+    r
+}
+
+fn try_bwt_or_zstd(block: &[u8], entropy: f32) -> Result<Vec<u8>> {
     let zc9 = zstd::encode_all(block, 9)?;
     let zt9 = 1 + 4 + zc9.len();
 
@@ -346,43 +357,52 @@ fn try_bwt_or_zstd(block: &[u8]) -> Result<Vec<u8>> {
     drop(rle);
     drop(mt);
 
-    use std::io::Write;
-    let mut enc = zstd::stream::Encoder::new(Vec::new(), 19)
-        .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
-    enc.window_log(24).map_err(|e| anyhow::anyhow!("zstd window_log: {}", e))?;
-    enc.write_all(block).map_err(|e| anyhow::anyhow!("zstd write: {}", e))?;
-    let zc19 = enc.finish().map_err(|e| anyhow::anyhow!("zstd fin: {}", e))?;
-    let zt19 = 1 + 4 + zc19.len();
+    let theoretical = (block.len() as f32) * entropy / 8.0;
+    let need_l19 = (bt0 as f32) > theoretical * 1.02 + 8.0;
 
-    let best = if zt19 < bt0.min(zt9) { zt19 }
-               else if bt0 < zt9 { bt0 }
-               else { zt9 };
+    if need_l19 {
+        use std::io::Write;
+        let mut enc = zstd::stream::Encoder::new(Vec::new(), 19)
+            .map_err(|e| anyhow::anyhow!("zstd init: {}", e))?;
+        enc.window_log(24).map_err(|e| anyhow::anyhow!("zstd window_log: {}", e))?;
+        enc.write_all(block).map_err(|e| anyhow::anyhow!("zstd write: {}", e))?;
+        let zc19 = enc.finish().map_err(|e| anyhow::anyhow!("zstd fin: {}", e))?;
+        let zt19 = 1 + 4 + zc19.len();
 
-    if best == zt19 && zt19 < block.len() {
-        let mut r = Vec::with_capacity(zt19);
-        r.push(BLOCK_FLAG_ZSTD_L19);
-        r.extend_from_slice(&(block.len() as u32).to_le_bytes());
-        r.extend_from_slice(&zc19); return Ok(r);
+        let best = if zt19 < bt0.min(zt9) { zt19 }
+                   else if bt0 < zt9 { bt0 }
+                   else { zt9 };
+
+        if best == zt19 && zt19 < block.len() {
+            let mut r = Vec::with_capacity(zt19);
+            r.push(BLOCK_FLAG_ZSTD_L19);
+            r.extend_from_slice(&(block.len() as u32).to_le_bytes());
+            r.extend_from_slice(&zc19); return Ok(r);
+        }
+        if best == bt0 && bt0 < block.len() {
+            return Ok(encode_bwt(pi, block.len(), mt_len, &sb0, &enc0));
+        }
+        if zt9 < block.len() {
+            let mut r = Vec::with_capacity(zt9);
+            r.push(BLOCK_FLAG_ZSTD);
+            r.extend_from_slice(&(block.len() as u32).to_le_bytes());
+            r.extend_from_slice(&zc9); return Ok(r);
+        }
+        let mut r = Vec::with_capacity(1 + block.len());
+        r.push(BLOCK_FLAG_STORE); r.extend_from_slice(block); Ok(r)
+    } else {
+        if bt0 < zt9 && bt0 < block.len() {
+            return Ok(encode_bwt(pi, block.len(), mt_len, &sb0, &enc0));
+        }
+        if zt9 < block.len() {
+            let mut r = Vec::with_capacity(zt9);
+            r.push(BLOCK_FLAG_ZSTD);
+            r.extend_from_slice(&(block.len() as u32).to_le_bytes());
+            r.extend_from_slice(&zc9); return Ok(r);
+        }
+        let mut r = Vec::with_capacity(1 + block.len());
+        r.push(BLOCK_FLAG_STORE); r.extend_from_slice(block); Ok(r)
     }
-
-    if best == bt0 && bt0 < block.len() {
-        let mut r = Vec::with_capacity(bt0);
-        r.push(BLOCK_FLAG_BWT);
-        r.extend_from_slice(&pi.to_le_bytes());
-        r.extend_from_slice(&(block.len() as u32).to_le_bytes());
-        r.extend_from_slice(&(mt_len as u32).to_le_bytes());
-        r.extend_from_slice(&sb0); r.extend_from_slice(&enc0); return Ok(r);
-    }
-
-    if zt9 < block.len() {
-        let mut r = Vec::with_capacity(zt9);
-        r.push(BLOCK_FLAG_ZSTD);
-        r.extend_from_slice(&(block.len() as u32).to_le_bytes());
-        r.extend_from_slice(&zc9); return Ok(r);
-    }
-
-    let mut r = Vec::with_capacity(1 + block.len());
-    r.push(BLOCK_FLAG_STORE); r.extend_from_slice(block); Ok(r)
 }
 
 fn decompress_block_v2(block: &[u8]) -> Result<Vec<u8>> {
@@ -442,11 +462,8 @@ pub fn compress_high_performance(data: &[u8]) -> Result<(Vec<u8>, CompressionSta
             Err(_) => return Ok((bwt_result, stats)),
         };
         let total = data.len();
-        let wlog = if total > 1024 * 1024 * 1024 { 30 }
-            else if total > 512 * 1024 * 1024 { 27 }
-            else if total > 128 * 1024 * 1024 { 26 }
-            else if total > 32 * 1024 * 1024 { 24 }
-            else { 22 };
+        let bits = (total.max(1) as f64).log2().ceil() as u32;
+        let wlog = bits.clamp(20, 30);
         let _ = enc.window_log(wlog);
         let threads = num_cpus::get().max(1) as u32;
         if threads > 1 {

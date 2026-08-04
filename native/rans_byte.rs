@@ -1,8 +1,21 @@
 use anyhow::Result;
+use std::sync::OnceLock;
 
 const PROB_BITS: u32 = 12;
 const PROB_SCALE: u32 = 1 << PROB_BITS;
 const RANS_BYTE_L: u32 = 1 << 23;
+
+static RECIP_TABLE: OnceLock<[u64; PROB_SCALE as usize + 1]> = OnceLock::new();
+
+fn recip_table() -> &'static [u64; PROB_SCALE as usize + 1] {
+    RECIP_TABLE.get_or_init(|| {
+        let mut t = [0u64; PROB_SCALE as usize + 1];
+        for d in 1..=PROB_SCALE {
+            t[d as usize] = (1u64 << 32) / d as u64;
+        }
+        t
+    })
+}
 
 #[derive(Clone, Debug)]
 pub struct SymbolStats {
@@ -107,14 +120,20 @@ impl SymbolStats {
 }
 
 #[inline(always)]
-fn rans_enc_put(state: &mut u32, buf: &mut Vec<u8>, start: u32, freq: u32) {
+fn rans_enc_put(state: &mut u32, buf: &mut Vec<u8>, start: u32, freq: u32, magic: u64) {
     let x_max = ((RANS_BYTE_L >> PROB_BITS) << 8) * freq;
     let mut x = *state;
     while x >= x_max {
         buf.push((x & 0xFF) as u8);
         x >>= 8;
     }
-    *state = ((x / freq) << PROB_BITS) + (x % freq) + start;
+    let mut q = ((x as u64 * magic) >> 32) as u32;
+    let mut r = x - q * freq;
+    while r >= freq {
+        q += 1;
+        r -= freq;
+    }
+    *state = (q << PROB_BITS) + r + start;
 }
 
 #[inline(always)]
@@ -158,12 +177,13 @@ pub fn rans_encode_block(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
 }
 
 fn rans_encode_single(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
+    let recip = recip_table();
     let mut state: u32 = RANS_BYTE_L;
     let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 16);
 
     for &byte in data.iter().rev() {
         let s = byte as usize;
-        rans_enc_put(&mut state, &mut rev_bytes, stats.cum_freqs[s], stats.freqs[s]);
+        rans_enc_put(&mut state, &mut rev_bytes, stats.cum_freqs[s], stats.freqs[s], recip[stats.freqs[s] as usize]);
     }
 
     let mut output = Vec::with_capacity(5 + rev_bytes.len());
@@ -177,6 +197,7 @@ fn rans_encode_single(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
 }
 
 fn rans_encode_2stream(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
+    let recip = recip_table();
     let mut s0: u32 = RANS_BYTE_L;
     let mut s1: u32 = RANS_BYTE_L;
     let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 32);
@@ -186,16 +207,16 @@ fn rans_encode_2stream(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
 
     if !len.is_multiple_of(2) {
         let sym = data[len - 1] as usize;
-        rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym]);
+        rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym], stats.freqs[sym], recip[stats.freqs[sym] as usize]);
     }
 
     let mut i = even_start;
     while i >= 2 {
         i -= 2;
         let sym1 = data[i + 1] as usize;
-        rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym1], stats.freqs[sym1]);
+        rans_enc_put(&mut s1, &mut rev_bytes, stats.cum_freqs[sym1], stats.freqs[sym1], recip[stats.freqs[sym1] as usize]);
         let sym0 = data[i] as usize;
-        rans_enc_put(&mut s0, &mut rev_bytes, stats.cum_freqs[sym0], stats.freqs[sym0]);
+        rans_enc_put(&mut s0, &mut rev_bytes, stats.cum_freqs[sym0], stats.freqs[sym0], recip[stats.freqs[sym0] as usize]);
     }
 
     let mut output = Vec::with_capacity(9 + rev_bytes.len());
@@ -210,6 +231,7 @@ fn rans_encode_2stream(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
 }
 
 fn rans_encode_4stream(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
+    let recip = recip_table();
     let mut s = [RANS_BYTE_L; 4];
     let mut streams: [Vec<u8>; 4] = [
         Vec::with_capacity(data.len() / 4 + 16),
@@ -221,7 +243,7 @@ fn rans_encode_4stream(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     for (i, &byte) in data.iter().enumerate() {
         let stream = i & 3;
         let sym = byte as usize;
-        rans_enc_put(&mut s[stream], &mut streams[stream], stats.cum_freqs[sym], stats.freqs[sym]);
+        rans_enc_put(&mut s[stream], &mut streams[stream], stats.cum_freqs[sym], stats.freqs[sym], recip[stats.freqs[sym] as usize]);
     }
 
     let sizes: [u32; 4] = [
@@ -328,6 +350,7 @@ impl Order1Stats {
 
 pub fn rans_encode_block_o1(data: &[u8], stats: &Order1Stats) -> Vec<u8> {
     if data.is_empty() { return Vec::new(); }
+    let recip = recip_table();
     let mut state: u32 = RANS_BYTE_L;
     let mut rev_bytes: Vec<u8> = Vec::with_capacity(data.len() + 16);
 
@@ -335,7 +358,7 @@ pub fn rans_encode_block_o1(data: &[u8], stats: &Order1Stats) -> Vec<u8> {
         let prev = if i > 0 { data[i - 1] as usize } else { 0 };
         let sym = data[i] as usize;
         let ctx = &stats.contexts[prev];
-        rans_enc_put(&mut state, &mut rev_bytes, ctx.cum_freqs[sym], ctx.freqs[sym]);
+        rans_enc_put(&mut state, &mut rev_bytes, ctx.cum_freqs[sym], ctx.freqs[sym], recip[ctx.freqs[sym] as usize]);
     }
 
     let mut output = Vec::with_capacity(5 + rev_bytes.len());
