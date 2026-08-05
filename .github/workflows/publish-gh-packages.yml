@@ -21,6 +21,8 @@ jobs:
       - run: npm ci
       - name: Publish to GitHub Packages
         run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          npm pkg set name=@${OWNER}/roxify
           npm publish --registry=https://npm.pkg.github.com/
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
