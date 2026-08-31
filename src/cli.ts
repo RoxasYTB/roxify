@@ -7,6 +7,7 @@ import {
   writeFileSync
 } from 'fs';
 import { open } from 'fs/promises';
+import { createRequire } from 'module';
 import { basename, dirname, join, resolve } from 'path';
 import * as cliProgress from './stub-progress.js';
 import {
@@ -36,8 +37,14 @@ async function loadJsEngine() {
 
 type VFSIndexEntry = { path: string; size: number; offset: number };
 
-// Keep in sync with package.json#version.
-const VERSION = '1.16.14';
+// Always matches package.json#version — no more manual bumping here.
+const VERSION: string = (() => {
+  try {
+    return createRequire(import.meta.url)('../package.json').version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
