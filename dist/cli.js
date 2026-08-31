@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { open } from 'fs/promises';
+import { createRequire } from 'module';
 import { basename, dirname, join, resolve } from 'path';
 import * as cliProgress from './stub-progress.js';
 import { decodeWithRustCLI, encodeWithRustCLI, havepassphraseWithRustCLI, isRustBinaryAvailable, listWithRustCLI, } from './utils/rust-cli-wrapper.js';
@@ -20,8 +21,15 @@ async function loadJsEngine() {
         VFSIndexEntry: undefined,
     };
 }
-// Keep in sync with package.json#version.
-const VERSION = '1.16.14';
+// Always matches package.json#version — no more manual bumping here.
+const VERSION = (() => {
+    try {
+        return createRequire(import.meta.url)('../package.json').version ?? 'unknown';
+    }
+    catch {
+        return 'unknown';
+    }
+})();
 function getDirectorySize(dirPath) {
     let totalSize = 0;
     try {
