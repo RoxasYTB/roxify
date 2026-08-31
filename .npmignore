@@ -16,6 +16,8 @@ node_modules/
 *.tgz
 docs/
 scripts/
+!scripts/postinstall.cjs
+!scripts/download-binary.cjs
 OPTIMIZATIONS.md
 bench.sh
 *.rs

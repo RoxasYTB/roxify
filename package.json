@@ -1,6 +1,6 @@
 {
   "name": "roxify",
-  "version": "1.16.16",
+  "version": "1.16.17",
   "type": "module",
   "description": "Ultra-lightweight PNG steganography with native Rust acceleration. Encode binary data into PNG images with zstd compression.",
   "main": "dist/index.js",
@@ -12,6 +12,8 @@
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "scripts/postinstall.cjs",
+    "scripts/download-binary.cjs",
     "README.md",
     "LICENSE"
   ],
@@ -25,8 +27,7 @@
     "build:native:macos-arm": "cargo build --release --lib --target aarch64-apple-darwin",
     "build:native:windows": "cargo build --release --lib --target x86_64-pc-windows-msvc",
     "build:all": "npm run build:native && npm run build",
-    "postinstall": "",
-    "test": "npm run build && cargo test -p roxify_native --release && node --test dist/*.test.js 2>/dev/null || true",
+    "postinstall": "node scripts/postinstall.cjs",
     "prepublishOnly": "npx -p typescript tsc || echo 'TS build skipped'",
     "test": "npm run build && node ./test/run-all-tests.cjs",
     "test:integration": "node scripts/run-integration-tests.cjs",
