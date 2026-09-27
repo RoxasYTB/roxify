@@ -42,7 +42,9 @@ export async function encodeBinaryToPng(
   input: Buffer | Buffer[],
   opts: EncodeOptions = {},
 ): Promise<Buffer> {
-  const inputBuf = Array.isArray(input) ? Buffer.concat(input) : input;
+  const inputBuf = Array.isArray(input)
+    ? (input.length === 1 ? input[0] : Buffer.concat(input, input.reduce((n, b) => n + b.length, 0)))
+    : input;
   const compressionLevel = opts.compressionLevel ?? 3;
   const fileName = opts.name || undefined;
   const fileListJson = opts.includeFileList && opts.fileList
@@ -59,7 +61,7 @@ export async function encodeBinaryToPng(
         fileName,
         fileListJson,
       );
-      return Buffer.from(result);
+      return asBufferZeroCopy(result);
     } else {
       const result = native.nativeEncodePngWithNameAndFilelist(
         inputBuf,
@@ -67,8 +69,13 @@ export async function encodeBinaryToPng(
         fileName,
         fileListJson,
       );
-      return Buffer.from(result);
+      return asBufferZeroCopy(result);
   }
+}
+
+function asBufferZeroCopy(u8: Uint8Array): Buffer {
+  if (Buffer.isBuffer(u8)) return u8 as Buffer;
+  return Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
 }
 
 function normalizeNativeFileList(fileList: Array<{ name: string; size?: number }>): string {

@@ -190,9 +190,8 @@ fn rans_encode_single(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     output.push(0);
     write_state(&mut output, state);
 
-    for &b in rev_bytes.iter().rev() {
-        output.push(b);
-    }
+    rev_bytes.reverse();
+    output.extend_from_slice(&rev_bytes);
     output
 }
 
@@ -224,9 +223,8 @@ fn rans_encode_2stream(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
     write_state(&mut output, s0);
     write_state(&mut output, s1);
 
-    for &b in rev_bytes.iter().rev() {
-        output.push(b);
-    }
+    rev_bytes.reverse();
+    output.extend_from_slice(&rev_bytes);
     output
 }
 
@@ -263,9 +261,8 @@ fn rans_encode_4stream(data: &[u8], stats: &SymbolStats) -> Vec<u8> {
         output.extend_from_slice(&sizes[i].to_le_bytes());
     }
     for i in 0..4 {
-        for &b in streams[i].iter().rev() {
-            output.push(b);
-        }
+        streams[i].reverse();
+        output.extend_from_slice(&streams[i]);
     }
 
     output

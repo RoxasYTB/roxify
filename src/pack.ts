@@ -109,7 +109,7 @@ export function unpackBuffer(
     const files: { path: string; buf: Buffer }[] = [];
 
     const entriesToProcess =
-      fileList ? index.filter((e) => fileList.includes(e.path)) : index;
+      fileList ? (() => { const w = new Set(fileList); return index.filter((e) => w.has(e.path)); })() : index;
 
     for (const entry of entriesToProcess) {
       const entryStart = dataStart + entry.offset;
@@ -149,7 +149,8 @@ export function unpackBuffer(
     files.push({ path: name, buf: content });
   }
   if (fileList) {
-    const filtered = files.filter((f) => fileList.includes(f.path));
+    const wanted = new Set(fileList);
+    const filtered = files.filter((f) => wanted.has(f.path));
     return { files: filtered };
   }
   return { files };
@@ -176,8 +177,8 @@ export async function packPathsGenerator(
   files.sort((a, b) => {
     const extA = extname(a);
     const extB = extname(b);
-    if (extA !== extB) return extA.localeCompare(extB);
-    return a.localeCompare(b);
+    if (extA !== extB) return extA < extB ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
   });
 
   const base = baseDir ? resolve(baseDir) : process.cwd();
@@ -279,7 +280,8 @@ export async function packPathsGenerator(
 
 export function isTar(buf: Buffer): boolean {
   if (buf.length < 263) return false;
-  return buf.slice(257, 262).toString('ascii') === 'ustar';
+  return buf[257] === 0x75 && buf[258] === 0x73 && buf[259] === 0x74 &&
+    buf[260] === 0x61 && buf[261] === 0x72;
 }
 
 function unpackTar(
@@ -288,9 +290,10 @@ function unpackTar(
 ): { files: { path: string; buf: Buffer }[] } | null {
   const files: { path: string; buf: Buffer }[] = [];
   let offset = 0;
+  const wanted = fileList ? new Set(fileList) : null;
 
   while (offset + 512 <= buf.length) {
-    const header = buf.slice(offset, offset + 512);
+    const header = buf.subarray(offset, offset + 512);
 
     let allZero = true;
     for (let i = 0; i < 512; i++) {
@@ -301,19 +304,17 @@ function unpackTar(
     }
     if (allZero) break;
 
-    const nameRaw = header.slice(0, 100).toString('ascii');
-    const name = nameRaw.replace(/\0+$/, '');
+    const nameEnd = header.indexOf(0, 0);
+    const name = header.subarray(0, nameEnd === -1 ? 100 : Math.min(nameEnd, 100)).toString('ascii');
 
-    const sizeOctal = header
-      .slice(124, 136)
-      .toString('ascii')
-      .replace(/\0+$/, '')
-      .trim();
+    const sizeEnd = header.indexOf(0, 124);
+    const sizeOctal = header.subarray(124, sizeEnd === -1 || sizeEnd > 136 ? 136 : sizeEnd).toString('ascii').trim();
     const size = parseInt(sizeOctal, 8) || 0;
 
     const typeFlag = header[156];
 
-    const prefix = header.slice(345, 500).toString('ascii').replace(/\0+$/, '');
+    const prefixEnd = header.indexOf(0, 345);
+    const prefix = prefixEnd === -1 ? header.subarray(345, 500).toString('ascii') : header.subarray(345, Math.min(prefixEnd, 500)).toString('ascii');
     const fullPath = prefix ? `${prefix}/${name}` : name;
 
     const cleanPath = fullPath
@@ -327,7 +328,7 @@ function unpackTar(
       if (offset + size > buf.length) break;
       const content = buf.slice(offset, offset + size);
 
-      if (!fileList || fileList.includes(cleanPath)) {
+      if (!wanted || wanted.has(cleanPath)) {
         files.push({ path: cleanPath, buf: Buffer.from(content) });
       }
     }

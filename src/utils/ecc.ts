@@ -52,7 +52,7 @@ function gfPow(a: number, n: number): number {
 /**
  * Evaluate p(x) using Horner's method. p[0] is the leading coefficient.
  */
-function polyEval(p: number[], x: number): number {
+function polyEval(p: ArrayLike<number>, x: number): number {
   let y = p[0];
   for (let i = 1; i < p.length; i++) {
     y = gfMul(y, x) ^ p[i];
@@ -132,9 +132,8 @@ export function rsEncode(data: Uint8Array, nsym: number): Uint8Array {
  */
 function calcSyndromes(msg: Uint8Array, nsym: number): number[] {
   const synd = new Array(nsym);
-  const arr = Array.from(msg);
   for (let j = 0; j < nsym; j++) {
-    synd[j] = polyEval(arr, GF_EXP[j]);
+    synd[j] = polyEval(msg, GF_EXP[j]);
   }
   return synd;
 }
@@ -376,14 +375,16 @@ function dataPerBlock(nsym: number): number {
  */
 function interleave(blocks: Uint8Array[]): Uint8Array {
   if (blocks.length === 0) return new Uint8Array(0);
-  const maxLen = Math.max(...blocks.map((b) => b.length));
-  const out: number[] = [];
+  let maxLen = 0;
+  for (const b of blocks) { if (b.length > maxLen) maxLen = b.length; }
+  const out = new Uint8Array(maxLen * blocks.length);
+  let p = 0;
   for (let col = 0; col < maxLen; col++) {
     for (let row = 0; row < blocks.length; row++) {
-      out.push(col < blocks[row].length ? blocks[row][col] : 0);
+      out[p++] = col < blocks[row].length ? blocks[row][col] : 0;
     }
   }
-  return new Uint8Array(out);
+  return out;
 }
 
 /**

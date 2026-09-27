@@ -8,13 +8,7 @@ import { tryDecryptIfNeeded } from './helpers.js';
  * Find PXL1 magic in pixel buffer
  */
 function findPxl1Offset(pixels: Buffer): number {
-  for (let i = 0; i <= pixels.length - 4; i++) {
-    if (pixels[i] === 0x50 && pixels[i + 1] === 0x58 &&
-      pixels[i + 2] === 0x4c && pixels[i + 3] === 0x31) {
-      return i;
-    }
-  }
-  return -1;
+  return pixels.indexOf('PXL1');
 }
 
 /**

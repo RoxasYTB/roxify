@@ -1,19 +1,21 @@
 pub fn mtf_encode(data: &[u8]) -> Vec<u8> {
+    // Table MTF + recherche linéaire : pos souvent petite sur données BWT,
+    // un seul memmove O(pos) par octet, sans tableau inverse à maintenir
+    // (l'ancienne version faisait copy_within + boucle inv O(pos) => ~2x plus cher).
     let mut table = core::array::from_fn::<u8, 256, _>(|i| i as u8);
-    let mut inv = core::array::from_fn::<u8, 256, _>(|i| i as u8);
     let mut output = Vec::with_capacity(data.len());
 
     for &byte in data {
-        let pos = inv[byte as usize] as usize;
+        // Recherche linéaire avec early-exit ; compiler vectorise ce scan.
+        let mut pos = 0usize;
+        // SAFETY: byte toujours dans table[0..256].
+        while table[pos] != byte {
+            pos += 1;
+        }
         output.push(pos as u8);
         if pos > 0 {
             table.copy_within(0..pos, 1);
             table[0] = byte;
-            for i in 1..=pos {
-                let shifted = table[i];
-                inv[shifted as usize] = i as u8;
-            }
-            inv[byte as usize] = 0;
         }
     }
 

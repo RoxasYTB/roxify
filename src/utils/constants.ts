@@ -5,6 +5,7 @@ export const PIXEL_MAGIC_BLOCK = Buffer.from('BLK2');
 export const ENC_NONE = 0;
 export const ENC_AES = 1;
 export const ENC_XOR = 2;
+export const ENC_AES_CTR = 3;
 export const FILTER_ZERO = Buffer.from([0]);
 export const PNG_HEADER = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,

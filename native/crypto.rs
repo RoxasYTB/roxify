@@ -214,6 +214,9 @@ pub fn decrypt_aes_ctr(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
         .map_err(|e| anyhow!("HMAC init: {}", e))?;
     mac.update(header);
     mac.update(ciphertext);
+    // NOTE: passer à 1 seul PBKDF2 + HKDF-expand demanderait un flag de
+    // version (0x04) pour ne pas casser les fichiers existants. En l'état,
+    // on garde le double-PBKDF2 legacy pour compatibilité.
     mac.verify_slice(hmac_tag)
         .map_err(|_| anyhow!("HMAC verification failed - wrong passphrase or corrupted data"))?;
 
