@@ -32,3 +32,4 @@ pnpm-lock.yaml
 .npmrc
 graphify-out/
 index.js
+bun.lock
