@@ -150,6 +150,15 @@ pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 pub fn extract_payload_and_name_from_png(png_data: &[u8]) -> Result<ExtractedPayload, String> {
+    with_payload_and_name(png_data, |payload, name| {
+        Ok(ExtractedPayload { payload: payload.to_vec(), name })
+    })
+}
+
+pub(crate) fn with_payload_and_name<T>(
+    png_data: &[u8],
+    process: impl FnOnce(&[u8], Option<String>) -> Result<T, String>,
+) -> Result<T, String> {
     if !png_data.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         return Err("Invalid PNG signature".to_string());
     }
@@ -163,7 +172,7 @@ pub fn extract_payload_and_name_from_png(png_data: &[u8]) -> Result<ExtractedPay
                             let name = if name_len == 0 { None } else {
                                 std::str::from_utf8(&raw[pos + 6..pos + 6 + name_len]).ok().map(str::to_owned)
                             };
-                            return Ok(ExtractedPayload { payload: payload.to_vec(), name });
+                            return process(payload, name);
                         }
                     }
                 }
@@ -172,7 +181,7 @@ pub fn extract_payload_and_name_from_png(png_data: &[u8]) -> Result<ExtractedPay
     }
     // Keep reconstruction for older layouts and transformed screenshots.
     let payload = extract_payload_legacy(png_data)?;
-    Ok(ExtractedPayload { payload, name: extract_name_from_png(png_data) })
+    process(&payload, extract_name_from_png(png_data))
 }
 
 fn extract_payload_legacy(png_data: &[u8]) -> Result<Vec<u8>, String> {

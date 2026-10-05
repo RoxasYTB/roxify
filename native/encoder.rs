@@ -66,7 +66,19 @@ fn encode_to_png_with_encryption_name_and_filelist_internal(
     file_list: Option<&str>,
     dict: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let compressed = crate::core::zstd_compress_with_prefix(data, compression_level, dict, MAGIC)
+    encode_parts_to_png(&[data], compression_level, passphrase, encrypt_type, name, file_list, dict)
+}
+
+pub fn encode_parts_to_png(
+    parts: &[&[u8]],
+    compression_level: i32,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    name: Option<&str>,
+    file_list: Option<&str>,
+    dict: Option<&[u8]>,
+) -> Result<Vec<u8>> {
+    let compressed = crate::core::zstd_compress_parts_with_prefix(parts, compression_level, dict, MAGIC)
         .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {

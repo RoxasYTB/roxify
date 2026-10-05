@@ -212,11 +212,31 @@ fn compute_adaptive_level(buf: &[u8], requested_level: i32, total_len: usize) ->
 }
 
 pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    zstd_compress_parts_with_prefix(&[buf], level, dict, prefix)
+}
+
+pub fn zstd_compress_parts_with_prefix(parts: &[&[u8]], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
     let actual_level = level.clamp(1, 22);
-    let total_len = prefix.len() + buf.len();
-    let adaptive_level = compute_adaptive_level(buf, actual_level, total_len);
+    let total_len = parts.iter().try_fold(prefix.len(), |len, part| len.checked_add(part.len()))
+        .ok_or_else(|| "Input size overflow".to_string())?;
+    // Match the contiguous input's entropy sample even when it spans many parts.
+    let sample_len = (total_len - prefix.len()).min(16384);
+    let first = parts.iter().find(|part| !part.is_empty()).copied().unwrap_or(&[]);
+    let mut sample = Vec::new();
+    let sample_data = if first.len() >= sample_len {
+        &first[..sample_len]
+    } else {
+        sample.reserve(sample_len);
+        for part in parts {
+            let take = part.len().min(sample_len - sample.len());
+            sample.extend_from_slice(&part[..take]);
+            if sample.len() == sample_len { break; }
+        }
+        &sample
+    };
+    let adaptive_level = compute_adaptive_level(sample_data, actual_level, total_len);
 
     let estimated_output = if total_len < 1024 {
         total_len
@@ -225,13 +245,15 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
     };
 
     if dict.is_none() && total_len < 4 * 1024 * 1024 {
-        if prefix.is_empty() {
-            return zstd::bulk::compress(buf, adaptive_level)
+        if prefix.is_empty() && parts.len() == 1 {
+            return zstd::bulk::compress(parts[0], adaptive_level)
                 .map_err(|e| format!("zstd bulk compress error: {}", e));
         }
         let mut combined = Vec::with_capacity(total_len);
         combined.extend_from_slice(prefix);
-        combined.extend_from_slice(buf);
+        for part in parts {
+            combined.extend_from_slice(part);
+        }
         return zstd::bulk::compress(&combined, adaptive_level)
             .map_err(|e| format!("zstd bulk compress error: {}", e));
     }
@@ -272,10 +294,12 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
 
     let chunk_size = if total_len > 256 * 1024 * 1024 { 16 * 1024 * 1024 }
         else if total_len > 64 * 1024 * 1024 { 8 * 1024 * 1024 }
-        else { buf.len() };
+        else { total_len.max(1) };
 
-    for chunk in buf.chunks(chunk_size) {
-        encoder.write_all(chunk).map_err(|e| format!("zstd write error: {}", e))?;
+    for part in parts {
+        for chunk in part.chunks(chunk_size) {
+            encoder.write_all(chunk).map_err(|e| format!("zstd write error: {}", e))?;
+        }
     }
 
     encoder.finish().map_err(|e| format!("zstd finish error: {}", e))
@@ -304,6 +328,38 @@ pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compress_parts_matches_contiguous_input() {
+        for size in [0, 1, 16385, 4 * 1024 * 1024 + 17] {
+            let data: Vec<u8> = (0..size).map(|i| (i * 31 + i / 7) as u8).collect();
+            let mut parts: Vec<&[u8]> = vec![&[]];
+            parts.extend(data.chunks(997));
+            parts.push(&[]);
+            let expected = zstd_compress_with_prefix(&data, 3, None, b"ROX1").unwrap();
+            let actual = zstd_compress_parts_with_prefix(&parts, 3, None, b"ROX1").unwrap();
+            assert_eq!(actual, expected, "changed compressed bytes at size {size}");
+            let decoded = zstd_decompress_bytes(&actual, None).unwrap();
+            assert_eq!(&decoded[4..], data);
+        }
+    }
+
+    #[test]
+    fn test_empty_parts_with_dictionary() {
+        let compressed = zstd_compress_parts_with_prefix(&[], 3, Some(b"dictionary"), &[]).unwrap();
+        assert!(zstd_decompress_bytes(&compressed, Some(b"dictionary")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parts_preserve_adaptive_level_across_sample_boundaries() {
+        let mut data = vec![0; 32768];
+        for (i, byte) in data[97..].iter_mut().enumerate() {
+            *byte = (i * 31 + i / 7) as u8;
+        }
+        let parts: Vec<&[u8]> = data.chunks(97).collect();
+        let expected = zstd_compress_with_prefix(&data, 19, None, b"ROX1").unwrap();
+        assert_eq!(zstd_compress_parts_with_prefix(&parts, 19, None, b"ROX1").unwrap(), expected);
+    }
 
     #[test]
     fn test_scan_magic() {

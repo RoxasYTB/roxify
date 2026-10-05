@@ -42,12 +42,27 @@ export async function encodeBinaryToPng(
   input: Buffer | Buffer[],
   opts: EncodeOptions = {},
 ): Promise<Buffer> {
-  const inputBuf = Array.isArray(input) ? Buffer.concat(input) : input;
   const compressionLevel = opts.compressionLevel ?? 3;
   const fileName = opts.name || undefined;
   const fileListJson = opts.includeFileList && opts.fileList
     ? normalizeNativeFileList(opts.fileList as Array<{ name: string; size?: number }>)
     : undefined;
+
+  const parts = Array.isArray(input) ? input : undefined;
+  const totalLength = parts?.reduce((total, part) => total + part.length, 0) ?? 0;
+  // N-API conversion costs more than concatenation for many tiny fragments.
+  // Stream large parts directly into Zstd; keep small inputs on the bulk path.
+  if (parts && parts.length > 1 && totalLength >= 4 * 1024 * 1024 &&
+      totalLength / parts.length >= 4096 && typeof native.nativeEncodePngParts === 'function') {
+    const encryptType = opts.encrypt && opts.encrypt !== 'auto' ? opts.encrypt : 'aes';
+    const result = native.nativeEncodePngParts(
+      parts, compressionLevel, opts.passphrase || undefined, encryptType, fileName, fileListJson,
+    );
+    return Buffer.isBuffer(result) ? result : Buffer.from(result);
+  }
+
+  // Older native builds only accept a contiguous input buffer.
+  const inputBuf = parts ? (parts.length === 1 ? parts[0] : Buffer.concat(parts, totalLength)) : input as Buffer;
 
   if (opts.passphrase) {
       const encryptType = opts.encrypt && opts.encrypt !== 'auto' ? opts.encrypt : 'aes';

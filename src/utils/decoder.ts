@@ -137,9 +137,11 @@ export async function decodePngToBinary(
     pngBuf = readFileSync(input);
   }
 
-  const extracted = typeof native.extractPayloadAndNameFromPng === 'function'
-    ? native.extractPayloadAndNameFromPng(pngBuf)
-    : undefined;
+  const extracted = typeof native.nativeDecodePng === 'function'
+    ? native.nativeDecodePng(pngBuf, opts.passphrase)
+    : typeof native.extractPayloadAndNameFromPng === 'function'
+      ? native.extractPayloadAndNameFromPng(pngBuf)
+      : undefined;
   const nativePayload = extracted ? extracted.payload : native.extractPayloadFromPng(pngBuf);
   const payload = Buffer.isBuffer(nativePayload) ? nativePayload : Buffer.from(nativePayload);
   let name: string | undefined;
@@ -167,27 +169,24 @@ export async function decodePngToBinary(
     }
   }
 
-  if (payload.length === 0) {
+  if (payload.length === 0 && !extracted?.decoded) {
     throw new Error('Empty payload extracted');
   }
 
-  // Handle encryption flag (first byte): 0x00 none, 0x01 XOR, 0x02 AES-GCM, 0x03 AES-CTR.
-  // tryDecryptIfNeeded handles 0x00/0x01/0x02; 0x03 (streaming AES-CTR) needs native path.
-  let data: Buffer;
-  const flag = payload[0];
-  if (flag === 0x03) {
-    throw new Error('AES-CTR streaming payload requires the native decoder');
-  }
-  data = tryDecryptIfNeeded(payload, opts.passphrase);
-
-  // Decompress with zstd
-  let decompressed: Buffer;
-  try {
-    const decoded = native.nativeZstdDecompress(data);
-    decompressed = Buffer.isBuffer(decoded) ? decoded : Buffer.from(decoded);
-  } catch (e) {
-    // If decompression fails, try using raw data (might be uncompressed)
-    decompressed = data;
+  let decompressed = payload;
+  if (!extracted?.decoded) {
+    // 0x00 none, 0x01 AES-GCM, 0x02 XOR, 0x03 streaming AES-CTR.
+    if (payload[0] === 0x03) {
+      throw new Error('AES-CTR streaming payload requires the native decoder');
+    }
+    const data = tryDecryptIfNeeded(payload, opts.passphrase);
+    try {
+      const decoded = native.nativeZstdDecompress(data);
+      decompressed = Buffer.isBuffer(decoded) ? decoded : Buffer.from(decoded);
+    } catch {
+      // Older archives may contain uncompressed data.
+      decompressed = data;
+    }
   }
 
   // Remove ROX1 prefix if present

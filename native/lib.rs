@@ -12,6 +12,7 @@ mod mtf;
 mod context_mixing;
 mod hybrid;
 mod encoder;
+mod decoder;
 mod packer;
 mod crypto;
 mod png_utils;
@@ -39,6 +40,13 @@ pub struct ScanResult {
 pub struct PngPayload {
     pub payload: Buffer,
     pub name: Option<String>,
+}
+
+#[napi(object)]
+pub struct PngDecodeResult {
+    pub payload: Buffer,
+    pub name: Option<String>,
+    pub decoded: bool,
 }
 
 #[napi(object)]
@@ -199,6 +207,31 @@ pub fn native_encode_png(buffer: Buffer, compression_level: i32) -> Result<Buffe
     encoder::encode_to_png(&buffer, compression_level)
         .map(Buffer::from)
         .map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_encode_png_parts(
+    parts: Vec<Buffer>,
+    compression_level: i32,
+    passphrase: Option<String>,
+    encrypt_type: Option<String>,
+    name: Option<String>,
+    file_list_json: Option<String>,
+) -> Result<Buffer> {
+    let slices: Vec<&[u8]> = parts.iter().map(|part| part.as_ref()).collect();
+    encoder::encode_parts_to_png(
+        &slices, compression_level, passphrase.as_deref(), encrypt_type.as_deref(),
+        name.as_deref(), file_list_json.as_deref(), None,
+    ).map(Buffer::from).map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn native_decode_png(png_buffer: Buffer, passphrase: Option<String>) -> Result<PngDecodeResult> {
+    let result = decoder::decode_png(&png_buffer, passphrase.as_deref())
+        .map_err(Error::from_reason)?;
+    Ok(PngDecodeResult { payload: result.payload.into(), name: result.name, decoded: result.decoded })
 }
 
 #[cfg(not(test))]
