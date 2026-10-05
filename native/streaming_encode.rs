@@ -5,6 +5,9 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::png_chunk_writer::{ChunkedIdatWriter, write_png_chunk};
+use crate::png_writer::{StoredDeflateWriter, ScanlineFilterWriter};
+#[cfg(test)]
+use crate::png_writer::STORED_DEFLATE_BLOCK_MAX;
 
 const PNG_HEADER: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 const PIXEL_MAGIC: &[u8] = b"PXL1";
@@ -118,10 +121,9 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     };
 
     let adaptive_window_log = select_zstd_window_log(total_bytes);
-    let zst_size_upper = estimate_zst_capacity(total_bytes);
 
     encode_dir_streaming(
-        &entries, total_bytes, zst_size_upper, output_path,
+        &entries, total_bytes, output_path,
         actual_level, name, passphrase, encrypt_type,
         adaptive_window_log, &progress,
     )?;
@@ -379,7 +381,7 @@ fn load_directory_entry_bytes(entry: &DirectoryFile) -> anyhow::Result<Option<Ve
     };
 
     let reserve = usize::try_from(entry.size.min(parallel_io_batch_bytes())).unwrap_or(MAX_FILE_BUFFER_CAPACITY);
-    let mut bytes = Vec::with_capacity(reserve.max(8192));
+    let mut bytes = Vec::with_capacity(reserve);
     file.read_to_end(&mut bytes)
         .map_err(|e| anyhow::anyhow!("pack read {}: {}", entry.rel_path, e))?;
 
@@ -514,7 +516,7 @@ fn normalize_rel_path(path: &Path) -> String {
 fn estimate_zst_capacity(total_bytes: u64) -> usize {
 
     let capped = total_bytes.min(usize::MAX as u64) as usize;
-    capped.max(MIN_ZST_CAPACITY)
+    capped.clamp(64 * 1024, MIN_ZST_CAPACITY)
 }
 
 fn select_zstd_window_log(total_bytes: u64) -> u32 {
@@ -810,7 +812,6 @@ fn write_png_from_zst_file(
 fn encode_dir_streaming(
     entries: &[DirectoryFile],
     total_bytes: u64,
-    zst_size_upper: usize,
     output_path: &Path,
     actual_level: i32,
     name: Option<&str>,
@@ -820,55 +821,10 @@ fn encode_dir_streaming(
     progress: &Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
 
-    let writer_encryptor = match passphrase {
-        Some(pass) if !pass.is_empty() => Some(crate::crypto::StreamingEncryptor::new(pass)?),
-        _ => None,
-    };
-
-    let enc_header_len = writer_encryptor.as_ref().map(|e| e.header_len()).unwrap_or(1);
-    let hmac_trailer_len: usize = if writer_encryptor.is_some() { 32 } else { 0 };
-
     let file_list: Vec<FileListEntry> = entries.iter()
         .map(|e| FileListEntry { name: e.rel_path.clone(), size: e.size })
         .collect();
     let file_list_json = serde_json::to_string(&file_list)?;
-    let file_list_chunk = {
-        let json_bytes = file_list_json.as_bytes();
-        let mut chunk = Vec::with_capacity(4 + 4 + json_bytes.len());
-        chunk.extend_from_slice(b"rXFL");
-        chunk.extend_from_slice(&(json_bytes.len() as u32).to_be_bytes());
-        chunk.extend_from_slice(json_bytes);
-        chunk
-    };
-
-    let encrypted_payload_len = enc_header_len + zst_size_upper + hmac_trailer_len;
-
-    let version = HEADER_VERSION_V2;
-    let name_bytes = name.map(|n| n.as_bytes()).unwrap_or(&[]);
-    let name_len = name_bytes.len().min(255) as u8;
-    let payload_len_bytes = (encrypted_payload_len as u64).to_be_bytes();
-
-    let mut meta_header = Vec::with_capacity(1 + 1 + name_len as usize + 8);
-    meta_header.push(version);
-    meta_header.push(name_len);
-    if name_len > 0 {
-        meta_header.extend_from_slice(&name_bytes[..name_len as usize]);
-    }
-    meta_header.extend_from_slice(&payload_len_bytes);
-    let meta_header_len = meta_header.len();
-
-    let total_meta_pixel_len = meta_header_len + encrypted_payload_len + file_list_chunk.len();
-    let raw_payload_len = PIXEL_MAGIC.len() + total_meta_pixel_len;
-    let padded_len = raw_payload_len + (3 - (raw_payload_len % 3)) % 3;
-
-    let data_with_markers_len = 12 + padded_len;
-    let data_pixels = (data_with_markers_len + 2) / 3;
-    let total_pixels = data_pixels + 4;
-
-    let side = (total_pixels as f64).sqrt().ceil() as usize;
-    let width = side.max(4);
-    let height = width;
-    let _enc_header = writer_encryptor.as_ref().map(|e| e.header.clone()).unwrap_or_else(|| vec![0x00]);
 
     let output_path = output_path.to_path_buf();
     let entry_count = entries.len() as u32;
@@ -1042,7 +998,7 @@ fn write_idat_streaming<W: Write, R: Read>(
         .map_err(|e| anyhow::anyhow!("write header: {}", e))?;
 
     const TRANSFER_BUF_SIZE: usize = 16 * 1024 * 1024;
-    let mut transfer_buf = vec![0u8; TRANSFER_BUF_SIZE];
+    let mut transfer_buf = vec![0u8; zst_size.clamp(1, TRANSFER_BUF_SIZE)];
     let mut zst_remaining = zst_size;
     let mut bytes_written_payload: u64 = header_bytes.len() as u64;
     let mut last_pct: u64 = 89;
@@ -1083,6 +1039,10 @@ fn write_idat_streaming<W: Write, R: Read>(
             .map_err(|e| anyhow::anyhow!("write hmac: {}", e))?;
     }
 
+    if fl_chunk_data.len() + padding_after >= 1024 {
+        row_writer.get_mut().set_compressible(true)?;
+    }
+
     if !fl_chunk_data.is_empty() {
         row_writer
             .write_all(fl_chunk_data)
@@ -1107,150 +1067,6 @@ fn write_idat_streaming<W: Write, R: Read>(
     idat.finish()?;
 
     Ok(())
-}
-
-const STORED_DEFLATE_BLOCK_MAX: usize = 65535;
-
-struct StoredDeflateWriter<W: Write> {
-    inner: W,
-    pending: Vec<u8>,
-    adler: simd_adler32::Adler32,
-    header_written: bool,
-}
-
-impl<W: Write> StoredDeflateWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            pending: Vec::with_capacity(STORED_DEFLATE_BLOCK_MAX),
-            adler: simd_adler32::Adler32::new(),
-            header_written: false,
-        }
-    }
-
-    fn ensure_header(&mut self) -> std::io::Result<()> {
-        if !self.header_written {
-            self.inner.write_all(&[0x78, 0x01])?;
-            self.header_written = true;
-        }
-        Ok(())
-    }
-
-    fn emit_block(&mut self, data: &[u8], is_final: bool) -> std::io::Result<()> {
-        let len = data.len() as u16;
-        let nlen = !len;
-        let header = [
-            if is_final { 0x01 } else { 0x00 },
-            (len & 0xff) as u8,
-            (len >> 8) as u8,
-            (nlen & 0xff) as u8,
-            (nlen >> 8) as u8,
-        ];
-        self.inner.write_all(&header)?;
-        if !data.is_empty() {
-            self.inner.write_all(data)?;
-        }
-        Ok(())
-    }
-
-    fn finish(mut self) -> std::io::Result<W> {
-        self.ensure_header()?;
-
-        let len = self.pending.len() as u16;
-        let nlen = !len;
-        let header = [0x01u8, (len & 0xff) as u8, (len >> 8) as u8, (nlen & 0xff) as u8, (nlen >> 8) as u8];
-        self.inner.write_all(&header)?;
-        if !self.pending.is_empty() {
-            self.inner.write_all(&self.pending)?;
-        }
-        let adler = self.adler.finish().to_be_bytes();
-        self.inner.write_all(&adler)?;
-        Ok(self.inner)
-    }
-}
-
-impl<W: Write> Write for StoredDeflateWriter<W> {
-    fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
-        let total = buf.len();
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        self.ensure_header()?;
-        self.adler.write(buf);
-
-        while !buf.is_empty() {
-            let space = STORED_DEFLATE_BLOCK_MAX - self.pending.len();
-            let take = space.min(buf.len());
-            self.pending.extend_from_slice(&buf[..take]);
-            buf = &buf[take..];
-
-            if self.pending.len() == STORED_DEFLATE_BLOCK_MAX && !buf.is_empty() {
-                let header = [
-                    0x00u8,
-                    0xffu8,
-                    0xffu8,
-                    0x00u8,
-                    0x00u8,
-                ];
-                self.inner.write_all(&header)?;
-                self.inner.write_all(&self.pending)?;
-                self.pending.clear();
-            }
-        }
-        Ok(total)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-struct ScanlineFilterWriter<W: Write> {
-    inner: W,
-    row_bytes: usize,
-    col_in_row: usize,
-    row_started: bool,
-}
-
-impl<W: Write> ScanlineFilterWriter<W> {
-    fn new(inner: W, row_bytes: usize) -> Self {
-        Self {
-            inner,
-            row_bytes,
-            col_in_row: 0,
-            row_started: false,
-        }
-    }
-
-    fn into_inner(self) -> W {
-        self.inner
-    }
-}
-
-impl<W: Write> Write for ScanlineFilterWriter<W> {
-    fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
-        let total = buf.len();
-        while !buf.is_empty() {
-            if !self.row_started {
-                self.inner.write_all(&[0u8])?;
-                self.row_started = true;
-                self.col_in_row = 0;
-            }
-            let remaining_in_row = self.row_bytes - self.col_in_row;
-            let take = remaining_in_row.min(buf.len());
-            self.inner.write_all(&buf[..take])?;
-            self.col_in_row += take;
-            buf = &buf[take..];
-            if self.col_in_row >= self.row_bytes {
-                self.row_started = false;
-            }
-        }
-        Ok(total)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
 }
 
 fn build_marker_end_bytes() -> [u8; 9] {

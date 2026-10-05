@@ -59,7 +59,7 @@ export async function encodeBinaryToPng(
         fileName,
         fileListJson,
       );
-      return Buffer.from(result);
+      return Buffer.isBuffer(result) ? result : Buffer.from(result);
     } else {
       const result = native.nativeEncodePngWithNameAndFilelist(
         inputBuf,
@@ -67,7 +67,7 @@ export async function encodeBinaryToPng(
         fileName,
         fileListJson,
       );
-      return Buffer.from(result);
+      return Buffer.isBuffer(result) ? result : Buffer.from(result);
   }
 }
 

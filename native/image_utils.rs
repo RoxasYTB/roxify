@@ -37,7 +37,7 @@ pub fn sharp_resize(
 pub fn sharp_raw_pixels(input: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     let img = load_no_limits(input)?;
 
-    let rgb = img.to_rgb8();
+    let rgb = img.into_rgb8();
     let width = rgb.width();
     let height = rgb.height();
     let raw = rgb.into_raw();

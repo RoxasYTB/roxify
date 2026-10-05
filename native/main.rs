@@ -14,6 +14,7 @@ mod encoder;
 mod io_advice;
 mod packer;
 mod png_chunk_writer;
+mod png_writer;
 mod png_utils;
 mod progress;
 mod reconstitution;
@@ -326,8 +327,9 @@ fn choose_zstd_window_log(total_expected: u64) -> u32 {
 fn normalize_png_archive_bytes(
     png_data: &[u8],
     passphrase: Option<&str>,
-) -> anyhow::Result<Vec<u8>> {
-    let payload = png_utils::extract_payload_from_png(png_data).map_err(|e| anyhow::anyhow!(e))?;
+) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+    let extracted = png_utils::extract_payload_and_name_from_png(png_data).map_err(|e| anyhow::anyhow!(e))?;
+    let payload = extracted.payload;
     if payload.is_empty() {
         return Err(anyhow::anyhow!("Empty payload"));
     }
@@ -349,9 +351,9 @@ fn normalize_png_archive_bytes(
     };
 
     if decompressed.starts_with(b"ROX1") {
-        Ok(decompressed[4..].to_vec())
+        Ok((decompressed[4..].to_vec(), extracted.name))
     } else {
-        Ok(decompressed)
+        Ok((decompressed, extracted.name))
     }
 }
 
@@ -867,8 +869,7 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("PROGRESS:{}:{}:{}", current, total, step);
                 };
 
-                let normalized = normalize_png_archive_bytes(&buf, passphrase.as_deref())?;
-                let fallback_name = png_utils::extract_name_from_png(&buf);
+                let (normalized, fallback_name) = normalize_png_archive_bytes(&buf, passphrase.as_deref())?;
                 let written = unpack_archive_bytes(
                     normalized,
                     &out_dir,

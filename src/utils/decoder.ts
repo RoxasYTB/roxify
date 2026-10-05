@@ -137,26 +137,34 @@ export async function decodePngToBinary(
     pngBuf = readFileSync(input);
   }
 
-  const payload = Buffer.from(native.extractPayloadFromPng(pngBuf));
+  const extracted = typeof native.extractPayloadAndNameFromPng === 'function'
+    ? native.extractPayloadAndNameFromPng(pngBuf)
+    : undefined;
+  const nativePayload = extracted ? extracted.payload : native.extractPayloadFromPng(pngBuf);
+  const payload = Buffer.isBuffer(nativePayload) ? nativePayload : Buffer.from(nativePayload);
   let name: string | undefined;
 
-  // Single-pass name lookup: ask the native side (which already keeps a
-  // decoded RGB cache during extract_payload_from_png) instead of decoding
-  // pixels again from TS.
-  try {
-    const fromNative = (native as any).extractNameFromPng?.(pngBuf);
-    if (typeof fromNative === 'string' && fromNative.length > 0) {
-      name = fromNative;
-    }
-  } catch { }
-  if (!name) {
-    // Older native binaries don't expose extractNameFromPng; fall back to the
-    // previous TS path (re-decodes pixels, kept only for compat).
+  // Current native builds return both values from the same decoded image.
+  // An absent name is valid and must not trigger screenshot reconstruction.
+  if (extracted) {
+    name = extracted.name || undefined;
+  } else {
+    // Compatibility with older native builds.
     try {
-      const rgbResult = native.pngToRgb(pngBuf);
-      const pixels = Buffer.from(rgbResult.pixels);
-      ({ name } = extractPayloadFromPixels(pixels));
+      const fromNative = (native as any).extractNameFromPng?.(pngBuf);
+      if (typeof fromNative === 'string' && fromNative.length > 0) {
+        name = fromNative;
+      }
     } catch { }
+    if (!name) {
+      // Older native binaries don't expose extractNameFromPng; fall back to the
+      // previous TS path (re-decodes pixels, kept only for compat).
+      try {
+        const rgbResult = native.pngToRgb(pngBuf);
+        const pixels = Buffer.from(rgbResult.pixels);
+        ({ name } = extractPayloadFromPixels(pixels));
+      } catch { }
+    }
   }
 
   if (payload.length === 0) {
@@ -175,7 +183,8 @@ export async function decodePngToBinary(
   // Decompress with zstd
   let decompressed: Buffer;
   try {
-    decompressed = Buffer.from(native.nativeZstdDecompress(data));
+    const decoded = native.nativeZstdDecompress(data);
+    decompressed = Buffer.isBuffer(decoded) ? decoded : Buffer.from(decoded);
   } catch (e) {
     // If decompression fails, try using raw data (might be uncompressed)
     decompressed = data;

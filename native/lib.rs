@@ -16,6 +16,7 @@ mod packer;
 mod crypto;
 mod png_utils;
 mod png_chunk_writer;
+mod png_writer;
 mod io_advice;
 mod image_utils;
 mod progress;
@@ -32,6 +33,12 @@ pub use hybrid::*;
 pub struct ScanResult {
     pub marker_positions: Vec<u32>,
     pub magic_positions: Vec<u32>,
+}
+
+#[napi(object)]
+pub struct PngPayload {
+    pub payload: Buffer,
+    pub name: Option<String>,
 }
 
 #[napi(object)]
@@ -386,6 +393,14 @@ pub fn extract_payload_from_png(png_buffer: Buffer) -> Result<Buffer> {
     png_utils::extract_payload_from_png(&png_buffer)
         .map(Buffer::from)
         .map_err(Error::from_reason)
+}
+
+#[cfg(not(test))]
+#[napi]
+pub fn extract_payload_and_name_from_png(png_buffer: Buffer) -> Result<PngPayload> {
+    let result = png_utils::extract_payload_and_name_from_png(&png_buffer)
+        .map_err(Error::from_reason)?;
+    Ok(PngPayload { payload: result.payload.into(), name: result.name })
 }
 
 #[cfg(not(test))]

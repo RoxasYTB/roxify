@@ -140,7 +140,42 @@ pub fn get_png_metadata(png_data: &[u8]) -> Result<(u32, u32, u8, u8), String> {
     Ok((width, height, bit_depth, color_type))
 }
 
+pub struct ExtractedPayload {
+    pub payload: Vec<u8>,
+    pub name: Option<String>,
+}
+
 pub fn extract_payload_from_png(png_data: &[u8]) -> Result<Vec<u8>, String> {
+    extract_payload_and_name_from_png(png_data).map(|result| result.payload)
+}
+
+pub fn extract_payload_and_name_from_png(png_data: &[u8]) -> Result<ExtractedPayload, String> {
+    if !png_data.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        return Err("Invalid PNG signature".to_string());
+    }
+    if let Ok(raw) = decode_to_rgb(png_data) {
+        for pos in memchr::memmem::find_iter(&raw, b"PXL1") {
+            if let Ok(header) = parse_pixel_payload_header(&raw, pos) {
+                if let Some(end) = header.payload_offset.checked_add(header.payload_len) {
+                    if let Some(payload) = raw.get(header.payload_offset..end) {
+                        if validate_payload_deep(payload) {
+                            let name_len = raw[pos + 5] as usize;
+                            let name = if name_len == 0 { None } else {
+                                std::str::from_utf8(&raw[pos + 6..pos + 6 + name_len]).ok().map(str::to_owned)
+                            };
+                            return Ok(ExtractedPayload { payload: payload.to_vec(), name });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Keep reconstruction for older layouts and transformed screenshots.
+    let payload = extract_payload_legacy(png_data)?;
+    Ok(ExtractedPayload { payload, name: extract_name_from_png(png_data) })
+}
+
+fn extract_payload_legacy(png_data: &[u8]) -> Result<Vec<u8>, String> {
 
     #[allow(clippy::op_ref)]
     if png_data.len() < 8 || &png_data[..8] != &[137, 80, 78, 71, 13, 10, 26, 10] {
@@ -256,7 +291,7 @@ fn decode_to_rgb(png_data: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("format guess error: {}", e))?;
     reader.no_limits();
     let img = reader.decode().map_err(|e| format!("image decode error: {}", e))?;
-    Ok(img.to_rgb8().into_raw())
+    Ok(img.into_rgb8().into_raw())
 }
 
 fn decode_to_rgba_grid(png_data: &[u8]) -> Result<(Vec<[u8; 4]>, u32, u32), String> {
@@ -265,7 +300,7 @@ fn decode_to_rgba_grid(png_data: &[u8]) -> Result<(Vec<[u8; 4]>, u32, u32), Stri
         .map_err(|e| format!("format guess error: {}", e))?;
     reader.no_limits();
     let img = reader.decode().map_err(|e| format!("image decode error: {}", e))?;
-    let rgba = img.to_rgba8();
+    let rgba = img.into_rgba8();
     let w = rgba.width();
     let h = rgba.height();
     let pixels: Vec<[u8; 4]> = rgba.pixels().map(|p| [p[0], p[1], p[2], p[3]]).collect();
@@ -805,4 +840,28 @@ fn extract_file_list_direct(png_data: &[u8]) -> Result<String, String> {
     std::str::from_utf8(&raw[idx..json_end])
         .map(|s| s.to_string())
         .map_err(|e| format!("Invalid UTF-8 in file list: {}", e))
+}
+
+#[cfg(test)]
+mod extraction_tests {
+    use super::*;
+
+    #[test]
+    fn combined_extraction_preserves_named_and_unnamed_payloads() {
+        let data = b"single decode, identical payload".repeat(100);
+        for name in [None, Some(""), Some("donnees-ete.bin")] {
+            let png = crate::encoder::encode_to_png_with_name(&data, 3, name).unwrap();
+            let extracted = extract_payload_and_name_from_png(&png).unwrap();
+            assert_eq!(extracted.name.as_deref(), name.filter(|n| !n.is_empty()));
+            assert_eq!(extracted.payload[0], 0);
+            let decoded = crate::core::zstd_decompress_bytes(&extracted.payload[1..], None).unwrap();
+            assert_eq!(&decoded[..4], b"ROX1");
+            assert_eq!(&decoded[4..], data);
+        }
+    }
+
+    #[test]
+    fn combined_extraction_rejects_non_png_input() {
+        assert!(extract_payload_and_name_from_png(b"PXL1 bogus").is_err());
+    }
 }
