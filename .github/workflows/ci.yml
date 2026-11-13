@@ -39,6 +39,9 @@ jobs:
 
       - run: npm run build
 
+      - name: Archive format regression tests
+        run: node scripts/check-pack.mjs
+
   check:
     name: Lint & Type Check
     runs-on: ubuntu-latest

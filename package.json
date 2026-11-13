@@ -30,6 +30,7 @@
     "postinstall": "node scripts/postinstall.cjs",
     "prepublishOnly": "npx -p typescript tsc || echo 'TS build skipped'",
     "test": "npm run build && node ./test/run-all-tests.cjs",
+    "test:pack": "npm run build && node scripts/check-pack.mjs",
     "test:integration": "node scripts/run-integration-tests.cjs",
     "cli": "node dist/cli.js"
   },

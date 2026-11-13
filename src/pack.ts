@@ -253,10 +253,12 @@ export async function packPathsGenerator(
         const sizeBuf = Buffer.alloc(8);
         sizeBuf.writeBigUInt64BE(BigInt(content.length), 0);
 
-        const entry = Buffer.concat([nameLen, nameBuf, sizeBuf, content]);
+        const header = Buffer.concat([nameLen, nameBuf, sizeBuf]);
 
-        chunks.push(entry);
-        chunkSize += entry.length;
+        // Keep the file buffer until the block is assembled instead of copying
+        // its contents once into an entry and again into the output block.
+        chunks.push(header, content);
+        chunkSize += header.length + content.length;
 
         if (chunkSize >= BLOCK_SIZE) {
           yield Buffer.concat(chunks);
