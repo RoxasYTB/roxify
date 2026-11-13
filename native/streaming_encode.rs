@@ -573,7 +573,7 @@ fn select_zstd_threads(total_bytes: u64) -> u32 {
 }
 
 fn write_png_from_zst_mem(
-    zst_buf: Vec<u8>,
+    mut zst_buf: Vec<u8>,
     output_path: &Path,
     name: Option<&str>,
     file_list: Option<&str>,
@@ -663,12 +663,10 @@ fn write_png_from_zst_mem(
     ihdr[9] = 2;
     write_png_chunk(&mut w, b"IHDR", &ihdr)?;
 
-    let mut zst_reader = std::io::Cursor::new(zst_buf);
-
     write_idat_streaming(
         &mut w,
         &header_bytes,
-        &mut zst_reader,
+        ZstSource::Memory(&mut zst_buf),
         zst_size,
         file_list_chunk.as_deref(),
         &mut encryptor,
@@ -787,7 +785,7 @@ fn write_png_from_zst_file(
     write_idat_streaming(
         &mut w,
         &header_bytes,
-        &mut zst_reader,
+        ZstSource::Reader(&mut zst_reader),
         zst_size as usize,
         file_list_chunk.as_deref(),
         &mut encryptor,
@@ -968,10 +966,15 @@ fn build_header_bytes(meta_header: &[u8], enc_header: &[u8]) -> Vec<u8> {
     header
 }
 
-fn write_idat_streaming<W: Write, R: Read>(
+enum ZstSource<'a> {
+    Memory(&'a mut [u8]),
+    Reader(&'a mut dyn Read),
+}
+
+fn write_idat_streaming<W: Write>(
     w: &mut W,
     header_bytes: &[u8],
-    zst_reader: &mut R,
+    mut zst_source: ZstSource<'_>,
     zst_size: usize,
     file_list_chunk: Option<&[u8]>,
     encryptor: &mut Option<crate::crypto::StreamingEncryptor>,
@@ -998,24 +1001,39 @@ fn write_idat_streaming<W: Write, R: Read>(
         .map_err(|e| anyhow::anyhow!("write header: {}", e))?;
 
     const TRANSFER_BUF_SIZE: usize = 16 * 1024 * 1024;
-    let mut transfer_buf = vec![0u8; zst_size.clamp(1, TRANSFER_BUF_SIZE)];
+    // The in-memory source is already owned by this operation. Borrow its
+    // chunks directly (and encrypt in place) instead of copying the entire
+    // compressed payload through another 16 MiB allocation.
+    let mut transfer_buf = match &zst_source {
+        ZstSource::Memory(_) => Vec::new(),
+        ZstSource::Reader(_) => vec![0u8; zst_size.clamp(1, TRANSFER_BUF_SIZE)],
+    };
     let mut zst_remaining = zst_size;
     let mut bytes_written_payload: u64 = header_bytes.len() as u64;
     let mut last_pct: u64 = 89;
 
     while zst_remaining > 0 {
         let take = zst_remaining.min(TRANSFER_BUF_SIZE);
-        let got = zst_reader
-            .read(&mut transfer_buf[..take])
-            .map_err(|e| anyhow::anyhow!("read zst: {}", e))?;
+        let chunk = match &mut zst_source {
+            ZstSource::Memory(bytes) => {
+                let offset = zst_size - zst_remaining;
+                &mut bytes[offset..offset + take]
+            }
+            ZstSource::Reader(reader) => {
+                let got = reader.read(&mut transfer_buf[..take])
+                    .map_err(|e| anyhow::anyhow!("read zst: {}", e))?;
+                &mut transfer_buf[..got]
+            }
+        };
+        let got = chunk.len();
         if got == 0 {
             break;
         }
         if let Some(ref mut enc) = encryptor {
-            enc.encrypt_chunk(&mut transfer_buf[..got]);
+            enc.encrypt_chunk(chunk);
         }
         row_writer
-            .write_all(&transfer_buf[..got])
+            .write_all(chunk)
             .map_err(|e| anyhow::anyhow!("write zst pixels: {}", e))?;
         zst_remaining -= got;
         bytes_written_payload += got as u64;
@@ -1084,6 +1102,60 @@ mod tests {
     use super::*;
     use flate2::read::ZlibDecoder;
     use std::io::Read;
+
+    fn write_test_idat(
+        source: ZstSource<'_>,
+        size: usize,
+        header: &[u8],
+        encryptor: &mut Option<crate::crypto::StreamingEncryptor>,
+    ) -> Vec<u8> {
+        let row_bytes = 257 * 3;
+        let hmac_len = if encryptor.is_some() { 32 } else { 0 };
+        let height = (header.len() + size + hmac_len + 2048).div_ceil(row_bytes);
+        let mut png = PNG_HEADER.to_vec();
+        write_idat_streaming(
+            &mut png, header, source, size, None, encryptor, hmac_len,
+            height, row_bytes, 0, height * row_bytes, 22, &None,
+        ).unwrap();
+        png
+    }
+
+    #[test]
+    fn memory_source_matches_reader_across_payload_boundaries() {
+        const TRANSFER_SIZE: usize = 16 * 1024 * 1024;
+        let input: Vec<u8> = (0..TRANSFER_SIZE + 1)
+            .map(|i| ((i * 73 + i / 251) & 255) as u8).collect();
+        for size in [0, 1, 65534, 65535, 65536, TRANSFER_SIZE - 1, TRANSFER_SIZE, TRANSFER_SIZE + 1] {
+            let mut memory = input[..size].to_vec();
+            let mut reader = std::io::Cursor::new(&input[..size]);
+            let memory_png = write_test_idat(ZstSource::Memory(&mut memory), size, b"header", &mut None);
+            let reader_png = write_test_idat(ZstSource::Reader(&mut reader), size, b"header", &mut None);
+            assert_eq!(memory_png, reader_png, "PNG changed for payload size {}", size);
+            assert_eq!(memory, input[..size], "unencrypted source must remain unchanged");
+        }
+    }
+
+    #[test]
+    fn memory_source_encryption_preserves_payload_and_hmac_across_chunks() {
+        let input: Vec<u8> = (0..16 * 1024 * 1024 + 17)
+            .map(|i| ((i * 31 + i / 127) & 255) as u8).collect();
+        let mut memory = input.clone();
+        let mut encryptor = Some(crate::crypto::StreamingEncryptor::new("source-test").unwrap());
+        let header = encryptor.as_ref().unwrap().header.clone();
+        let png = write_test_idat(ZstSource::Memory(&mut memory), input.len(), &header, &mut encryptor);
+        assert_ne!(memory, input, "encryption should update the owned payload in place");
+
+        let idat: Vec<u8> = crate::png_utils::extract_png_chunks(&png).unwrap()
+            .into_iter().filter(|chunk| chunk.name == "IDAT")
+            .flat_map(|chunk| chunk.data).collect();
+        let mut scanlines = Vec::new();
+        ZlibDecoder::new(idat.as_slice()).read_to_end(&mut scanlines).unwrap();
+        let pixels: Vec<u8> = scanlines.chunks(257 * 3 + 1)
+            .flat_map(|row| row[1..].iter().copied()).collect();
+        let payload_len = header.len() + input.len() + 32;
+        let plaintext = crate::crypto::decrypt_aes_ctr(&pixels[..payload_len], "source-test").unwrap();
+        assert_eq!(plaintext, input);
+    }
 
     fn roundtrip(input: &[u8]) {
         let mut out = Vec::new();

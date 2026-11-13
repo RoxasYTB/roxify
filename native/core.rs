@@ -311,23 +311,36 @@ pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Re
     let win = 31u32;
     let estimated = buf.len().max(4096);
     let mut out = Vec::with_capacity(estimated);
-    if let Some(d) = dict {
-        let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(buf), d)
-            .map_err(|e| format!("zstd decoder init error: {}", e))?;
-        decoder.window_log_max(win).map_err(|e| format!("zstd window_log_max error: {}", e))?;
-        decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
-    } else {
-        let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(buf))
-            .map_err(|e| format!("zstd decoder init error: {}", e))?;
-        decoder.window_log_max(win).map_err(|e| format!("zstd window_log_max error: {}", e))?;
-        decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
-    }
+    // A byte slice already implements BufRead. Decoder::new would allocate a
+    // BufReader and copy the compressed input through it unnecessarily.
+    let mut decoder = zstd::stream::Decoder::with_dictionary(buf, dict.unwrap_or(&[]))
+        .map_err(|e| format!("zstd decoder init error: {}", e))?;
+    decoder.window_log_max(win).map_err(|e| format!("zstd window_log_max error: {}", e))?;
+    decoder.read_to_end(&mut out).map_err(|e| format!("zstd decompress error: {}", e))?;
     Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decompress_concatenated_frames_and_unknown_size() {
+        use std::io::Write;
+        for dict in [None, Some(b"test dictionary".as_slice())] {
+            let first = b"first frame".repeat(15000);
+            let second = b"second frame".repeat(12000);
+            let mut frames = zstd_compress_bytes(&first, 3, dict).unwrap();
+            // A streaming encoder without a pledged size emits a frame whose
+            // decompressed size cannot be inferred from its header.
+            let mut encoder = zstd::stream::Encoder::with_dictionary(Vec::new(), 3, dict.unwrap_or(&[])).unwrap();
+            encoder.write_all(&second).unwrap();
+            frames.extend(encoder.finish().unwrap());
+            assert_eq!(zstd_decompress_bytes(&frames, dict).unwrap(), [first, second].concat());
+            frames.pop();
+            assert!(zstd_decompress_bytes(&frames, dict).is_err());
+        }
+    }
 
     #[test]
     fn test_compress_parts_matches_contiguous_input() {
