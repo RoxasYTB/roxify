@@ -2,13 +2,18 @@ name: Release
 
 on:
   release:
-    types: [created]
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
         description: 'Release tag to upload binaries to (e.g. v1.11.0)'
         required: false
         default: ''
+      publish_only:
+        description: 'Retry npm publishing using an existing complete GitHub release'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -24,6 +29,7 @@ env:
 jobs:
   build-and-upload:
     name: Build ${{ matrix.target }}
+    if: github.event_name != 'workflow_dispatch' || !inputs.publish_only
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -297,29 +303,72 @@ jobs:
     name: Publish to npm
     needs: [build-and-upload, universal-macos]
     runs-on: ubuntu-latest
-    if: needs.build-and-upload.result == 'success' && needs.universal-macos.result == 'success' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''))
+    if: always() && !cancelled() && ((needs.build-and-upload.result == 'success' && needs.universal-macos.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.publish_only)) && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''))
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ format('refs/tags/{0}', github.event.release.tag_name || inputs.tag) }}
+
+      - name: Verify release tag and uploaded assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/roxify-release.json"
+          node <<'NODE'
+          const fs = require('fs');
+          const release = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/roxify-release.json`, 'utf8'));
+          const { version } = require('./package.json');
+          const tag = process.env.RELEASE_TAG;
+          if (![version, `v${version}`].includes(tag) || release.tag_name !== tag || release.draft) {
+            throw new Error('A published release matching the checked-out package version is required');
+          }
+          const targets = [
+            'x86_64-unknown-linux-gnu', 'i686-unknown-linux-gnu', 'aarch64-unknown-linux-gnu',
+            'x86_64-apple-darwin', 'aarch64-apple-darwin',
+            'x86_64-pc-windows-msvc', 'i686-pc-windows-msvc', 'aarch64-pc-windows-msvc',
+          ];
+          const required = [
+            ...targets.map(target => `roxify_native-${target}.node`),
+            'roxify_native-x86_64-pc-windows-msvc.exe', 'roxify_native-x86_64-unknown-linux-gnu',
+            'roxify_native-aarch64-apple-darwin', 'roxify_native-x86_64-apple-darwin',
+            'rox-macos-universal', 'roxify_native-universal-apple-darwin',
+            'roxify_native-universal-apple-darwin.node',
+          ];
+          for (const name of required) {
+            const asset = release.assets.find(asset => asset.name === name);
+            const url = asset && new URL(asset.browser_download_url);
+            const path = `/${process.env.GITHUB_REPOSITORY}/releases/download/${tag}/${name}`;
+            if (!asset || asset.state !== 'uploaded' || asset.size <= 0 ||
+                url.origin !== 'https://github.com' || decodeURIComponent(url.pathname) !== path) {
+              throw new Error(`Missing or incomplete asset for ${tag}: ${name}`);
+            }
+          }
+          console.log(`Verified ${required.length} uploaded assets for ${tag}`);
+          NODE
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm ci
+      - run: npm ci ${{ inputs.publish_only && '--ignore-scripts' || '' }}
 
       - uses: actions/download-artifact@v4
+        if: ${{ !inputs.publish_only }}
         with:
           path: native-binaries
           pattern: release-*
           merge-multiple: true
 
       - uses: actions/download-artifact@v4
+        if: ${{ !inputs.publish_only }}
         with:
           name: release-universal-apple-darwin
           path: native-binaries
 
       - name: Verify all required binaries are present
+        if: ${{ !inputs.publish_only }}
         run: |
           MISSING=0
           REQUIRED_NODES=(
@@ -365,6 +414,7 @@ jobs:
           echo "All required binaries present."
 
       - name: Copy all native binaries to package root
+        if: ${{ !inputs.publish_only }}
         run: |
           cp native-binaries/*.node .
           mkdir -p dist
@@ -406,8 +456,48 @@ jobs:
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Select an authenticated npm maintainer token
+        if: steps.npm_check.outputs.already_published != 'true'
+        env:
+          NPM_TOKEN_CANDIDATE: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN_CANDIDATE: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require('child_process');
+          const { appendFileSync } = require('fs');
+          const { name } = require('./package.json');
+          const registry = '--registry=https://registry.npmjs.org';
+          const npm = (args, token = '') => execFileSync('npm', [...args, registry, '--fetch-retries=1'], {
+            encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env, NODE_AUTH_TOKEN: token },
+          });
+          const maintainers = JSON.parse(npm(['view', name, 'maintainers', '--json']))
+            .map(person => typeof person === 'string' ? person.split(' ')[0] : person.name);
+          let selected;
+          for (const label of ['NPM_TOKEN', 'NODE_AUTH_TOKEN']) {
+            const token = (process.env[`${label}_CANDIDATE`] || '').trim();
+            if (!token || /[\r\n]/.test(token)) {
+              console.log(`${label}: missing or malformed`);
+              continue;
+            }
+            try {
+              const user = JSON.parse(npm(['whoami', '--json'], token));
+              if (maintainers.includes(user)) {
+                console.log(`${label}: authenticated as package maintainer ${user}`);
+                selected ??= { label, token };
+              } else {
+                console.log(`${label}: authenticated as ${user}, absent from package maintainers`);
+              }
+            } catch (error) {
+              const code = String(error.stderr || '').match(/\b(E401|E403|E404|ENEEDAUTH)\b/)?.[0] || 'authentication failed';
+              console.log(`${label}: ${code}`);
+            }
+          }
+          if (!selected) throw new Error('Neither npm secret authenticates as a package maintainer; refresh a secret with publish access');
+          appendFileSync(process.env.GITHUB_ENV, `NODE_AUTH_TOKEN=${selected.token}\n`);
+          console.log(`Selected ${selected.label} for npm publish`);
+          NODE
+
       - name: Publish
         if: steps.npm_check.outputs.already_published != 'true'
-        run: npm publish --access public --provenance=false
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance=false --registry=https://registry.npmjs.org
