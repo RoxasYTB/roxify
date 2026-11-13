@@ -216,8 +216,32 @@ pub fn zstd_compress_with_prefix(buf: &[u8], level: i32, dict: Option<&[u8]>, pr
 }
 
 pub fn zstd_compress_parts_with_prefix(parts: &[&[u8]], level: i32, dict: Option<&[u8]>, prefix: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    zstd_compress_parts_with_prefix_profile(parts, level, dict, prefix, false)
+}
+
+/// Limit the max profile's history window. This bounds its history setting,
+/// not the process's total memory, which also includes source/output buffers.
+pub(crate) fn max_compression_window_log(total_len: u64, budget_mb: u64) -> u32 {
+    let input_log = u64::BITS - total_len.saturating_sub(1).leading_zeros();
+    let window_budget = (budget_mb.saturating_mul(1024 * 1024) / 16).max(1);
+    let budget_log = u64::BITS - 1 - window_budget.leading_zeros();
+    input_log.min(27).min(budget_log).max(10)
+}
+
+fn max_compression_budget_mb() -> u64 {
+    ["ROX_RAM_BUDGET_MB_EFFECTIVE", "ROX_RAM_BUDGET_MB"].iter()
+        .find_map(|name| std::env::var(name).ok()?.trim().parse().ok())
+        .unwrap_or(2048)
+}
+
+pub fn zstd_compress_parts_with_prefix_profile(
+    parts: &[&[u8]], level: i32, dict: Option<&[u8]>, prefix: &[u8], max_compression: bool,
+) -> std::result::Result<Vec<u8>, String> {
     use std::io::Write;
 
+    if max_compression && !(1..=22).contains(&level) {
+        return Err("Max compression level must be between 1 and 22".to_string());
+    }
     let actual_level = level.clamp(1, 22);
     let total_len = parts.iter().try_fold(prefix.len(), |len, part| len.checked_add(part.len()))
         .ok_or_else(|| "Input size overflow".to_string())?;
@@ -236,7 +260,8 @@ pub fn zstd_compress_parts_with_prefix(parts: &[&[u8]], level: i32, dict: Option
         }
         &sample
     };
-    let adaptive_level = compute_adaptive_level(sample_data, actual_level, total_len);
+    let adaptive_level = if max_compression { actual_level }
+        else { compute_adaptive_level(sample_data, actual_level, total_len) };
 
     let estimated_output = if total_len < 1024 {
         total_len
@@ -244,7 +269,7 @@ pub fn zstd_compress_parts_with_prefix(parts: &[&[u8]], level: i32, dict: Option
         total_len * 3 / 4
     };
 
-    if dict.is_none() && total_len < 4 * 1024 * 1024 {
+    if !max_compression && dict.is_none() && total_len < 4 * 1024 * 1024 {
         if prefix.is_empty() && parts.len() == 1 {
             return zstd::bulk::compress(parts[0], adaptive_level)
                 .map_err(|e| format!("zstd bulk compress error: {}", e));
@@ -266,7 +291,9 @@ pub fn zstd_compress_parts_with_prefix(parts: &[&[u8]], level: i32, dict: Option
             .map_err(|e| format!("zstd encoder init error: {}", e))?
     };
 
-    let threads = num_cpus::get().max(1) as u32;
+    // Max favors ratio and avoids duplicating expensive high-level contexts
+    // across workers or splitting the history into independent jobs.
+    let threads = if max_compression { 1 } else { num_cpus::get().max(1) as u32 };
     if threads > 1 && total_len >= 4 * 1024 * 1024 {
         let _ = encoder.multithread(threads);
         let job_size = (16u64 * 1024 * 1024).min(u32::MAX as u64) as u32;
@@ -274,9 +301,16 @@ pub fn zstd_compress_parts_with_prefix(parts: &[&[u8]], level: i32, dict: Option
     }
 
     if total_len > 32 * 1024 * 1024 {
-        let _ = encoder.long_distance_matching(true);
+        if max_compression {
+            encoder.long_distance_matching(true).map_err(|e| format!("zstd long-distance matching error: {}", e))?;
+        } else {
+            let _ = encoder.long_distance_matching(true);
+        }
     }
-    if total_len > 256 * 1024 {
+    if max_compression {
+        let wlog = max_compression_window_log(total_len as u64, max_compression_budget_mb());
+        encoder.window_log(wlog).map_err(|e| format!("zstd window_log error: {}", e))?;
+    } else if total_len > 256 * 1024 {
         let wlog = if total_len > 1024 * 1024 * 1024 { 30 }
             else if total_len > 512 * 1024 * 1024 { 27 }
             else if total_len > 128 * 1024 * 1024 { 26 }
@@ -323,6 +357,68 @@ pub fn zstd_decompress_bytes(buf: &[u8], dict: Option<&[u8]>) -> std::result::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_max_profile_uses_requested_level_instead_of_adaptive_cap() {
+        let data = include_bytes!("../package-lock.json");
+        let prefix = b"ROX1";
+        let mut plain = prefix.to_vec();
+        plain.extend_from_slice(data);
+        assert!(compute_adaptive_level(data, 19, plain.len()) < 19);
+
+        let mut reference = zstd::bulk::Compressor::new(19).unwrap();
+        reference.set_parameter(zstd::zstd_safe::CParameter::WindowLog(
+            max_compression_window_log(plain.len() as u64, max_compression_budget_mb()),
+        )).unwrap();
+        let expected = reference.compress(&plain).unwrap();
+        let mut parts: Vec<&[u8]> = vec![&[]];
+        parts.extend(data.chunks(997));
+        parts.push(&[]);
+        let actual = zstd_compress_parts_with_prefix_profile(&parts, 19, None, prefix, true).unwrap();
+        assert_eq!(actual, expected, "max must use the requested level and window");
+        assert_eq!(zstd_decompress_bytes(&actual, None).unwrap(), plain);
+        let legacy = zstd_compress_parts_with_prefix(&parts, 19, None, prefix).unwrap();
+        assert!(actual.len() < legacy.len(), "JSON should benefit from uncapped level 19");
+    }
+
+    #[test]
+    fn test_false_profile_preserves_legacy_small_buffer_bytes() {
+        let data: Vec<u8> = (0..32768).map(|i| (i * 31 + i / 7) as u8).collect();
+        let mut plain = b"ROX1".to_vec();
+        plain.extend_from_slice(&data);
+        for requested in [0i32, 3, 19, 23] {
+            let level = compute_adaptive_level(&data, requested.clamp(1, 22), plain.len());
+            let expected = zstd::bulk::compress(&plain, level).unwrap();
+            assert_eq!(zstd_compress_parts_with_prefix_profile(&[&data], requested, None, b"ROX1", false).unwrap(), expected);
+            assert_eq!(zstd_compress_with_prefix(&data, requested, None, b"ROX1").unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_max_profile_dictionary_and_empty_parts_roundtrip() {
+        let data = b"dictionary entries repeat across input parts. ".repeat(500);
+        let dictionary = b"dictionary entries across parts";
+        for parts in [vec![&[][..], data.as_slice(), &[][..]], vec![&[][..]]] {
+            let mut expected = b"ROX1".to_vec();
+            for part in &parts { expected.extend_from_slice(part); }
+            let encoded = zstd_compress_parts_with_prefix_profile(&parts, 9, Some(dictionary), b"ROX1", true).unwrap();
+            assert_eq!(zstd_decompress_bytes(&encoded, Some(dictionary)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_max_profile_level_validation_and_window_bounds() {
+        for invalid in [-1, 0, 23] {
+            assert!(zstd_compress_parts_with_prefix_profile(&[b"sample"], invalid, None, &[], true).is_err());
+        }
+        assert_eq!(max_compression_window_log(0, 2048), 10);
+        assert_eq!(max_compression_window_log(1, 2048), 10);
+        assert_eq!(max_compression_window_log(1025, 2048), 11);
+        assert_eq!(max_compression_window_log(u64::MAX, 512), 25);
+        assert_eq!(max_compression_window_log(u64::MAX, 2048), 27);
+        assert_eq!(max_compression_window_log(u64::MAX, u64::MAX), 27);
+        assert_eq!(max_compression_window_log(10000, 0), 10);
+    }
 
     #[test]
     fn test_decompress_concatenated_frames_and_unknown_size() {

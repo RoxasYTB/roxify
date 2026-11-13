@@ -90,6 +90,8 @@ Options:
   -p, --passphrase <pass>   Use passphrase (AES-256-GCM)
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
+  --level <n>               Zstd level 1-22 (fast profile may adaptively cap it)
+  --max-compression         Favor size over speed/RAM; strict level, default 19
   --no-compress             Disable compression
   --dict <file>             Use zstd dictionary when compressing
   --ram-budget-mb <mb>      Max RAM budget used by native encode/decode paths
@@ -109,6 +111,8 @@ Lossy-Resilient Encoding:
 
 Examples:
   npx rox encode secret.pdf                      Encode to PNG
+  npx rox encode source --max-compression        Favor compression ratio
+  npx rox encode source --max-compression --level 9   Use a lower strict level
   npx rox encode secret.pdf --lossy-resilient     Lossy-resilient PNG
   npx rox decode secret.pdf.png                   Decode back
 
@@ -122,7 +126,20 @@ function parseArgs(args) {
         const arg = args[i];
         if (arg.startsWith('--')) {
             const key = arg.slice(2);
-            if (key === 'no-compress') {
+            if (key === 'max-compression') {
+                parsed.maxCompression = true;
+                i++;
+            }
+            else if (key === 'level') {
+                const level = Number(args[i + 1]);
+                if (!Number.isInteger(level) || level < 1 || level > 22) {
+                    console.error(`Invalid --level: ${args[i + 1]}. Must be an integer from 1 to 22`);
+                    process.exit(1);
+                }
+                parsed.level = level;
+                i += 2;
+            }
+            else if (key === 'no-compress') {
                 parsed.noCompress = true;
                 i++;
             }
@@ -315,9 +332,7 @@ async function encodeCommand(args) {
             encodeBar.start(100, 0, { step: 'Encoding', elapsed: '0' });
             const encryptType = parsed.encrypt === 'xor' ? 'xor' : 'aes';
             const fileName = basename(inputPaths[0]);
-            const encodeLevel = parsed.level
-                ? Number(parsed.level)
-                : 3;
+            const encodeLevel = parsed.level ?? (parsed.maxCompression ? 19 : 3);
             await encodeWithRustCLI(inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0], resolvedOutput, encodeLevel, parsed.passphrase, encryptType, fileName, parsed.ramBudgetMb, (current, total, step) => {
                 const pct = total > 0 ? Math.floor((current / total) * 100) : 0;
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -325,7 +340,7 @@ async function encodeCommand(args) {
                     step: step || 'Encoding',
                     elapsed: String(elapsed),
                 });
-            });
+            }, { maxCompression: parsed.maxCompression });
             const encodeTime = Date.now() - startTime;
             encodeBar.update(100, {
                 step: 'done',
@@ -403,7 +418,8 @@ async function encodeCommand(args) {
             mode,
             name: parsed.outputName || 'archive',
             skipOptimization: false,
-            compressionLevel: 6,
+            compressionLevel: parsed.level ?? (parsed.maxCompression ? 19 : 6),
+            maxCompression: parsed.maxCompression,
             outputFormat: 'auto',
         });
         if (parsed.verbose)
@@ -464,7 +480,7 @@ async function encodeCommand(args) {
                 console.log('Using native Rust encoder (streaming for large payload)\n');
                 const encodeStart = Date.now();
                 let lastPct = 0;
-                await encodeWithRustCLI(resolvedInput, resolvedOutput, parsed.level ? Number(parsed.level) : 6, parsed.passphrase, parsed.encrypt || 'aes', parsed.outputName || (st.isDirectory() ? basename(resolvedInput) : undefined), undefined, // ramBudgetMb
+                await encodeWithRustCLI(resolvedInput, resolvedOutput, parsed.level ?? (parsed.maxCompression ? 19 : 6), parsed.passphrase, parsed.encrypt || 'aes', parsed.outputName || (st.isDirectory() ? basename(resolvedInput) : undefined), undefined, // ramBudgetMb
                 (current, total, step) => {
                     const pct = Math.floor((current / total) * 100);
                     if (pct !== lastPct) {
@@ -473,7 +489,7 @@ async function encodeCommand(args) {
                             encodeBar.update(pct, { step });
                         }
                     }
-                });
+                }, { maxCompression: parsed.maxCompression });
                 const encodeTime = Date.now() - encodeStart;
                 if (barStarted) {
                     encodeBar.update(100, { step: 'done', elapsed: String(Math.floor(encodeTime / 1000)) });
@@ -599,6 +615,8 @@ async function encodeCommand(args) {
     catch (err) {
         console.log(' ');
         console.error('Error: Failed to encode file. Use --verbose for details.');
+        if (parsed.maxCompression)
+            console.error(`Reason: ${err.message}`);
         if (parsed.verbose)
             console.error('Details:', err.stack || err.message);
         process.exit(1);

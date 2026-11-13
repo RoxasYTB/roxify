@@ -242,17 +242,26 @@ function spawnRustCLI(
 export async function encodeWithRustCLI(
   inputPath: string,
   outputPath: string,
-  compressionLevel = 3,
+  compressionLevel?: number,
   passphrase?: string,
   encryptType: 'aes' | 'xor' = 'aes',
   name?: string,
   ramBudgetMb?: number,
   onProgress?: ProgressCallback,
+  options: { maxCompression?: boolean } = {},
 ): Promise<void> {
+  if (options.maxCompression !== undefined && typeof options.maxCompression !== 'boolean') {
+    throw new TypeError('maxCompression must be a boolean');
+  }
+  const level = compressionLevel ?? (options.maxCompression ? 19 : 3);
+  if (!Number.isInteger(level) || level < 1 || level > 22) {
+    throw new RangeError('compressionLevel must be an integer from 1 to 22');
+  }
   const cliPath = findRustBinary();
   if (!cliPath) throw new Error('Rust CLI binary not found');
 
-  const args = ['encode', '--level', String(compressionLevel)];
+  const args = ['encode', '--level', String(level)];
+  if (options.maxCompression) args.push('--max-compression');
 
   // --name is supported on all roxify_native binaries shipped since 1.14.x.
   // We used to spawn `--help` here to feature-detect, which cost a full

@@ -115,6 +115,8 @@ Options:
   -p, --passphrase <pass>   Use passphrase (AES-256-GCM)
   -m, --mode <mode>         Mode: screenshot (default)
   -e, --encrypt <type>      auto|aes|xor|none
+  --level <n>               Zstd level 1-22 (fast profile may adaptively cap it)
+  --max-compression         Favor size over speed/RAM; strict level, default 19
   --no-compress             Disable compression
   --dict <file>             Use zstd dictionary when compressing
   --ram-budget-mb <mb>      Max RAM budget used by native encode/decode paths
@@ -134,6 +136,8 @@ Lossy-Resilient Encoding:
 
 Examples:
   npx rox encode secret.pdf                      Encode to PNG
+  npx rox encode source --max-compression        Favor compression ratio
+  npx rox encode source --max-compression --level 9   Use a lower strict level
   npx rox encode secret.pdf --lossy-resilient     Lossy-resilient PNG
   npx rox decode secret.pdf.png                   Decode back
 
@@ -150,7 +154,18 @@ function parseArgs(args: string[]) {
 
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
-      if (key === 'no-compress') {
+      if (key === 'max-compression') {
+        parsed.maxCompression = true;
+        i++;
+      } else if (key === 'level') {
+        const level = Number(args[i + 1]);
+        if (!Number.isInteger(level) || level < 1 || level > 22) {
+          console.error(`Invalid --level: ${args[i + 1]}. Must be an integer from 1 to 22`);
+          process.exit(1);
+        }
+        parsed.level = level;
+        i += 2;
+      } else if (key === 'no-compress') {
         parsed.noCompress = true;
         i++;
       } else if (key === 'verbose') {
@@ -348,9 +363,7 @@ async function encodeCommand(args: string[]) {
 
       const fileName = basename(inputPaths[0]);
 
-      const encodeLevel = parsed.level
-        ? Number(parsed.level)
-        : 3;
+      const encodeLevel = parsed.level ?? (parsed.maxCompression ? 19 : 3);
       await encodeWithRustCLI(
         inputPaths.length === 1 ? resolvedInputs[0] : resolvedInputs[0],
         resolvedOutput,
@@ -367,6 +380,7 @@ async function encodeCommand(args: string[]) {
             elapsed: String(elapsed),
           });
         },
+        { maxCompression: parsed.maxCompression },
       );
 
       const encodeTime = Date.now() - startTime;
@@ -462,7 +476,8 @@ async function encodeCommand(args: string[]) {
       mode,
       name: parsed.outputName || 'archive',
       skipOptimization: false,
-      compressionLevel: 6,
+      compressionLevel: parsed.level ?? (parsed.maxCompression ? 19 : 6),
+      maxCompression: parsed.maxCompression,
       outputFormat: 'auto',
     });
 
@@ -539,7 +554,7 @@ async function encodeCommand(args: string[]) {
         await encodeWithRustCLI(
           resolvedInput,
           resolvedOutput,
-          parsed.level ? Number(parsed.level) : 6,
+          parsed.level ?? (parsed.maxCompression ? 19 : 6),
           parsed.passphrase,
           (parsed.encrypt as 'aes' | 'xor') || 'aes',
           parsed.outputName || (st.isDirectory() ? basename(resolvedInput) : undefined),
@@ -553,6 +568,7 @@ async function encodeCommand(args: string[]) {
               }
             }
           },
+          { maxCompression: parsed.maxCompression },
         );
 
         const encodeTime = Date.now() - encodeStart;
@@ -679,6 +695,7 @@ async function encodeCommand(args: string[]) {
   } catch (err: any) {
     console.log(' ');
     console.error('Error: Failed to encode file. Use --verbose for details.');
+    if (parsed.maxCompression) console.error(`Reason: ${err.message}`);
     if (parsed.verbose) console.error('Details:', err.stack || err.message);
     process.exit(1);
   }

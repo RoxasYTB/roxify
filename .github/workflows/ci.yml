@@ -42,6 +42,12 @@ jobs:
       - name: Archive format regression tests
         run: node scripts/check-pack.mjs
 
+      - name: Compression profile tests
+        run: |
+          node scripts/check-compression-profile.mjs
+          node scripts/copy-native.js
+          node scripts/check-compression-roundtrip.mjs
+
   check:
     name: Lint & Type Check
     runs-on: ubuntu-latest
