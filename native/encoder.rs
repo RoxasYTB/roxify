@@ -78,7 +78,22 @@ pub fn encode_parts_to_png(
     file_list: Option<&str>,
     dict: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let compressed = crate::core::zstd_compress_parts_with_prefix(parts, compression_level, dict, MAGIC)
+    encode_parts_to_png_with_profile(parts, compression_level, passphrase, encrypt_type, name, file_list, dict, false)
+}
+
+pub fn encode_parts_to_png_with_profile(
+    parts: &[&[u8]],
+    compression_level: i32,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    name: Option<&str>,
+    file_list: Option<&str>,
+    dict: Option<&[u8]>,
+    max_compression: bool,
+) -> Result<Vec<u8>> {
+    let compressed = crate::core::zstd_compress_parts_with_prefix_profile(
+        parts, compression_level, dict, MAGIC, max_compression,
+    )
         .map_err(|e| anyhow::anyhow!("Compression failed: {}", e))?;
 
     let encrypted = if let Some(pass) = passphrase {
@@ -100,6 +115,24 @@ pub fn encode_parts_to_png(
 mod tests {
     use super::*;
     use crate::png_utils;
+
+    #[test]
+    fn max_profile_preserves_payload_name_file_list_and_encryption() {
+        let parts: &[&[u8]] = &[b"first\0part", b"second part"];
+        let list = "[{\"name\":\"profile.bin\",\"size\":21}]";
+        for passphrase in [None, Some("profile-test-password")] {
+            let png = encode_parts_to_png_with_profile(
+                parts, 9, passphrase, Some("aes"), Some("profile.bin"), Some(list), None, true,
+            ).unwrap();
+            let extracted = png_utils::extract_payload_and_name_from_png(&png).unwrap();
+            assert_eq!(extracted.name.as_deref(), Some("profile.bin"));
+            let compressed = crate::crypto::try_decrypt(&extracted.payload, passphrase).unwrap();
+            let decoded = crate::core::zstd_decompress_bytes(&compressed, None).unwrap();
+            assert_eq!(decoded, [b"ROX1".as_slice(), parts[0], parts[1]].concat());
+            let chunks = png_utils::extract_png_chunks(&png).unwrap();
+            assert_eq!(chunks.iter().find(|c| c.name == "rXFL").unwrap().data, list.as_bytes());
+        }
+    }
 
     #[test]
     fn test_rxfl_chunk_present_when_file_list_provided() {

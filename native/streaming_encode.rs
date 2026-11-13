@@ -105,6 +105,24 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     encrypt_type: Option<&str>,
     progress: Option<ProgressCallback>,
 ) -> anyhow::Result<()> {
+    encode_dir_to_png_encrypted_with_profile(
+        dir_path, output_path, compression_level, name, passphrase, encrypt_type, progress, false,
+    )
+}
+
+pub fn encode_dir_to_png_encrypted_with_profile(
+    dir_path: &Path,
+    output_path: &Path,
+    compression_level: i32,
+    name: Option<&str>,
+    passphrase: Option<&str>,
+    encrypt_type: Option<&str>,
+    progress: Option<ProgressCallback>,
+    max_compression: bool,
+) -> anyhow::Result<()> {
+    if max_compression && !(1..=22).contains(&compression_level) {
+        anyhow::bail!("Max compression level must be between 1 and 22");
+    }
     check_source_rotational(dir_path);
     let collected = collect_directory_files(dir_path);
     let entries = collected.entries;
@@ -114,18 +132,18 @@ pub fn encode_dir_to_png_encrypted_with_progress(
         anyhow::bail!("No files found in directory: {}", dir_path.display());
     }
 
-    let actual_level = if compression_level == 0 {
-        select_adaptive_level(&entries)
-    } else {
-        compression_level.clamp(-100, 22).min(size_cap(total_bytes))
-    };
+    let actual_level = directory_compression_level(&entries, total_bytes, compression_level, max_compression);
 
-    let adaptive_window_log = select_zstd_window_log(total_bytes);
+    let adaptive_window_log = if max_compression {
+        crate::core::max_compression_window_log(total_bytes, effective_budget_mb())
+    } else {
+        select_zstd_window_log(total_bytes)
+    };
 
     encode_dir_streaming(
         &entries, total_bytes, output_path,
         actual_level, name, passphrase, encrypt_type,
-        adaptive_window_log, &progress,
+        adaptive_window_log, &progress, max_compression,
     )?;
 
     if let Some(ref cb) = progress {
@@ -133,6 +151,18 @@ pub fn encode_dir_to_png_encrypted_with_progress(
     }
 
     Ok(())
+}
+
+fn directory_compression_level(
+    entries: &[DirectoryFile], total_bytes: u64, requested: i32, max_compression: bool,
+) -> i32 {
+    if max_compression {
+        requested
+    } else if requested == 0 {
+        select_adaptive_level(entries)
+    } else {
+        requested.clamp(-100, 22).min(size_cap(total_bytes))
+    }
 }
 
 fn compress_dir_to_zst_mem(
@@ -817,6 +847,7 @@ fn encode_dir_streaming(
     _encrypt_type: Option<&str>,
     adaptive_window_log: u32,
     progress: &Option<ProgressCallback>,
+    max_compression: bool,
 ) -> anyhow::Result<()> {
 
     let file_list: Vec<FileListEntry> = entries.iter()
@@ -826,7 +857,7 @@ fn encode_dir_streaming(
 
     let output_path = output_path.to_path_buf();
     let entry_count = entries.len() as u32;
-    let threads = select_zstd_threads(total_bytes);
+    let threads = if max_compression { 1 } else { select_zstd_threads(total_bytes) };
 
     let budget_mb = effective_budget_mb();
     let job_size_bytes: u32 = if threads > 1 {
@@ -850,9 +881,17 @@ fn encode_dir_streaming(
                 let _ = encoder.multithread(threads);
             }
             if total_bytes > 32 * MB {
-                let _ = encoder.long_distance_matching(true);
+                if max_compression {
+                    encoder.long_distance_matching(true)?;
+                } else {
+                    let _ = encoder.long_distance_matching(true);
+                }
             }
-            let _ = encoder.window_log(adaptive_window_log);
+            if max_compression {
+                encoder.window_log(adaptive_window_log)?;
+            } else {
+                let _ = encoder.window_log(adaptive_window_log);
+            }
             if threads > 1 && job_size_bytes > 0 {
                 let _ = encoder.set_parameter(zstd::stream::raw::CParameter::JobSize(job_size_bytes));
             }
@@ -1102,6 +1141,63 @@ mod tests {
     use super::*;
     use flate2::read::ZlibDecoder;
     use std::io::Read;
+
+    #[test]
+    fn max_directory_profile_preserves_requested_level_for_large_inputs() {
+        let total = 2 * 1024 * MB;
+        assert_eq!(directory_compression_level(&[], total, 19, true), 19);
+        assert_eq!(directory_compression_level(&[], total, 19, false), 1);
+        for invalid in [0, -1, 23] {
+            let error = encode_dir_to_png_encrypted_with_profile(
+                Path::new("missing-source"), Path::new("unused.png"), invalid,
+                None, None, None, None, true,
+            ).unwrap_err();
+            assert!(error.to_string().contains("between 1 and 22"));
+        }
+    }
+
+    #[test]
+    fn max_directory_profile_matches_high_level_zstd_and_legacy_false_bytes() {
+        let src = make_test_dir(90, 0, 1);
+        let data = include_bytes!("../package-lock.json");
+        std::fs::write(src.join("config.json"), data).unwrap();
+        let legacy_png = src.with_extension("legacy.png");
+        let false_png = src.with_extension("profile-false.png");
+        let max_png = src.with_extension("profile-max.png");
+        let out_dir = src.with_extension("profile-out");
+
+        encode_dir_to_png(&src, &legacy_png, 3, Some("profile")).unwrap();
+        encode_dir_to_png_encrypted_with_profile(
+            &src, &false_png, 3, Some("profile"), None, None, None, false,
+        ).unwrap();
+        assert_eq!(std::fs::read(&legacy_png).unwrap(), std::fs::read(&false_png).unwrap());
+        encode_dir_to_png_encrypted_with_profile(
+            &src, &max_png, 19, Some("profile"), None, None, None, true,
+        ).unwrap();
+
+        let mut pack = MAGIC.to_vec();
+        pack.extend_from_slice(&PACK_MAGIC.to_be_bytes());
+        pack.extend_from_slice(&1u32.to_be_bytes());
+        write_pack_entry_header(&mut pack, "config.json", data.len() as u64).unwrap();
+        pack.extend_from_slice(data);
+        let mut reference = zstd::stream::Encoder::new(Vec::new(), 19).unwrap();
+        reference.window_log(crate::core::max_compression_window_log(
+            data.len() as u64, effective_budget_mb(),
+        )).unwrap();
+        reference.write_all(&pack).unwrap();
+        let expected = reference.finish().unwrap();
+        let png = std::fs::read(&max_png).unwrap();
+        let payload = crate::png_utils::extract_payload_from_png(&png).unwrap();
+        assert_eq!(payload[0], 0);
+        assert_eq!(&payload[1..], expected.as_slice(), "directory encoder must apply uncapped level 19");
+        assert!(png.len() < std::fs::metadata(&legacy_png).unwrap().len() as usize);
+        crate::streaming_decode::streaming_decode_to_dir(&max_png, &out_dir).unwrap();
+        assert_eq!(std::fs::read(out_dir.join("config.json")).unwrap(), data.as_slice());
+
+        for file in [legacy_png, false_png, max_png] { std::fs::remove_file(file).unwrap(); }
+        std::fs::remove_dir_all(out_dir).unwrap();
+        std::fs::remove_dir_all(src).unwrap();
+    }
 
     fn write_test_idat(
         source: ZstSource<'_>,

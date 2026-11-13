@@ -27,7 +27,6 @@ mod mtf;
 mod context_mixing;
 mod hybrid;
 
-use crate::encoder::ImageFormat;
 use std::path::PathBuf;
 
 const MB_U64: u64 = 1024 * 1024;
@@ -35,6 +34,14 @@ const MB_U64: u64 = 1024 * 1024;
 const MIN_RAM_BUDGET_MB: u64 = 512;
 const MIN_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WRITE_BUFFER_BYTES: usize = 1024 * 1024 * 1024;
+
+fn resolve_encode_level(level: Option<i32>, max_compression: bool) -> anyhow::Result<i32> {
+    let resolved = level.unwrap_or(if max_compression { 19 } else { 0 });
+    if max_compression && !(1..=22).contains(&resolved) {
+        anyhow::bail!("--max-compression requires an integer --level from 1 to 22");
+    }
+    Ok(resolved)
+}
 
 #[derive(Parser)]
 #[command(author, version)]
@@ -48,8 +55,10 @@ enum Commands {
     Encode {
         input: PathBuf,
         output: PathBuf,
-        #[arg(short, long, default_value_t = 0)]
-        level: i32,
+        #[arg(short, long, help = "Zstd level (adaptive in the fast profile; exact 1..22 with --max-compression, default 19)")]
+        level: Option<i32>,
+        #[arg(long, help = "Favor smaller archives using exact Zstd levels; uses more CPU and can use more memory")]
+        max_compression: bool,
         #[arg(short, long)]
         passphrase: Option<String>,
         #[arg(short, long, default_value = "aes")]
@@ -499,12 +508,14 @@ fn main() -> anyhow::Result<()> {
             input,
             output,
             level,
+            max_compression,
             passphrase,
             encrypt,
             name,
             dict,
             ram_budget_mb,
         } => {
+            let level = resolve_encode_level(level, max_compression)?;
             let ram_budget_mb = resolve_ram_budget_mb(ram_budget_mb);
             std::env::set_var("ROX_RAM_BUDGET_MB_EFFECTIVE", ram_budget_mb.to_string());
             let is_dir = input.is_dir();
@@ -514,7 +525,7 @@ fn main() -> anyhow::Result<()> {
                 .or_else(|| input.file_name().and_then(|n| n.to_str()));
 
             if is_dir && dict.is_none() {
-                streaming_encode::encode_dir_to_png_encrypted_with_progress(
+                streaming_encode::encode_dir_to_png_encrypted_with_profile(
                     &input,
                     &output,
                     level,
@@ -524,6 +535,7 @@ fn main() -> anyhow::Result<()> {
                     Some(Box::new(|current, total, step| {
                         eprintln!("PROGRESS:{}:{}:{}", current, total, step);
                     })),
+                    max_compression,
                 )?;
                 println!("(directory payload, rXFL chunk embedded)");
                 return Ok(());
@@ -553,7 +565,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("PROGRESS:50:100:encoding");
 
             if use_streaming {
-                streaming::encode_to_png_file(
+                streaming::encode_to_png_file_with_profile(
                     &payload,
                     &output,
                     level,
@@ -562,31 +574,13 @@ fn main() -> anyhow::Result<()> {
                     file_name,
                     file_list_json.as_deref(),
                     dict_bytes.as_deref(),
+                    max_compression,
                 )?;
             } else {
-                let png = if let Some(ref pass) = passphrase {
-                    encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
-                        &payload,
-                        level,
-                        Some(pass),
-                        Some(&encrypt),
-                        ImageFormat::Png,
-                        file_name,
-                        file_list_json.as_deref(),
-                        dict_bytes.as_deref(),
-                    )?
-                } else {
-                    encoder::encode_to_png_with_encryption_name_and_format_and_filelist(
-                        &payload,
-                        level,
-                        None,
-                        None,
-                        ImageFormat::Png,
-                        file_name,
-                        file_list_json.as_deref(),
-                        dict_bytes.as_deref(),
-                    )?
-                };
+                let png = encoder::encode_parts_to_png_with_profile(
+                    &[payload.as_slice()], level, passphrase.as_deref(), Some(&encrypt),
+                    file_name, file_list_json.as_deref(), dict_bytes.as_deref(), max_compression,
+                )?;
                 write_all(&output, &png)?;
             }
 
@@ -1170,7 +1164,28 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_stream_png_decode;
+    use super::{should_stream_png_decode, resolve_encode_level, Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn max_compression_defaults_to_19_and_honors_overrides() {
+        assert_eq!(resolve_encode_level(None, true).unwrap(), 19);
+        assert_eq!(resolve_encode_level(Some(9), true).unwrap(), 9);
+        assert_eq!(resolve_encode_level(Some(22), true).unwrap(), 22);
+        assert_eq!(resolve_encode_level(None, false).unwrap(), 0);
+        assert_eq!(resolve_encode_level(Some(-5), false).unwrap(), -5);
+        for invalid in [-1, 0, 23] {
+            assert!(resolve_encode_level(Some(invalid), true).is_err());
+        }
+    }
+
+    #[test]
+    fn max_compression_is_a_boolean_cli_flag() {
+        let cli = Cli::try_parse_from(["roxify_native", "encode", "--max-compression", "in", "out"]).unwrap();
+        assert!(matches!(cli.command, Commands::Encode { max_compression: true, level: None, .. }));
+        let cli = Cli::try_parse_from(["roxify_native", "encode", "in", "out", "--max-compression", "--level", "9"]).unwrap();
+        assert!(matches!(cli.command, Commands::Encode { max_compression: true, level: Some(9), .. }));
+    }
 
     #[test]
     fn selective_png_decode_forces_streaming() {

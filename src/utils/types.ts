@@ -4,7 +4,10 @@ import type { EccLevel } from './ecc.js';
 export interface EncodeOptions {
   /** Only 'zstd' is wired in the current encoder; reserved for future codecs. */
   compression?: 'zstd';
+  /** Zstd level 1–22. The default fast profile may adaptively cap this level. */
   compressionLevel?: number;
+  /** Favor size over speed, without adaptive level caps. Defaults to level 19. */
+  maxCompression?: boolean;
   passphrase?: string;
   /** optional dictionary to use for zstd compression */
   dict?: Buffer;

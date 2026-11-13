@@ -42,7 +42,16 @@ export async function encodeBinaryToPng(
   input: Buffer | Buffer[],
   opts: EncodeOptions = {},
 ): Promise<Buffer> {
-  const compressionLevel = opts.compressionLevel ?? 3;
+  if (opts.maxCompression !== undefined && typeof opts.maxCompression !== 'boolean') {
+    throw new TypeError('maxCompression must be a boolean');
+  }
+  const compressionLevel = opts.compressionLevel ?? (opts.maxCompression ? 19 : 3);
+  if (!Number.isInteger(compressionLevel) || compressionLevel < 1 || compressionLevel > 22) {
+    throw new RangeError('compressionLevel must be an integer from 1 to 22');
+  }
+  if (opts.maxCompression && typeof native.nativeEncodePngPartsWithProfile !== 'function') {
+    throw new Error('Maximum compression requires an updated roxify native module. Reinstall roxify or rebuild its native module.');
+  }
   const fileName = opts.name || undefined;
   const fileListJson = opts.includeFileList && opts.fileList
     ? normalizeNativeFileList(opts.fileList as Array<{ name: string; size?: number }>)
@@ -52,8 +61,19 @@ export async function encodeBinaryToPng(
   const totalLength = parts?.reduce((total, part) => total + part.length, 0) ?? 0;
   // N-API conversion costs more than concatenation for many tiny fragments.
   // Stream large parts directly into Zstd; keep small inputs on the bulk path.
-  if (parts && parts.length > 1 && totalLength >= 4 * 1024 * 1024 &&
-      totalLength / parts.length >= 4096 && typeof native.nativeEncodePngParts === 'function') {
+  const useParts = parts && parts.length > 1 && totalLength >= 4 * 1024 * 1024 &&
+    totalLength / parts.length >= 4096;
+  if (opts.maxCompression) {
+    const inputParts = useParts ? parts : [parts
+      ? (parts.length === 1 ? parts[0] : Buffer.concat(parts, totalLength))
+      : input as Buffer];
+    const encryptType = opts.encrypt && opts.encrypt !== 'auto' ? opts.encrypt : 'aes';
+    const result = native.nativeEncodePngPartsWithProfile(
+      inputParts, compressionLevel, opts.passphrase || undefined, encryptType, fileName, fileListJson, true,
+    );
+    return Buffer.isBuffer(result) ? result : Buffer.from(result);
+  }
+  if (useParts && typeof native.nativeEncodePngParts === 'function') {
     const encryptType = opts.encrypt && opts.encrypt !== 'auto' ? opts.encrypt : 'aes';
     const result = native.nativeEncodePngParts(
       parts, compressionLevel, opts.passphrase || undefined, encryptType, fileName, fileListJson,

@@ -228,6 +228,24 @@ pub fn native_encode_png_parts(
 
 #[cfg(not(test))]
 #[napi]
+pub fn native_encode_png_parts_with_profile(
+    parts: Vec<Buffer>,
+    compression_level: i32,
+    passphrase: Option<String>,
+    encrypt_type: Option<String>,
+    name: Option<String>,
+    file_list_json: Option<String>,
+    max_compression: Option<bool>,
+) -> Result<Buffer> {
+    let slices: Vec<&[u8]> = parts.iter().map(|part| part.as_ref()).collect();
+    encoder::encode_parts_to_png_with_profile(
+        &slices, compression_level, passphrase.as_deref(), encrypt_type.as_deref(),
+        name.as_deref(), file_list_json.as_deref(), None, max_compression.unwrap_or(false),
+    ).map(Buffer::from).map_err(|e| Error::from_reason(e.to_string()))
+}
+
+#[cfg(not(test))]
+#[napi]
 pub fn native_decode_png(png_buffer: Buffer, passphrase: Option<String>) -> Result<PngDecodeResult> {
     let result = decoder::decode_png(&png_buffer, passphrase.as_deref())
         .map_err(Error::from_reason)?;
