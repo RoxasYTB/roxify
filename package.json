@@ -20,7 +20,6 @@
   "scripts": {
     "build": "tsc",
     "bundle": "esbuild src/cli.ts --bundle --platform=node --target=node18 --outfile=dist/cli.js --format=esm --minify --external:./index.js --external:./pack.js && tsc --emitDeclarationOnly --declaration --declarationDir dist",
-    "prebuild:pkg": "node scripts/copy-cli-binary.js",
     "build:native": "cargo build --release --lib",
     "build:native:linux": "cargo build --release --lib --target x86_64-unknown-linux-gnu",
     "build:native:macos-x64": "cargo build --release --lib --target x86_64-apple-darwin",
@@ -34,18 +33,6 @@
     "test:profile": "npm run build && node scripts/check-compression-profile.mjs",
     "test:integration": "node scripts/run-integration-tests.cjs",
     "cli": "node dist/cli.js"
-  },
-  "pkg": {
-    "targets": [
-      "node18-win-x64"
-    ],
-    "outputPath": "dist",
-    "scripts": [
-      "dist/**/*.js"
-    ],
-    "assets": [
-      "dist/roxify_native.exe"
-    ]
   },
   "repository": {
     "type": "git",
@@ -67,8 +54,7 @@
   "license": "SEE LICENSE IN LICENSE",
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "esbuild": "^0.18.0",
-    "pkg": "^5.8.1",
+    "esbuild": "^0.25.0",
     "typescript": "^5.9.3"
   },
   "engines": {
